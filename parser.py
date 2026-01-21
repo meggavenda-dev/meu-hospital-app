@@ -1,24 +1,17 @@
 
-import re
+def parse_real(csv_text):
 
-def parse_csv(file):
-    # Lê o arquivo inteiro
-    linhas = file.read().decode("latin1", errors="ignore").splitlines()
-
-    registros = []
+    internacoes = []
     data_atual = None
+    atual = None  # internação corrente
 
-    atendimento = None
-    paciente = None
+    for raw in csv_text.splitlines():
+        linha = raw.strip()
 
-    for linha in linhas:
-        original = linha
-        linha = linha.strip().replace("\x00", "")
-
-        if linha == "":
+        if not linha:
             continue
 
-        # Detecta a linha da data
+        # 1) Detecta nova data
         if "Data de Realização" in linha:
             partes = linha.split(",")
             for p in partes:
@@ -27,49 +20,70 @@ def parse_csv(file):
                     data_atual = p
             continue
 
-        # Detecta linha mestre: começa com vírgula + atendimento numérico
-        if re.match(r"^,\s*\d{7,12}", original):
-            partes = original.split(",")
+        # 2) Linha mestre
+        if re.match(r"^,\s*\d{7,12},", raw):
+            cols = raw.split(",")
 
-            atendimento = partes[1].strip()
+            atendimento = cols[1].strip()
+            paciente = cols[2].strip()
 
-            paciente = partes[2].strip() if len(partes) > 2 else ""
+            aviso = cols[7].strip()
+            hora_ini = cols[8].strip()
+            hora_fim = cols[9].strip()
 
-            # O procedimento principal fica em partes[10]
-            procedimento = partes[10].strip() if len(partes) > 10 else ""
+            procedimento = cols[10].strip()
+            convenio = cols[11].strip()
+            prestador = cols[12].strip() if len(cols) > 12 else ""
+            anest = cols[13].strip() if len(cols) > 13 else ""
+            tipo = cols[14].strip() if len(cols) > 14 else ""
+            quarto = cols[15].strip() if len(cols) > 15 else ""
 
-            convenio = partes[11].strip() if len(partes) > 11 else ""
-            profissional = partes[12].strip() if len(partes) > 12 else ""
+            # cria nova internação
+            atual = {
+                "data": data_atual,
+                "atendimento": atendimento,
+                "paciente": paciente,
+                "hora_inicio": hora_ini,
+                "hora_fim": hora_fim,
+                "procedimentos": []
+            }
 
-            # Registra o primeiro procedimento do atendimento
-            if procedimento:
-                registros.append({
-                    "atendimento": atendimento,
-                    "paciente": paciente,
-                    "data": data_atual,
-                    "procedimento": procedimento,
-                    "convenio": convenio,
-                    "profissional": profissional
-                })
+            atual["procedimentos"].append({
+                "procedimento": procedimento,
+                "convenio": convenio,
+                "prestador": prestador,
+                "anestesista": anest,
+                "tipo": tipo,
+                "quarto": quarto
+            })
 
+            internacoes.append(atual)
             continue
 
-        # Detecta linha filha (procedimentos adicionais)
-        if original.startswith(",,,,,,,,,,"):
-            partes = original.split(",")
+        # 3) Linhas filhas — procedimentos extras
+        if re.match(r"^,{10,}", raw):
+            cols = raw.split(",")
 
-            procedimento = partes[10].strip() if len(partes) > 10 else ""
-            convenio = partes[11].strip() if len(partes) > 11 else ""
-            profissional = partes[12].strip() if len(partes) > 12 else ""
+            procedimento = cols[10].strip()
+            convenio = cols[11].strip()
+            prestador = cols[12].strip() if len(cols) > 12 else ""
+            anest = cols[13].strip() if len(cols) > 13 else ""
+            tipo = cols[14].strip() if len(cols) > 14 else ""
+            quarto = cols[15].strip() if len(cols) > 15 else ""
 
-            if atendimento and procedimento:
-                registros.append({
-                    "atendimento": atendimento,
-                    "paciente": paciente,
-                    "data": data_atual,
+            if atual:
+                atual["procedimentos"].append({
                     "procedimento": procedimento,
                     "convenio": convenio,
-                    "profissional": profissional
+                    "prestador": prestador,
+                    "anestesista": anest,
+                    "tipo": tipo,
+                    "quarto": quarto
                 })
+            continue
 
-    return registros
+        # 4) Totais — ignorar
+        if "Total de Avisos" in linha or "Total de Cirurgias" in linha:
+            continue
+
+    return internacoes
