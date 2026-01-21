@@ -1,14 +1,24 @@
 
+# ============================================================
+#  SISTEMA DE INTERNAÇÕES — VERSÃO FINAL
+#  Inclui:
+#  - Parser robusto
+#  - Dry-run antes de gravar
+#  - Reprocessamento de atendimentos existentes
+#  - Filtros por hospital
+#  - Seeds de hospitais
+# ============================================================
+
 import streamlit as st
 import sqlite3
 import pandas as pd
 import re
 
-# =====================================================================
-# BANCO - CRIAÇÃO DE TABELAS E SEED
-# =====================================================================
+# ============================================================
+# BANCO
+# ============================================================
+
 def get_conn():
-    # Ativa FKs por segurança futura (caso você crie FKs)
     conn = sqlite3.connect("dados.db")
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
@@ -17,7 +27,7 @@ def create_tables():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Tabela de Hospitais (catálogo)
+    # Catálogo de hospitais
     cur.execute("""
     CREATE TABLE IF NOT EXISTS Hospitals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,8 +41,8 @@ def create_tables():
     CREATE TABLE IF NOT EXISTS Internacoes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         numero_internacao REAL,
-        hospital TEXT,           -- mantido como texto para compatibilidade
-        atendimento TEXT UNIQUE,  -- atendimento é único
+        hospital TEXT,
+        atendimento TEXT UNIQUE,
         paciente TEXT,
         data_internacao TEXT,
         convenio TEXT
@@ -54,159 +64,248 @@ def create_tables():
     conn.commit()
     conn.close()
 
+
 def seed_hospitais():
-    """
-    Semeia os hospitais uma única vez (operações idempotentes).
-    Atualize a lista se quiser incluir mais hospitais padronizados.
-    """
-    HOSPITAIS_INICIAIS = [
+    H = [
         "Santa Lucia Sul",
         "Santa Lucia Norte",
         "Maria Auxiliadora",
-        # --- adicionados conforme seu pedido ---
         "Santa Lucia Taguatinga",
         "Santa Lucia Águas Claras",
-        "Santa Lucia Sudoeste",
+        "Santa Lucia Sudoeste"
     ]
     conn = get_conn()
     cur = conn.cursor()
-    for nome in HOSPITAIS_INICIAIS:
-        cur.execute("INSERT OR IGNORE INTO Hospitals (name, active) VALUES (?, 1)", (nome,))
+    for nome in H:
+        cur.execute("INSERT OR IGNORE INTO Hospitals (name, active) VALUES (?,1)", (nome,))
     conn.commit()
     conn.close()
 
-def get_hospitais_ativos():
+
+def get_hospitais():
     conn = get_conn()
-    df = pd.read_sql_query("SELECT name FROM Hospitals WHERE active = 1 ORDER BY name ASC", conn)
+    df = pd.read_sql_query("SELECT name FROM Hospitals WHERE active = 1 ORDER BY name", conn)
     conn.close()
     return df["name"].tolist()
 
 
-# =====================================================================
-# PARSER ESPECIAL PARA SUA PLANILHA
-# =====================================================================
-def parse_csv(file):
-    """
-    Lê o relatório 'CSV-like' da sua planilha, identificando:
-      - mudança de data ("Data de Realização")
-      - linhas mestre (começam por ,<atendimento>)
-      - linhas filhas (procedimentos adicionais iniciados por ,,,,,,,,,,)
-    Retorna lista de dicts com: atendimento, paciente, data, procedimento, convenio, profissional
-    """
-    linhas = file.read().decode("latin1", errors="ignore").splitlines()
+# ============================================================
+# UTIL
+# ============================================================
 
-    registros = []
+def tail(cols, n):
+    pad = [""] * max(0, n - len(cols))
+    return (pad + cols)[-n:]
+
+
+def clean(s):
+    return s.strip().strip('"').strip()
+
+
+# ============================================================
+# PARSER ROBUSTO — versão final com ancoragem pelas 5 últimas colunas
+# ============================================================
+
+def parse_csv_text(csv_text):
+    internacoes = []
     data_atual = None
+    atual = None
+    hora_ini_mestre = ""
+    hora_fim_mestre = ""
 
-    atendimento = None
-    paciente = None
-
-    for linha in linhas:
-        original = linha
-        linha = linha.strip().replace("\x00", "")
-
-        if linha == "":
+    for raw in csv_text.splitlines():
+        linha = raw.replace("\x00", "").rstrip("\n")
+        if not linha or linha.strip() == "":
             continue
 
-        # Detecta a data do bloco
+        # DATA DO BLOCO
         if "Data de Realização" in linha:
-            partes = linha.split(",")
+            partes = [p.strip() for p in linha.split(",")]
             for p in partes:
-                p = p.strip()
-                if re.match(r"\d{2}/\d{2}/\d{4}", p):
+                if re.fullmatch(r"\d{2}/\d{2}/\d{4}", p):
                     data_atual = p
             continue
 
-        # Linha mestre: atendimento começa na 2ª coluna (linha inicia com vírgula e um número longo)
-        if re.match(r"^,\s*\d{7,12}", original):
-            partes = original.split(",")
+        # LINHA MESTRE
+        if re.match(r"^,\s*\d{7,12},", raw):
+            cols = [c for c in raw.split(",")]
 
-            atendimento = partes[1].strip()
-            paciente = partes[2].strip() if len(partes) > 2 else ""
+            # 5 últimas colunas (convênio, prestador, anestesista, tipo, quarto)
+            conv, prest, anest, tipo, quarto = map(clean, tail(cols, 5))
 
-            procedimento = partes[10].strip() if len(partes) > 10 else ""
-            convenio = partes[11].strip() if len(partes) > 11 else ""
-            profissional = partes[12].strip() if len(partes) > 12 else ""
+            # cirurgia = 6ª coluna a partir do fim
+            procedimento = clean(tail(cols, 6)[0])
 
-            if procedimento:
-                registros.append({
-                    "atendimento": atendimento,
-                    "paciente": paciente,
-                    "data": data_atual,
+            # horas
+            hora_ini = clean(tail(cols, 8)[2])   # posição -8
+            hora_fim = clean(tail(cols, 7)[1])   # posição -7
+
+            # aviso
+            aviso = clean(tail(cols, 9)[0])
+
+            # lado esquerdo: atendimento + paciente
+            esquerda = [c.strip() for c in cols]
+            i = 0
+            while i < len(esquerda) and esquerda[i] == "":
+                i += 1
+            atendimento = esquerda[i] if i < len(esquerda) else ""
+            j = i + 1
+            while j < len(esquerda) and esquerda[j] == "":
+                j += 1
+            paciente = esquerda[j] if j < len(esquerda) else ""
+
+            hora_ini_mestre, hora_fim_mestre = hora_ini, hora_fim
+
+            atual = {
+                "data": data_atual or "",
+                "atendimento": atendimento,
+                "paciente": paciente,
+                "hora_ini": hora_ini,
+                "hora_fim": hora_fim,
+                "procedimentos": []
+            }
+
+            atual["procedimentos"].append({
+                "procedimento": procedimento,
+                "convenio": conv,
+                "profissional": prest,
+                "anestesista": anest,
+                "tipo": tipo,
+                "quarto": quarto,
+                "hora_ini": hora_ini,
+                "hora_fim": hora_fim
+            })
+
+            internacoes.append(atual)
+            continue
+
+        # LINHA FILHA (procedimento extra)
+        if re.match(r"^,{10,}", raw):
+            cols = [c for c in raw.split(",")]
+
+            conv, prest, anest, tipo, quarto = map(clean, tail(cols, 5))
+            procedimento = clean(tail(cols, 6)[0])
+
+            if atual:
+                atual["procedimentos"].append({
                     "procedimento": procedimento,
-                    "convenio": convenio,
-                    "profissional": profissional
+                    "convenio": conv,
+                    "profissional": prest,
+                    "anestesista": anest,
+                    "tipo": tipo,
+                    "quarto": quarto,
+                    "hora_ini": hora_ini_mestre,
+                    "hora_fim": hora_fim_mestre
                 })
             continue
 
-        # Linhas filhas (procedimentos extras): começam com 10 vírgulas
-        if original.startswith(",,,,,,,,,,"):
-            partes = original.split(",")
-            procedimento = partes[10].strip() if len(partes) > 10 else ""
-            convenio = partes[11].strip() if len(partes) > 11 else ""
-            profissional = partes[12].strip() if len(partes) > 12 else ""
+        # Totais ignorados
+        if "Total de Avisos" in linha or "Total de Cirurgias" in linha:
+            continue
 
-            if atendimento and procedimento:
-                registros.append({
-                    "atendimento": atendimento,
-                    "paciente": paciente,
-                    "data": data_atual,
-                    "procedimento": procedimento,
-                    "convenio": convenio,
-                    "profissional": profissional
-                })
+        # Demais linhas ignoradas
+        continue
 
+    # FLAT: um registro por procedimento
+    registros = []
+    for it in internacoes:
+        for p in it["procedimentos"]:
+            registros.append({
+                "atendimento": it["atendimento"],
+                "paciente": it["paciente"],
+                "data": it["data"],
+                "procedimento": p["procedimento"],
+                "convenio": p["convenio"],
+                "profissional": p["profissional"],
+                "anestesista": p["anestesista"],
+                "tipo": p["tipo"],
+                "quarto": p["quarto"],
+                "hora_ini": p["hora_ini"],
+                "hora_fim": p["hora_fim"]
+            })
     return registros
 
 
-# =====================================================================
-# BANCO - FUNÇÕES CRUD
-# =====================================================================
+# ============================================================
+# FUNÇÕES DE BANCO
+# ============================================================
+
+def apagar_internacoes(lista_at):
+    if not lista_at:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+
+    qmarks = ",".join(["?"] * len(lista_at))
+
+    # Apaga procedimentos
+    cur.execute(f"""
+        DELETE FROM Procedimentos
+         WHERE internacao_id IN (
+             SELECT id FROM Internacoes
+              WHERE atendimento IN ({qmarks})
+         )
+    """, lista_at)
+
+    # Apaga internações
+    cur.execute(f"DELETE FROM Internacoes WHERE atendimento IN ({qmarks})", lista_at)
+
+    conn.commit()
+    conn.close()
+
+
+def criar_internacao(hospital, atendimento, paciente, data, convenio):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO Internacoes (numero_internacao, hospital, atendimento, paciente, data_internacao, convenio)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (float(atendimento), hospital, atendimento, paciente, data, convenio))
+    conn.commit()
+    nid = cur.lastrowid
+    conn.close()
+    return nid
+
+
+def criar_procedimento(internacao_id, data_proc, profissional, procedimento):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO Procedimentos (internacao_id, data_procedimento, profissional, procedimento)
+        VALUES (?, ?, ?, ?)
+    """, (internacao_id, data_proc, profissional, procedimento))
+    conn.commit()
+    conn.close()
+
+
 def get_internacao_by_atendimento(att):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM Internacoes WHERE atendimento = ?", (att,))
-    row = cur.fetchone()
+    df = pd.read_sql_query("SELECT * FROM Internacoes WHERE atendimento = ?", conn, params=(att,))
     conn.close()
-    return row
+    return df
 
-def criar_internacao(numero_internacao, hospital, atendimento, paciente, data_internacao, convenio):
+
+def get_procedimentos(internacao_id):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO Internacoes
-        (numero_internacao, hospital, atendimento, paciente, data_internacao, convenio)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (numero_internacao, hospital, atendimento, paciente, data_internacao, convenio))
-    conn.commit()
-    new_id = cur.lastrowid
+    df = pd.read_sql_query("SELECT * FROM Procedimentos WHERE internacao_id = ?", conn, params=(internacao_id,))
     conn.close()
-    return new_id
-
-def criar_procedimento(internacao_id, data_procedimento, profissional, procedimento):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO Procedimentos
-        (internacao_id, data_procedimento, profissional, procedimento)
-        VALUES (?, ?, ?, ?)
-    """, (internacao_id, data_procedimento, profissional, procedimento))
-    conn.commit()
-    conn.close()
+    return df
 
 
-# =====================================================================
-# BOOTSTRAP DO BANCO
-# =====================================================================
+# ============================================================
+# INICIALIZAÇÃO
+# ============================================================
+
 create_tables()
-seed_hospitais()  # garante hospitais iniciais
+seed_hospitais()
+
+st.set_page_config("Gestão de Internações", layout="wide")
+st.title("🏥 Sistema de Internações — Versão Final")
 
 
-# =====================================================================
-# APP - UI
-# =====================================================================
-st.set_page_config(page_title="Gestão de Internações", layout="wide")
-st.title("🏥 Sistema de Importação e Consulta Hospitalar")
+# ============================================================
+# INTERFACE EM ABAS
+# ============================================================
 
 tabs = st.tabs([
     "📤 Importar Arquivo",
@@ -217,81 +316,88 @@ tabs = st.tabs([
 ])
 
 
-# ---------------------------------------------------------------------
-# 📤 ABA 1 — IMPORTAR (apenas hospitais pré-definidos; sem entrada manual)
-# ---------------------------------------------------------------------
-with tabs[0]:
-    st.header("📤 Importar arquivo CSV")
+# ============================================================
+# 📤 ABA 1 — IMPORTAR COM DRY RUN
+# ============================================================
 
-    hospitais = get_hospitais_ativos()
-    if not hospitais:
-        st.error("Nenhum hospital ativo no catálogo. Verifique a tabela Hospitals.")
-    else:
-        hospital = st.selectbox("Selecione o hospital:", hospitais, index=0)
+with tabs[0]:
+    st.header("📤 Importar arquivo")
+
+    hospitais = get_hospitais()
+    hospital = st.selectbox("Hospital:", hospitais)
 
     arquivo = st.file_uploader("Selecione o arquivo CSV")
 
-    if arquivo and hospitais:
-        registros = parse_csv(arquivo)
-        st.success(f"{len(registros)} itens interpretados no arquivo!")
+    if arquivo:
+        csv_text = arquivo.getvalue().decode("latin1", errors="ignore")
+        registros = parse_csv_text(csv_text)
 
-        with st.spinner("Gravando no banco..."):
+        st.success(f"{len(registros)} registros interpretados!")
+
+        df_preview = pd.DataFrame(registros)
+        st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
+        st.dataframe(df_preview)
+
+        lista_at = sorted(set(df_preview["atendimento"].tolist()))
+
+        st.info(f"O sistema reprocessará {len(lista_at)} atendimentos.")
+
+        if st.button("Gravar no banco"):
+            apagar_internacoes(lista_at)
+
+            # Agrupar por atendimento
+            agrupado = {}
             for r in registros:
-                atendimento = r["atendimento"]
-                paciente = r["paciente"]
-                data = r["data"]
-                proc = r["procedimento"]
-                prof = r["profissional"]
-                conv = r["convenio"]
+                att = r["atendimento"]
+                if att not in agrupado:
+                    agrupado[att] = {
+                        "paciente": r["paciente"],
+                        "data": r["data"],
+                        "procedimentos": []
+                    }
+                agrupado[att]["procedimentos"].append(r)
 
-                existente = get_internacao_by_atendimento(atendimento)
+            # Inserção
+            for att, info in agrupado.items():
+                paciente = info["paciente"]
+                data = info["data"]
+                conv_total = info["procedimentos"][0]["convenio"]
 
-                if not existente:
-                    internacao_id = criar_internacao(
-                        float(atendimento),
-                        hospital,
-                        atendimento,
-                        paciente,
-                        data,
-                        conv
-                    )
-                else:
-                    internacao_id = existente[0]  # id da internação existente
-
-                criar_procedimento(
-                    internacao_id,
+                internacao_id = criar_internacao(
+                    hospital,
+                    att,
+                    paciente,
                     data,
-                    prof,
-                    proc
+                    conv_total
                 )
 
-        st.success("Importação concluída com sucesso! 🎉")
+                for p in info["procedimentos"]:
+                    criar_procedimento(
+                        internacao_id,
+                        p["data"],
+                        p["profissional"],
+                        p["procedimento"]
+                    )
+
+            st.success("Importação concluída com sucesso!")
 
 
-# ---------------------------------------------------------------------
-# 🔍 ABA 2 — CONSULTAR INTERNAÇÃO (com filtro por hospital)
-# ---------------------------------------------------------------------
+# ============================================================
+# 🔍 ABA 2 — CONSULTAR
+# ============================================================
+
 with tabs[1]:
     st.header("🔍 Consultar Internação")
 
-    hospitais = ["Todos"] + get_hospitais_ativos()
-    filtro_hosp = st.selectbox("Filtrar por hospital:", hospitais, index=0)
+    hlist = ["Todos"] + get_hospitais()
+    filtro_hosp = st.selectbox("Filtrar hospital:", hlist)
 
-    codigo = st.text_input("Digite o número do atendimento:")
+    codigo = st.text_input("Digite o atendimento:")
 
     if codigo:
-        conn = get_conn()
-
-        if filtro_hosp == "Todos":
-            df_int = pd.read_sql_query(
-                "SELECT * FROM Internacoes WHERE atendimento = ?",
-                conn, params=(codigo,)
-            )
-        else:
-            df_int = pd.read_sql_query(
-                "SELECT * FROM Internacoes WHERE atendimento = ? AND hospital = ?",
-                conn, params=(codigo, filtro_hosp)
-            )
+        df_int = get_internacao_by_atendimento(codigo)
+        if filtro_hosp != "Todos":
+            df_int = df_int[df_int["hospital"] == filtro_hosp]
 
         if df_int.empty:
             st.warning("Nenhuma internação encontrada.")
@@ -299,98 +405,96 @@ with tabs[1]:
             st.subheader("Dados da internação")
             st.dataframe(df_int)
 
-            internacao_id = int(df_int["id"].iloc[0])
-            df_proc = pd.read_sql_query(
-                "SELECT * FROM Procedimentos WHERE internacao_id = ?",
-                conn, params=(internacao_id,)
-            )
+            internacao_id = df_int["id"].iloc[0]
+            df_proc = get_procedimentos(internacao_id)
 
             st.subheader("Procedimentos registrados")
             st.dataframe(df_proc)
 
-        conn.close()
 
+# ============================================================
+# 📋 ABA 3 — LISTA PROCEDIMENTOS
+# ============================================================
 
-# ---------------------------------------------------------------------
-# 📋 ABA 3 — LISTA DE PROCEDIMENTOS (com filtro por hospital)
-# ---------------------------------------------------------------------
 with tabs[2]:
-    st.header("📋 Lista de Procedimentos")
+    st.header("📋 Todos os procedimentos")
 
-    hospitais = ["Todos"] + get_hospitais_ativos()
-    filtro_hosp = st.selectbox("Filtrar por hospital:", hospitais, index=0, key="proc_hosp")
+    filtro = ["Todos"] + get_hospitais()
+    chosen = st.selectbox("Hospital:", filtro)
 
-    if st.button("Carregar lista"):
+    if st.button("Carregar procedimentos"):
         conn = get_conn()
-
-        base_sql = """
-            SELECT P.id, I.hospital, I.atendimento, I.paciente, P.data_procedimento,
-                   P.profissional, P.procedimento, I.convenio
+        base = """
+            SELECT P.id, I.hospital, I.atendimento, I.paciente,
+                   P.data_procedimento, P.profissional, P.procedimento
             FROM Procedimentos P
             INNER JOIN Internacoes I ON I.id = P.internacao_id
         """
-        if filtro_hosp == "Todos":
-            sql = base_sql + " ORDER BY P.data_procedimento DESC"
+
+        if chosen == "Todos":
+            sql = base + " ORDER BY P.data_procedimento DESC"
             df = pd.read_sql_query(sql, conn)
         else:
-            sql = base_sql + " WHERE I.hospital = ? ORDER BY P.data_procedimento DESC"
-            df = pd.read_sql_query(sql, conn, params=(filtro_hosp,))
+            sql = base + " WHERE I.hospital = ? ORDER BY P.data_procedimento DESC"
+            df = pd.read_sql_query(sql, conn, params=(chosen,))
 
-        st.dataframe(df)
         conn.close()
+        st.dataframe(df)
 
 
-# ---------------------------------------------------------------------
-# 🧾 ABA 4 — RESUMO POR PROFISSIONAL (com filtro por hospital)
-# ---------------------------------------------------------------------
+# ============================================================
+# 🧾 ABA 4 — RESUMO POR PROFISSIONAL
+# ============================================================
+
 with tabs[3]:
     st.header("🧾 Resumo por Profissional")
 
-    hospitais = ["Todos"] + get_hospitais_ativos()
-    filtro_hosp = st.selectbox("Filtrar por hospital:", hospitais, index=0, key="prof_hosp")
+    filtro = ["Todos"] + get_hospitais()
+    chosen = st.selectbox("Hospital:", filtro, key="prof_h")
 
     conn = get_conn()
-    base_sql = """
-        SELECT P.profissional,
-               COUNT(*) AS total_procedimentos
+    base = """
+        SELECT profissional, COUNT(*) AS total
         FROM Procedimentos P
         INNER JOIN Internacoes I ON I.id = P.internacao_id
-        WHERE P.profissional IS NOT NULL AND P.profissional <> ''
+        WHERE profissional IS NOT NULL AND profissional <> ''
     """
-    if filtro_hosp == "Todos":
-        sql = base_sql + " GROUP BY P.profissional ORDER BY total_procedimentos DESC"
+
+    if chosen == "Todos":
+        sql = base + " GROUP BY profissional ORDER BY total DESC"
         df = pd.read_sql_query(sql, conn)
     else:
-        sql = base_sql + " AND I.hospital = ? GROUP BY P.profissional ORDER BY total_procedimentos DESC"
-        df = pd.read_sql_query(sql, conn, params=(filtro_hosp,))
+        sql = base + " AND I.hospital = ? GROUP BY profissional ORDER BY total DESC"
+        df = pd.read_sql_query(sql, conn, params=(chosen,))
     conn.close()
 
     st.dataframe(df)
 
 
-# ---------------------------------------------------------------------
-# 💸 ABA 5 — RESUMO POR CONVÊNIO (com filtro por hospital)
-# ---------------------------------------------------------------------
+# ============================================================
+# 💸 ABA 5 — RESUMO POR CONVÊNIO
+# ============================================================
+
 with tabs[4]:
     st.header("💸 Resumo por Convênio")
 
-    hospitais = ["Todos"] + get_hospitais_ativos()
-    filtro_hosp = st.selectbox("Filtrar por hospital:", hospitais, index=0, key="conv_hosp")
+    filtro = ["Todos"] + get_hospitais()
+    chosen = st.selectbox("Hospital:", filtro, key="conv_h")
 
     conn = get_conn()
-    base_sql = """
-        SELECT I.convenio,
-               COUNT(*) AS total_procedimentos
+    base = """
+        SELECT I.convenio, COUNT(*) AS total
         FROM Internacoes I
         INNER JOIN Procedimentos P ON P.internacao_id = I.id
         WHERE I.convenio IS NOT NULL AND I.convenio <> ''
     """
-    if filtro_hosp == "Todos":
-        sql = base_sql + " GROUP BY I.convenio ORDER BY total_procedimentos DESC"
+
+    if chosen == "Todos":
+        sql = base + " GROUP BY I.convenio ORDER BY total DESC"
         df = pd.read_sql_query(sql, conn)
     else:
-        sql = base_sql + " AND I.hospital = ? GROUP BY I.convenio ORDER BY total_procedimentos DESC"
-        df = pd.read_sql_query(sql, conn, params=(filtro_hosp,))
+        sql = base + " AND I.hospital = ? GROUP BY I.convenio ORDER BY total DESC"
+        df = pd.read_sql_query(sql, conn, params=(chosen,))
     conn.close()
 
     st.dataframe(df)
