@@ -1,143 +1,113 @@
 
-import re
+def parse_tiss_original(csv_text):
+    import re
 
-def _tail(cols, n):
-    """Retorna as n últimas colunas (com padding à esquerda se faltar), sem perder vazios do meio."""
-    pad = [""] * max(0, n - len(cols))
-    return (pad + cols)[-n:]
+    linhas = csv_text.splitlines()
+    registros = []
 
-def _clean(s):
-    return s.strip().strip('"').strip()
+    data_atual = ""
+    atual_atendimento = None
+    atual_paciente = None
+    atual_hora_ini = None
+    atual_hora_fim = None
 
-def parse_csv_text(csv_text: str):
-    """
-    Lê o relatório 'CSV-like' real e devolve uma lista de dicts normalizados:
-    atendimento, paciente, data, procedimento, convenio, profissional, anestesista, tipo, quarto, hora_ini, hora_fim
-    """
-    internacoes = []
-    data_atual = None
-    atual = None  # último bloco (internação) ativo
-    hora_ini_mestre = ""
-    hora_fim_mestre = ""
+    # detecta linhas-mestre
+    regex_mestre = re.compile(r"^,\s*\d{7,12},")
+    # detecta filhas
+    regex_filha = re.compile(r"^,{10,}")
 
-    for raw in csv_text.splitlines():
-        linha = raw.replace("\x00", "").rstrip("\n")
-        if not linha or linha.strip() == "":
-            continue
+    for raw in linhas:
+        ln = raw.replace("\x00","").rstrip("\n")
 
-        # 0) Data do bloco
-        if "Data de Realização" in linha:
-            partes = [p.strip() for p in linha.split(",")]
+        # detector de data
+        if "Data de Realização" in ln:
+            partes = ln.split(",")
             for p in partes:
-                if re.fullmatch(r"\d{2}/\d{2}/\d{4}", p):
-                    data_atual = p
+                if re.fullmatch(r"\d{2}/\d{2}/\d{4}", p.strip()):
+                    data_atual = p.strip()
             continue
 
-        # 1) Linha-mestre: começa com vírgula + atendimento numérico
-        if re.match(r"^,\s*\d{7,12},", raw):
-            cols = [c for c in raw.split(",")]  # preserva vazios intermediários
+        # ignorar cabeçalhos internos
+        if (
+            "Hora" in ln and "Início" in ln
+            or ln.startswith("Atendimento")
+            or "Convênio" in ln and "Prestador" in ln
+            or "Centro Cirurgico" in ln
+            or "Total" in ln
+        ):
+            continue
 
-            # Lado direito (sempre ancorado)
-            quarto, tipo, anest, prest, conv = map(_clean, _tail(cols, 1+2+3+4+5)[:5][::-1])  # vamos re-mapear já já
-            # O _tail acima não está na ordem; para ficar explícito:
-            # Pegue as 5 últimas de uma vez, na ordem correta:
-            conv, prest, anest, tipo, quarto = map(_clean, _tail(cols, 5))
+        # =============================
+        # LINHA MESTRE
+        # =============================
+        if regex_mestre.match(ln):
+            cols = [c.strip() for c in ln.split(",")]
 
-            # Cirurgia é a 6ª a partir do fim
-            procedimento = _clean(_tail(cols, 6)[0])
+            # atendimento
+            atendimento = cols[1]
 
-            # Horas (8 e 7 a partir do fim)
-            hora_ini = _clean(_tail(cols, 8)[2])  # posição -8
-            hora_fim = _clean(_tail(cols, 7)[1])  # posição -7
+            # paciente (pode estar vazio)
+            paciente = cols[2] if cols[2] else ""
 
-            # Aviso (9 a partir do fim)
-            aviso = _clean(_tail(cols, 9)[0])
+            # aviso = cols[7] mas não utilizamos no sistema
+            hora_ini = cols[8]
+            hora_fim = cols[9]
 
-            # Do lado esquerdo: primeiro não-vazio é atendimento; o próximo não-vazio é paciente (se houver)
-            # (há um vazio inicial por causa da vírgula inicial)
-            esquerda = [c.strip() for c in cols]
-            # ignore leading empties
-            i = 0
-            while i < len(esquerda) and esquerda[i] == "":
-                i += 1
-            atendimento = esquerda[i] if i < len(esquerda) else ""
-            # próximo não-vazio (pode não existir)
-            j = i + 1
-            while j < len(esquerda) and esquerda[j] == "":
-                j += 1
-            paciente = esquerda[j] if j < len(esquerda) else ""
+            # procedimento mestre
+            procedimento = cols[10]
 
-            # guarda horas da linha-mestre para usar nas filhas
-            hora_ini_mestre, hora_fim_mestre = hora_ini, hora_fim
+            convenio   = cols[11]
+            prestador  = cols[12]
+            anest      = cols[13]
+            tipo       = cols[14]
+            quarto     = cols[15]
 
-            # inicia nova internação
-            atual = {
-                "data": data_atual or "",
+            atual_atendimento = atendimento
+            atual_paciente    = paciente
+            atual_hora_ini    = hora_ini
+            atual_hora_fim    = hora_fim
+
+            registros.append({
                 "atendimento": atendimento,
                 "paciente": paciente,
+                "data": data_atual,
+                "procedimento": procedimento,
+                "convenio": convenio,
+                "profissional": prestador,
+                "anestesista": anest,
+                "tipo": tipo,
+                "quarto": quarto,
                 "hora_ini": hora_ini,
-                "hora_fim": hora_fim,
-                "procedimentos": []
-            }
-            # primeiro procedimento
-            if procedimento or conv or prest or anest or tipo or quarto:
-                atual["procedimentos"].append({
-                    "procedimento": procedimento,
-                    "convenio": conv,
-                    "profissional": prest,       # prestador = cirurgião/equipe
-                    "anestesista": anest,
-                    "tipo": tipo,
-                    "quarto": quarto,
-                    "hora_ini": hora_ini,
-                    "hora_fim": hora_fim
-                })
-
-            internacoes.append(atual)
-            continue
-
-        # 2) Linhas-filhas: começam com >=10 vírgulas
-        if re.match(r"^,{10,}", raw):
-            cols = [c for c in raw.split(",")]
-
-            conv, prest, anest, tipo, quarto = map(_clean, _tail(cols, 5))
-            procedimento = _clean(_tail(cols, 6)[0])
-
-            if atual:  # herda hora da mestre
-                atual["procedimentos"].append({
-                    "procedimento": procedimento,
-                    "convenio": conv,
-                    "profissional": prest,
-                    "anestesista": anest,
-                    "tipo": tipo,
-                    "quarto": quarto,
-                    "hora_ini": hora_ini_mestre,
-                    "hora_fim": hora_fim_mestre
-                })
-            continue
-
-        # 3) Totais: ignorar
-        if "Total de Avisos" in linha or "Total de Cirurgias" in linha:
-            continue
-
-        # 4) Demais linhas: ignorar silenciosamente (cabeçalhos intermediários etc.)
-        continue
-
-    # Expande em registros "flat" (um por procedimento)
-    registros = []
-    for it in internacoes:
-        for p in it["procedimentos"]:
-            registros.append({
-                "atendimento": it["atendimento"],
-                "paciente": it["paciente"],
-                "data": it["data"],
-                "procedimento": p["procedimento"],
-                "convenio": p["convenio"],
-                "profissional": p["profissional"],
-                "anestesista": p["anestesista"],
-                "tipo": p["tipo"],
-                "quarto": p["quarto"],
-                "hora_ini": p["hora_ini"],
-                "hora_fim": p["hora_fim"]
+                "hora_fim": hora_fim
             })
-    return registros
+            continue
 
+        # =============================
+        # LINHA-FILHA (procedimentos adicionais)
+        # =============================
+        if regex_filha.match(ln):
+            cols = [c.strip() for c in ln.split(",")]
+
+            procedimento = cols[10]
+            convenio   = cols[11]
+            prestador  = cols[12]
+            anest      = cols[13]
+            tipo       = cols[14]
+            quarto     = cols[15]
+
+            registros.append({
+                "atendimento": atual_atendimento,
+                "paciente": atual_paciente,
+                "data": data_atual,
+                "procedimento": procedimento,
+                "convenio": convenio,
+                "profissional": prestador,
+                "anestesista": anest,
+                "tipo": tipo,
+                "quarto": quarto,
+                "hora_ini": atual_hora_ini,
+                "hora_fim": atual_hora_fim
+            })
+            continue
+
+    return registros
