@@ -546,13 +546,27 @@ def _to_ddmmyyyy(value):
     except Exception:
         return str(value)
 
-def _to_float_or_none(v):
-    if v is None or v == "": return None
+
+ef _to_float_or_none(v):
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+
+    # Caso raro: usuário digitou texto no CSV
+    s = str(v).strip()
+    if "," in s and "." in s:
+        # formato brasileiro tipo 1.234,56
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s and "." not in s:
+        # formato 92,00
+        s = s.replace(",", ".")
+
     try:
-        return float(str(v).replace(".", "").replace(",", "."))
-    except Exception:
-        try: return float(v)
-        except Exception: return None
+        return float(s)
+    except:
+        return None
+
 
 def _format_currency_br(v) -> str:
     if v is None or (isinstance(v, float) and pd.isna(v)): return "R$ 0,00"
@@ -718,6 +732,26 @@ def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_a
     """, (data_quitacao, guia_amhptiss, valor_amhptiss, guia_complemento, valor_complemento, quitacao_observacao, proc_id))
     conn.commit(); conn.close()
     mark_db_dirty()
+
+
+def reverter_quitacao(proc_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE Procedimentos
+           SET quitacao_data = NULL,
+               quitacao_guia_amhptiss = NULL,
+               quitacao_valor_amhptiss = NULL,
+               quitacao_guia_complemento = NULL,
+               quitacao_valor_complemento = NULL,
+               quitacao_observacao = NULL,
+               situacao = 'Enviado para pagamento'
+         WHERE id = ?
+    """, (proc_id,))
+    conn.commit()
+    conn.close()
+    mark_db_dirty()
+
 
 def get_internacao_by_atendimento(att):
     conn = get_conn()
@@ -1189,9 +1223,31 @@ with tabs[1]:
                         st.markdown("**Observações da quitação:**")
                         st.write(q["quitacao_observacao"] or "-")
 
-                        if st.button("Fechar", key="fechar_quit"):
-                            st.session_state["show_quit_id"] = None
-                            st.rerun()
+                        
+                        # ============================================
+                        # BOTÕES — FECHAR e REVERTER QUITAÇÃO
+                        # ============================================
+                        
+                        cbot1, cbot2 = st.columns(2)
+                        
+                        with cbot1:
+                            if st.button("Fechar", key="fechar_quit"):
+                                st.session_state["show_quit_id"] = None
+                                st.rerun()
+                        
+                        with cbot2:
+                            if st.button("↩️ Reverter quitação", key=f"rev_{pid}", type="secondary"):
+                                reverter_quitacao(pid)
+                                st.toast(
+                                    "Quitação revertida. Status voltou para 'Enviado para pagamento'.",
+                                    icon="↩️"
+                                )
+                                maybe_sync_up_db("chore(db): revertido quitação")
+                                st.session_state["show_quit_id"] = None
+                                st.rerun()
+
+
+
 
 # ============================================================
 # 📑 3) RELATÓRIOS (PDF)
