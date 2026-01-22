@@ -1,2 +1,5 @@
 streamlit
 pandas
+reportlab==3.6.13
+pypdf2
+openpyxl
