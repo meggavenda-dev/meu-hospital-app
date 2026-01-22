@@ -1,19 +1,23 @@
 
 # ============================================================
 #  SISTEMA DE INTERNAÇÕES — VERSÃO FINAL
-#  Inclui:
+# ============================================================
 #  - Parser robusto
 #  - Dry-run antes de gravar
 #  - 1 procedimento AUTOMÁTICO por (internação, data)
 #  - Lançamento manual (permite >1 no mesmo dia)
 #  - Edição de procedimento (tipo/situação/observações/grau participação)
 #  - Filtros por hospital + Seeds
-#  - Relatórios (PDF) — Cirurgias por Status (paisagem, ordem: Atendimento, Aviso, Convênio, Paciente, Data, Profissional, Hospital)
-#  - Quitação de Cirurgias (com atualização automática para "Finalizado" + observações)
+#  - Relatórios (PDF, paisagem)
+#    * Cirurgias por Status
+#    * Quitações (com profissional) — ordem:
+#      Convênio, Paciente, Profissional, Data, Atendimento, Guia AMHP,
+#      Guia Complemento, Valor AMHP, Valor Complemento, Data da quitação
+#  - Quitação de Cirurgias (com observações; move p/ Finalizado)
 #  - Ver quitação em cirurgias Finalizadas (botão)
-#  - ⚙️ Sistema: agrega Procedimentos, Resumo por Profissional e por Convênio
+#  - ⚙️ Sistema: agrega listas e resumos
 #  - Importação: seleção de médicos (todos / multiseleção) + cadastro de internação manual
-#  - ATUALIZAÇÃO: removido "Cadastrar internação manualmente" da aba 🔍 Consultar Internação
+#  - REMOVIDO: "Cadastrar internação" da aba 🔍 Consultar Internação
 # ============================================================
 
 import streamlit as st
@@ -351,7 +355,7 @@ tabs = st.tabs([
 with tabs[0]:
     st.header("📤 Importar arquivo")
 
-    # Cadastro de internação manual (permanece na aba Importar)
+    # Cadastro de internação manual (somente aqui)
     st.subheader("➕ Cadastrar internação manualmente (na importação)")
     cmi1, cmi2, cmi3, cmi4, cmi5 = st.columns(5)
     with cmi1: hosp_new = st.selectbox("Hospital", get_hospitais(), key="imp_new_int_hosp")
@@ -661,6 +665,7 @@ with tabs[1]:
 # 📑 ABA 3 — RELATÓRIOS (PDF)
 # ============================================================
 
+# --- PDF: Cirurgias por Status (paisagem) ---
 if REPORTLAB_OK:
     def _pdf_cirurgias_por_status(df, filtros):
         buf = io.BytesIO()
@@ -708,8 +713,71 @@ else:
     def _pdf_cirurgias_por_status(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado. Adicione 'reportlab' ao requirements.txt.")
 
+# --- PDF: Quitações (paisagem, com PROFISSIONAL) ---
+if REPORTLAB_OK:
+    def _pdf_quitacoes(df, filtros):
+        """
+        Colunas (ordem):
+        Convênio, Paciente, Profissional, Data, Atendimento,
+        Guia AMHP, Guia Complemento, Valor AMHP, Valor Complemento, Data da quitação
+        """
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buf, pagesize=landscape(A4),
+            leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
+        )
+        styles = getSampleStyleSheet()
+        H1 = styles["Heading1"]; N = styles["BodyText"]
+
+        elems = []
+        elems.append(Paragraph("Relatório — Quitações", H1))
+        filtros_txt = (f"Período da quitação: {filtros['ini']} a {filtros['fim']}  |  "
+                       f"Hospital: {filtros['hospital']}")
+        elems.append(Paragraph(filtros_txt, N)); elems.append(Spacer(1, 8))
+
+        header = [
+            "Convênio", "Paciente", "Profissional", "Data", "Atendimento",
+            "Guia AMHP", "Guia Complemento",
+            "Valor AMHP", "Valor Complemento", "Data da quitação"
+        ]
+        data_rows = []
+        for _, r in df.iterrows():
+            data_rows.append([
+                r.get("convenio") or "",
+                r.get("paciente") or "",
+                r.get("profissional") or "",
+                r.get("data_procedimento") or "",
+                r.get("atendimento") or "",
+                r.get("quitacao_guia_amhptiss") or "",
+                r.get("quitacao_guia_complemento") or "",
+                _format_currency_br(r.get("quitacao_valor_amhptiss")),
+                _format_currency_br(r.get("quitacao_valor_complemento")),
+                r.get("quitacao_data") or "",
+            ])
+
+        table = Table([header] + data_rows, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
+            ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE", (0,0), (-1,0), 10),
+            ("ALIGN", (0,0), (-1,0), "CENTER"),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
+        ]))
+        elems.append(table)
+
+        doc.build(elems)
+        pdf_bytes = buf.getvalue(); buf.close()
+        return pdf_bytes
+else:
+    def _pdf_quitacoes(*args, **kwargs):
+        raise RuntimeError("ReportLab não está instalado. Adicione 'reportlab' ao requirements.txt.")
+
 with tabs[2]:
     st.header("📑 Relatórios — Central")
+
+    # --------- 1) Cirurgias por Status (PDF) ----------
     st.subheader("1) Cirurgias por Status (PDF)")
     hosp_opts = ["Todos"] + get_hospitais()
     colf1, colf2, colf3 = st.columns(3)
@@ -769,6 +837,108 @@ with tabs[2]:
             st.success(f"Relatório gerado com {len(df_rel)} registro(s).")
             st.download_button(label="⬇️ Baixar PDF", data=pdf_bytes, file_name=fname,
                                mime="application/pdf", use_container_width=True)
+
+    st.divider()
+
+    # --------- 2) Quitações (PDF, paisagem, com Profissional) ----------
+    st.subheader("2) Quitações (PDF)")
+
+    # Filtros
+    hosp_opts_q = ["Todos"] + get_hospitais()
+    colq1, colq2 = st.columns(2)
+    with colq1:
+        hosp_sel_q = st.selectbox("Hospital", hosp_opts_q, index=0, key="rel_q_hosp")
+    with colq2:
+        hoje = date.today()
+        ini_default_q = hoje.replace(day=1)
+        dt_ini_q = st.date_input("Data inicial da quitação", value=ini_default_q, key="rel_q_ini")
+        dt_fim_q = st.date_input("Data final da quitação", value=hoje, key="rel_q_fim")
+
+    # Base de quitações (com PROFISSIONAL)
+    conn = get_conn()
+    sql_quit = """
+        SELECT 
+            I.hospital, I.atendimento, I.paciente, I.convenio,
+            P.data_procedimento, P.profissional,
+            P.quitacao_data, P.quitacao_guia_amhptiss, P.quitacao_guia_complemento,
+            P.quitacao_valor_amhptiss, P.quitacao_valor_complemento
+        FROM Procedimentos P
+        INNER JOIN Internacoes I ON I.id = P.internacao_id
+        WHERE P.procedimento = 'Cirurgia / Procedimento'
+          AND P.quitacao_data IS NOT NULL
+          AND TRIM(P.quitacao_data) <> ''
+    """
+    df_quit = pd.read_sql_query(sql_quit, conn)
+    conn.close()
+
+    # Filtragem por Data da quitação + hospital
+    if not df_quit.empty:
+        df_quit["_quit_dt"] = df_quit["quitacao_data"].apply(_pt_date_to_dt)
+        mask_q = (df_quit["_quit_dt"].notna()) & (df_quit["_quit_dt"] >= dt_ini_q) & (df_quit["_quit_dt"] <= dt_fim_q)
+        df_quit = df_quit[mask_q].copy()
+
+        if hosp_sel_q != "Todos":
+            df_quit = df_quit[df_quit["hospital"] == hosp_sel_q]
+
+        # Ordena por data da quitação, convênio, paciente
+        df_quit = df_quit.sort_values(by=["_quit_dt", "convenio", "paciente"])
+
+        # Normaliza datas para exibição
+        df_quit["data_procedimento"] = df_quit["data_procedimento"].apply(
+            lambda s: _pt_date_to_dt(s).strftime("%d/%m/%Y") if pd.notna(_pt_date_to_dt(s)) else (s or "")
+        )
+        df_quit["quitacao_data"] = df_quit["_quit_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
+        df_quit = df_quit.drop(columns=["_quit_dt"])
+
+        # Reordena colunas conforme pedido (inclui PROFISSIONAL)
+        cols_pdf = [
+            "convenio", "paciente", "profissional", "data_procedimento", "atendimento",
+            "quitacao_guia_amhptiss", "quitacao_guia_complemento",
+            "quitacao_valor_amhptiss", "quitacao_valor_complemento",
+            "quitacao_data"
+        ]
+        for c in cols_pdf:
+            if c not in df_quit.columns:
+                df_quit[c] = ""
+        df_quit = df_quit[cols_pdf]
+
+    # Ações (PDF + CSV)
+    colqb1, colqb2 = st.columns(2)
+    with colqb1:
+        gerar_pdf_q = st.button("Gerar PDF (Quitações)")
+    with colqb2:
+        if not df_quit.empty:
+            csv_quit = df_quit.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "⬇️ Baixar CSV (Quitações)",
+                data=csv_quit,
+                file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+            )
+
+    if gerar_pdf_q:
+        if df_quit.empty:
+            st.warning("Nenhum registro de quitação encontrado para os filtros informados.")
+        else:
+            if not REPORTLAB_OK:
+                st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
+            else:
+                filtros_q = {
+                    "ini": dt_ini_q.strftime("%d/%m/%Y"),
+                    "fim": dt_fim_q.strftime("%d/%m/%Y"),
+                    "hospital": hosp_sel_q,
+                }
+                pdf_bytes_q = _pdf_quitacoes(df_quit, filtros_q)
+                ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
+                fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
+                st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
+                st.download_button(
+                    label="⬇️ Baixar PDF (Quitações)",
+                    data=pdf_bytes_q,
+                    file_name=fname_q,
+                    mime="application/pdf",
+                    use_container_width=True
+                )
 
 # ============================================================
 # 💼 ABA 4 — QUITAÇÃO (com observações)
