@@ -35,6 +35,7 @@ except ModuleNotFoundError:
     REPORTLAB_OK = False
 
 # Parser (seu módulo)
+#  -> mantenha o arquivo parser.py no projeto com parse_tiss_original(csv_text) definido.
 from parser import parse_tiss_original
 
 # Domínio
@@ -150,9 +151,13 @@ def maybe_sync_up_db(commit_msg="chore(db): update dados.db"):
     if not st.session_state.get("db_dirty"):
         return
     # Compactar para reduzir tamanho (sem conexões abertas)
-    conn = sqlite3.connect(LOCAL_DB_FILE)
-    conn.execute("VACUUM")
-    conn.close()
+    try:
+        conn = sqlite3.connect(LOCAL_DB_FILE)
+        conn.execute("VACUUM")
+        conn.close()
+    except Exception:
+        # Se estiver travado, seguimos sem VACUUM
+        pass
     with open(LOCAL_DB_FILE, "rb") as f:
         content_bytes = f.read()
     _gh_put_db(content_bytes, commit_msg, st.session_state.get("db_sha"))
@@ -217,6 +222,7 @@ def create_tables():
     );
     """)
 
+    # Migrações leves (idempotentes)
     for alter in [
         "ALTER TABLE Procedimentos ADD COLUMN situacao TEXT NOT NULL DEFAULT 'Pendente';",
         "ALTER TABLE Procedimentos ADD COLUMN observacao TEXT;",
@@ -235,6 +241,7 @@ def create_tables():
         except sqlite3.OperationalError:
             pass
 
+    # Índice único parcial: 1 automático por (internação, data)
     cur.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS ux_proc_auto
       ON Procedimentos(internacao_id, data_procedimento)
@@ -259,6 +266,22 @@ def seed_hospitais():
 # ============================================================
 # UTIL
 # ============================================================
+
+def get_hospitais(include_inactive: bool = False) -> list:
+    """Retorna nomes de hospitais. Por padrão, apenas ativos."""
+    conn = get_conn()
+    try:
+        if include_inactive:
+            df = pd.read_sql_query(
+                "SELECT name FROM Hospitals ORDER BY active DESC, name", conn
+            )
+        else:
+            df = pd.read_sql_query(
+                "SELECT name FROM Hospitals WHERE active = 1 ORDER BY name", conn
+            )
+        return df["name"].tolist()
+    finally:
+        conn.close()
 
 def _pt_date_to_dt(s):
     try:
@@ -291,8 +314,7 @@ def _to_float_or_none(v):
 def _format_currency_br(v) -> str:
     if v is None or (isinstance(v, float) and pd.isna(v)): return "R$ 0,00"
     try:
-        v = float(v); s = f"{v:,.2f}"
-        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        v = float(v); s = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         return f"R$ {s}"
     except Exception:
         return f"R$ {v}"
