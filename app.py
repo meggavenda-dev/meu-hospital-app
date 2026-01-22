@@ -12,7 +12,7 @@
 #  - Quitação de Cirurgias (com atualização automática para "Finalizado")
 #  - Ver quitação em cirurgias Finalizadas (botão)
 #  - ⚙️ Sistema: agrega Procedimentos, Resumo por Profissional e por Convênio
-#  - NOVO: Grau de participação + Excluir internação + Excluir cirurgia + Cadastrar internação manualmente
+#  - Importação: seleção de médicos (todos / multiseleção) + cadastro de internação manual
 # ============================================================
 
 import streamlit as st
@@ -45,6 +45,9 @@ STATUS_OPCOES = [
 ]
 PROCEDIMENTO_OPCOES = ["Cirurgia / Procedimento", "Parecer"]
 GRAU_PARTICIPACAO_OPCOES = ["Cirurgião", "1 Auxiliar", "2 Auxiliar", "3 Auxiliar", "Clínico"]
+
+# Médicos que devem estar sempre marcados na importação
+ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MATOS"}
 
 # ============================================================
 # BANCO
@@ -99,7 +102,7 @@ def create_tables():
         observacao TEXT,
         is_manual INTEGER NOT NULL DEFAULT 0,  -- 0=automático(import), 1=manual
         aviso TEXT,
-        grau_participacao TEXT,                -- NOVO
+        grau_participacao TEXT,
         -- Campos de quitação
         quitacao_data TEXT,
         quitacao_guia_amhptiss TEXT,
@@ -223,123 +226,10 @@ def _format_currency_br(v) -> str:
     try:
         v = float(v)
         s = f"{v:,.2f}"
-        # USA -> BR: separador milhar ponto, decimal vírgula
         s = s.replace(",", "X").replace(".", ",").replace("X", ".")
         return f"R$ {s}"
     except Exception:
         return f"R$ {v}"
-
-# ============================================================
-# (LEGADO) PARSER AUXILIAR — mantido para referência (NÃO USADO)
-# ============================================================
-
-def parse_csv_text(csv_text):
-    internacoes = []
-    data_atual = None
-    atual = None
-    hora_ini_mestre = ""
-    hora_fim_mestre = ""
-
-    for raw in csv_text.splitlines():
-        linha = raw.replace("\x00", "").rstrip("\n")
-        if not linha or linha.strip() == "":
-            continue
-
-        # DATA DO BLOCO
-        if "Data de Realização" in linha:
-            partes = [p.strip() for p in linha.split(",")]
-            for p in partes:
-                if re.fullmatch(r"\d{2}/\d{2}/\d{4}", p):
-                    data_atual = p
-            continue
-
-        # LINHA MESTRE
-        if re.match(r"^,\s*\d{7,12},", raw):
-            cols = [c for c in raw.split(",")]
-
-            # 5 últimas colunas (convênio, prestador, anestesista, tipo, quarto)
-            conv, prest, anest, tipo, quarto = map(clean, tail(cols, 5))
-            procedimento = clean(tail(cols, 6)[0])
-            hora_ini = clean(tail(cols, 8)[2])
-            hora_fim = clean(tail(cols, 7)[1])
-
-            esquerda = [c.strip() for c in cols]
-            i = 0
-            while i < len(esquerda) and esquerda[i] == "":
-                i += 1
-            atendimento = esquerda[i] if i < len(esquerda) else ""
-            j = i + 1
-            while j < len(esquerda) and esquerda[j] == "":
-                j += 1
-            paciente = esquerda[j] if j < len(esquerda) else ""
-
-            hora_ini_mestre, hora_fim_mestre = hora_ini, hora_fim
-
-            atual = {
-                "data": data_atual or "",
-                "atendimento": atendimento,
-                "paciente": paciente,
-                "hora_ini": hora_ini,
-                "hora_fim": hora_fim,
-                "procedimentos": []
-            }
-
-            atual["procedimentos"].append({
-                "procedimento": procedimento,
-                "convenio": conv,
-                "profissional": prest,
-                "anestesista": anest,
-                "tipo": tipo,
-                "quarto": quarto,
-                "hora_ini": hora_ini,
-                "hora_fim": hora_fim
-            })
-
-            internacoes.append(atual)
-            continue
-
-        # LINHA FILHA
-        if re.match(r"^,{10,}", raw):
-            cols = [c for c in raw.split(",")]
-            conv, prest, anest, tipo, quarto = map(clean, tail(cols, 5))
-            procedimento = clean(tail(cols, 6)[0])
-
-            if atual:
-                atual["procedimentos"].append({
-                    "procedimento": procedimento,
-                    "convenio": conv,
-                    "profissional": prest,
-                    "anestesista": anest,
-                    "tipo": tipo,
-                    "quarto": quarto,
-                    "hora_ini": hora_ini_mestre,
-                    "hora_fim": hora_fim_mestre
-                })
-            continue
-
-        if "Total de Avisos" in linha or "Total de Cirurgias" in linha:
-            continue
-
-        continue
-
-    registros = []
-    for it in internacoes:
-        for p in it["procedimentos"]:
-            registros.append({
-                "atendimento": it["atendimento"],
-                "paciente": it["paciente"],
-                "data": it["data"],
-                "procedimento": p["procedimento"],
-                "convenio": p["convenio"],
-                "profissional": p["profissional"],
-                "anestesista": p["anestesista"],
-                "tipo": p["tipo"],
-                "quarto": p["quarto"],
-                "hora_ini": p["hora_ini"],
-                "hora_fim": p["hora_fim"]
-            })
-    return registros
-
 
 # ============================================================
 # FUNÇÕES DE BANCO
@@ -409,7 +299,6 @@ def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
     conn.commit()
     conn.close()
 
-# Import automático só verifica duplicata automática (is_manual=0)
 def existe_procedimento_no_dia(internacao_id, data_proc):
     conn = get_conn()
     cur = conn.cursor()
@@ -422,7 +311,6 @@ def existe_procedimento_no_dia(internacao_id, data_proc):
     conn.close()
     return ok
 
-# Atualiza campos editáveis
 def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao=None, grau_participacao=None):
     sets, params = [], []
     if procedimento is not None:
@@ -516,15 +404,50 @@ tabs = st.tabs([
 
 # ============================================================
 # 📤 ABA 1 — IMPORTAR (1 AUTOMÁTICO por dia; manuais podem repetir)
+#  - NOVO: cadastrar internação manual
+#  - NOVO: selecionar médicos a importar (todos / multiseleção com default obrigatório)
 # ============================================================
 
 with tabs[0]:
     st.header("📤 Importar arquivo")
 
+    # ---------- Cadastro de internação manual na aba de importação ----------
+    st.subheader("➕ Cadastrar internação manualmente (na importação)")
+    cmi1, cmi2, cmi3, cmi4, cmi5 = st.columns(5)
+    with cmi1:
+        hosp_new = st.selectbox("Hospital", get_hospitais(), key="imp_new_int_hosp")
+    with cmi2:
+        att_new = st.text_input("Atendimento (único)", key="imp_new_int_att")
+    with cmi3:
+        pac_new = st.text_input("Paciente", key="imp_new_int_pac")
+    with cmi4:
+        data_new = st.date_input("Data de internação", value=date.today(), key="imp_new_int_data")
+    with cmi5:
+        conv_new = st.text_input("Convênio", key="imp_new_int_conv")
+
+    if st.button("Criar internação", key="imp_btn_criar_int"):
+        if not att_new:
+            st.warning("Informe o atendimento.")
+        else:
+            if not get_internacao_by_atendimento(att_new).empty:
+                st.error("Já existe uma internação com este atendimento.")
+            else:
+                nid = criar_internacao(hosp_new, att_new, pac_new, data_new.strftime("%d/%m/%Y"), conv_new)
+                st.success(f"Internação criada (ID {nid}).")
+
+    st.divider()
+    # ------------------------------------------------------------------------
+
     hospitais = get_hospitais()
-    hospital = st.selectbox("Hospital:", hospitais)
+    hospital = st.selectbox("Hospital para esta importação:", hospitais)
 
     arquivo = st.file_uploader("Selecione o arquivo CSV")
+
+    # Estado da seleção de médicos
+    if "import_all_docs" not in st.session_state:
+        st.session_state["import_all_docs"] = True
+    if "import_selected_docs" not in st.session_state:
+        st.session_state["import_selected_docs"] = []
 
     if arquivo:
         raw_bytes = arquivo.getvalue()
@@ -536,12 +459,53 @@ with tabs[0]:
         registros = parse_tiss_original(csv_text)
 
         st.success(f"{len(registros)} registros interpretados!")
-        df_preview = pd.DataFrame(registros)
+
+        # --------------------- Seleção de médicos ---------------------
+        pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
+        st.subheader("👨‍⚕️ Selecione os médicos a importar")
+
+        colsel1, colsel2 = st.columns([1, 3])
+        with colsel1:
+            import_all = st.checkbox("Importar todos os médicos", value=st.session_state["import_all_docs"])
+        with colsel2:
+            if import_all:
+                st.info("Todos os médicos do arquivo serão importados.")
+                selected_pros = pros[:]  # todos
+            else:
+                # Pré-seleção: garante que os "sempre marcados" entrem por padrão se existem no arquivo
+                default_pre = sorted([p for p in pros if p in ALWAYS_SELECTED_PROS])
+                selected_pros = st.multiselect(
+                    "Médicos a importar (os da lista fixa sempre serão incluídos na gravação):",
+                    options=pros,
+                    default=st.session_state["import_selected_docs"] or default_pre,
+                )
+
+        # Salva estado atual
+        st.session_state["import_all_docs"] = import_all
+        st.session_state["import_selected_docs"] = selected_pros
+
+        # Constrói a lista *final* de médicos: seleção do usuário ∪ ALWAYS_SELECTED_PROS (se existirem no arquivo)
+        always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
+        final_pros = set(selected_pros if not import_all else pros).union(always_in_file)
+        final_pros = sorted(final_pros)
+
+        # Filtra registros conforme médicos
+        if import_all:
+            registros_filtrados = registros[:]  # nenhum filtro
+        else:
+            registros_filtrados = [r for r in registros if (r.get("profissional") or "") in final_pros]
+
+        st.caption(f"Médicos fixos (sempre incluídos, quando presentes no arquivo): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
+        st.info(f"Médicos considerados na importação: {', '.join(final_pros) if final_pros else '(nenhum)'}")
+
+        # Prévia filtrada
+        df_preview = pd.DataFrame(registros_filtrados)
         st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
         st.dataframe(df_preview, use_container_width=True)
 
-        pares = sorted({(r["atendimento"], r["data"]) for r in registros if r.get("atendimento") and r.get("data")})
-        st.info(f"O arquivo contém {len(pares)} par(es) (atendimento, data). "
+        # Pares (atendimento, data) apenas do conjunto filtrado
+        pares = sorted({(r["atendimento"], r["data"]) for r in registros_filtrados if r.get("atendimento") and r.get("data")})
+        st.info(f"O arquivo contém {len(pares)} par(es) (atendimento, data) considerando os filtros de médicos. "
                 "Regra: 1 procedimento AUTOMÁTICO por internação/dia (manuais podem ser vários).")
 
         if st.button("Gravar no banco"):
@@ -554,7 +518,8 @@ with tabs[0]:
                 # Internação: get or create
                 df_int = get_internacao_by_atendimento(att)
                 if df_int.empty:
-                    itens_att = [r for r in registros if r["atendimento"] == att]
+                    # Itens deste atendimento no CONJUNTO FILTRADO
+                    itens_att = [r for r in registros_filtrados if r["atendimento"] == att]
                     paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
                     conv_total = next((x.get("convenio") for x in itens_att if x.get("convenio")), "") if itens_att else ""
                     data_int = next((x.get("data") for x in itens_att if x.get("data")), data_proc)
@@ -570,10 +535,10 @@ with tabs[0]:
                 else:
                     internacao_id = int(df_int["id"].iloc[0])
 
-                # Profissional e Aviso do dia = primeiros que surgirem para (att, data)
+                # Profissional do dia (no conjunto filtrado) = primeiro que surgir para (att, data)
                 prof_dia = ""
                 aviso_dia = ""
-                for it in registros:
+                for it in registros_filtrados:
                     if it["atendimento"] == att and it["data"] == data_proc:
                         if not prof_dia and it.get("profissional"):
                             prof_dia = it["profissional"]
@@ -582,12 +547,17 @@ with tabs[0]:
                         if prof_dia and aviso_dia:
                             break
 
+                # Se não encontrar profissional (caso muito raro), ignora a criação automática desse dia
+                if not prof_dia:
+                    total_ignorados += 1
+                    continue
+
                 # Já existe auto do dia?
                 if existe_procedimento_no_dia(internacao_id, data_proc):
                     total_ignorados += 1
                     continue
 
-                # Criar 1 (um) procedimento-do-dia AUTOMÁTICO (grau_participacao vazio)
+                # Criar 1 (um) procedimento-do-dia AUTOMÁTICO
                 criar_procedimento(
                     internacao_id,
                     data_proc,
@@ -602,17 +572,17 @@ with tabs[0]:
                 total_criados += 1
 
             st.success(f"Concluído! Internações criadas: {total_internacoes} | "
-                       f"Automáticos criados: {total_criados} | Ignorados (auto já existia): {total_ignorados}")
+                       f"Automáticos criados: {total_criados} | Ignorados: {total_ignorados}")
 
 
 # ============================================================
-# 🔍 ABA 2 — CONSULTAR (editar + lançar manual + ver/excluir + cadastrar internação manual)
+# 🔍 ABA 2 — CONSULTAR (com grau participação, excluir internação/cirurgia, quitação, etc.)
 # ============================================================
 
 with tabs[1]:
     st.header("🔍 Consultar Internação")
 
-    # ========== Cadastrar internação manualmente ==========
+    # Cadastro manual (também disponível aqui)
     st.subheader("➕ Cadastrar internação manualmente")
     colm1, colm2, colm3, colm4, colm5 = st.columns(5)
     with colm1:
@@ -638,7 +608,6 @@ with tabs[1]:
                 st.rerun()
 
     st.divider()
-    # =======================================================
 
     hlist = ["Todos"] + get_hospitais()
     filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)
@@ -658,7 +627,7 @@ with tabs[1]:
 
             internacao_id = int(df_int["id"].iloc[0])
 
-            # --------- Ações de exclusão da internação ---------
+            # Excluir internação
             with st.expander("🗑️ Excluir esta internação"):
                 st.warning("Esta ação apagará a internação e TODOS os procedimentos vinculados.")
                 confirm_txt = st.text_input("Digite APAGAR para confirmar", key="confirm_del_int")
@@ -670,7 +639,7 @@ with tabs[1]:
                     else:
                         st.info("Confirmação inválida. Digite APAGAR.")
 
-            # --------- Procedimentos da internação ---------
+            # Carrega procedimentos
             conn = get_conn()
             df_proc = pd.read_sql_query(
                 "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao, aviso, grau_participacao "
@@ -679,7 +648,6 @@ with tabs[1]:
             )
             conn.close()
 
-            # Defaults
             if "procedimento" not in df_proc.columns:
                 df_proc["procedimento"] = "Cirurgia / Procedimento"
             df_proc["procedimento"] = df_proc["procedimento"].fillna("Cirurgia / Procedimento")
@@ -747,7 +715,7 @@ with tabs[1]:
                     st.success(f"{len(alterados)} procedimento(s) atualizado(s).")
                     st.rerun()
 
-            # ----- Excluir cirurgia (procedimento) individual -----
+            # Excluir cirurgia/procedimento
             with st.expander("🗑️ Excluir cirurgia (procedimento)"):
                 if df_proc.empty:
                     st.info("Não há procedimentos para excluir.")
@@ -799,11 +767,9 @@ with tabs[1]:
                     grau_participacao=(grau_part if grau_part != "" else None),
                 )
                 st.success("Procedimento (manual) adicionado.")
-                st.rerun()  # recarrega a página para exibir o novo item imediatamente
+                st.rerun()
 
-            # ====================================================
-            # 🔎 Ver dados de QUITAÇÃO (Finalizados)
-            # ====================================================
+            # Ver quitação (Finalizados)
             st.divider()
             st.subheader("🔎 Quitações desta internação (somente Finalizados)")
 
@@ -823,7 +789,6 @@ with tabs[1]:
                         if st.button("Ver quitação", key=f"verquit_{int(r['id'])}"):
                             st.session_state["show_quit_id"] = int(r["id"])
 
-                # Painel de detalhes
                 if "show_quit_id" in st.session_state and st.session_state["show_quit_id"]:
                     pid = int(st.session_state["show_quit_id"])
                     df_q = get_quitacao_by_proc_id(pid)
@@ -875,10 +840,6 @@ with tabs[1]:
 
 if REPORTLAB_OK:
     def _pdf_cirurgias_por_status(df, filtros):
-        """
-        Gera PDF (bytes) do relatório 'Cirurgias por Status' em PAISAGEM.
-        Colunas (na ordem): Atendimento, Aviso, Convênio, Paciente, Data, Profissional, Hospital.
-        """
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
             buf,
@@ -886,66 +847,38 @@ if REPORTLAB_OK:
             leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
         )
         styles = getSampleStyleSheet()
-        H1 = styles["Heading1"]
-        H2 = styles["Heading2"]
-        N = styles["BodyText"]
-
+        H1 = styles["Heading1"]; H2 = styles["Heading2"]; N = styles["BodyText"]
         elems = []
-
-        # Título
-        elems.append(Paragraph("Relatório — Cirurgias por Status", H1))
-        elems.append(Spacer(1, 6))
-
-        # Filtros
-        filtros_txt = (
-            f"Período: {filtros['ini']} a {filtros['fim']}  |  "
-            f"Hospital: {filtros['hospital']}  |  "
-            f"Status: {filtros['status']}"
-        )
-        elems.append(Paragraph(filtros_txt, N))
-        elems.append(Spacer(1, 8))
-
-        # Resumo
-        total = len(df)
-        elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
+        elems.append(Paragraph("Relatório — Cirurgias por Status", H1)); elems.append(Spacer(1, 6))
+        filtros_txt = (f"Período: {filtros['ini']} a {filtros['fim']}  |  "
+                       f"Hospital: {filtros['hospital']}  |  "
+                       f"Status: {filtros['status']}")
+        elems.append(Paragraph(filtros_txt, N)); elems.append(Spacer(1, 8))
+        total = len(df); elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
         if total > 0 and filtros["status"] == "Todos":
-            resumo = (
-                df.groupby("situacao")["situacao"]
-                .count()
-                .sort_values(ascending=False)
-                .reset_index(name="qtd")
-            )
+            resumo = (df.groupby("situacao")["situacao"]
+                      .count().sort_values(ascending=False)
+                      .reset_index(name="qtd"))
             data_resumo = [["Situação", "Quantidade"]] + resumo.values.tolist()
             t_res = Table(data_resumo, hAlign="LEFT")
             t_res.setStyle(TableStyle([
                 ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#F0F0F0")),
-                ("TEXTCOLOR", (0,0), (-1,0), colors.black),
                 ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
                 ("ALIGN", (1,1), (-1,-1), "RIGHT"),
                 ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-                ("BOTTOMPADDING", (0,0), (-1,0), 6),
             ]))
-            elems.append(t_res)
-            elems.append(Spacer(1, 10))
-
-        # Tabela detalhada
+            elems.append(t_res); elems.append(Spacer(1, 10))
         header = ["Atendimento", "Aviso", "Convênio", "Paciente", "Data", "Profissional", "Hospital"]
         data_rows = []
         for _, r in df.iterrows():
             data_rows.append([
-                r.get("atendimento") or "",
-                r.get("aviso") or "",
-                r.get("convenio") or "",
-                r.get("paciente") or "",
-                r.get("data_procedimento") or "",
-                r.get("profissional") or "",
-                r.get("hospital") or "",
+                r.get("atendimento") or "", r.get("aviso") or "", r.get("convenio") or "",
+                r.get("paciente") or "", r.get("data_procedimento") or "",
+                r.get("profissional") or "", r.get("hospital") or "",
             ])
-
         table = Table([header] + data_rows, repeatRows=1)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
-            ("TEXTCOLOR", (0,0), (-1,0), colors.black),
             ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
             ("FONTSIZE", (0,0), (-1,0), 10),
@@ -953,12 +886,8 @@ if REPORTLAB_OK:
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
         ]))
-        elems.append(table)
-
-        doc.build(elems)
-        pdf_bytes = buf.getvalue()
-        buf.close()
-        return pdf_bytes
+        elems.append(table); doc.build(elems)
+        pdf_bytes = buf.getvalue(); buf.close(); return pdf_bytes
 else:
     def _pdf_cirurgias_por_status(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado. Adicione 'reportlab' ao requirements.txt.")
@@ -968,7 +897,6 @@ with tabs[2]:
 
     st.subheader("1) Cirurgias por Status (PDF)")
 
-    # Filtros
     hosp_opts = ["Todos"] + get_hospitais()
     colf1, colf2, colf3 = st.columns(3)
     with colf1:
@@ -982,7 +910,6 @@ with tabs[2]:
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
-    # Carregar base (inclui 'convenio' para a tabela)
     conn = get_conn()
     sql_rel = """
         SELECT 
@@ -996,7 +923,6 @@ with tabs[2]:
     df_rel = pd.read_sql_query(sql_rel, conn)
     conn.close()
 
-    # Filtragem
     if not df_rel.empty:
         df_rel["_data_dt"] = df_rel["data_procedimento"].apply(_pt_date_to_dt)
         mask = (df_rel["_data_dt"].notna()) & (df_rel["_data_dt"] >= dt_ini) & (df_rel["_data_dt"] <= dt_fim)
@@ -1009,7 +935,6 @@ with tabs[2]:
         df_rel["data_procedimento"] = df_rel["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
         df_rel = df_rel.drop(columns=["_data_dt"])
 
-    # Ações
     colb1, colb2 = st.columns(2)
     with colb1:
         gerar_pdf = st.button("Gerar PDF")
@@ -1022,7 +947,6 @@ with tabs[2]:
                 data=csv_bytes,
                 file_name=f"cirurgias_por_status_{date.today().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
-                help="Use este CSV caso o PDF esteja indisponível por falta do reportlab."
             )
 
     if gerar_pdf:
@@ -1030,11 +954,7 @@ with tabs[2]:
             st.warning("Nenhum registro encontrado para os filtros informados.")
         else:
             if not REPORTLAB_OK:
-                st.error(
-                    "A biblioteca 'reportlab' não está instalada no ambiente.\n"
-                    "→ Solução: adicione `reportlab==3.6.13` ao seu requirements.txt e reimplante a app.\n"
-                    "Enquanto isso, use o botão 'Baixar CSV (fallback)'."
-                )
+                st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
             else:
                 filtros = {
                     "ini": dt_ini.strftime("%d/%m/%Y"),
@@ -1062,11 +982,9 @@ with tabs[2]:
 with tabs[3]:
     st.header("💼 Quitação de Cirurgias")
 
-    # Filtro de hospital
     hosp_opts = ["Todos"] + get_hospitais()
     hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="quit_hosp")
 
-    # Carrega somente cirurgias "Enviado para pagamento"
     conn = get_conn()
     base = """
         SELECT 
@@ -1090,17 +1008,13 @@ with tabs[3]:
     if df_quit.empty:
         st.info("Não há cirurgias com status 'Enviado para pagamento' para quitação.")
     else:
-        # NORMALIZA TIPOS PARA O data_editor
         df_quit["quitacao_data"] = pd.to_datetime(
             df_quit["quitacao_data"], dayfirst=True, errors="coerce"
         )
         for col in ["quitacao_valor_amhptiss", "quitacao_valor_complemento"]:
             df_quit[col] = pd.to_numeric(df_quit[col], errors="coerce")
 
-        st.markdown(
-            "Preencha os dados de quitação e clique em **Gravar quitação(ões)**. "
-            "Ao gravar, o status muda automaticamente para **Finalizado**."
-        )
+        st.markdown("Preencha os dados e clique em **Gravar quitação(ões)**. Ao gravar, o status muda para **Finalizado**.")
 
         edited = st.data_editor(
             df_quit,
@@ -1117,19 +1031,11 @@ with tabs[3]:
                 "profissional": st.column_config.Column("Profissional", disabled=True),
                 "aviso": st.column_config.Column("Aviso", disabled=True),
                 "situacao": st.column_config.Column("Situação", disabled=True),
-
-                # Campos editáveis de quitação (tipos compatíveis)
-                "quitacao_data": st.column_config.DateColumn(
-                    "Data da quitação", format="DD/MM/YYYY", help="Obrigatório para quitação"
-                ),
+                "quitacao_data": st.column_config.DateColumn("Data da quitação", format="DD/MM/YYYY"),
                 "quitacao_guia_amhptiss": st.column_config.TextColumn("Guia AMHPTISS"),
-                "quitacao_valor_amhptiss": st.column_config.NumberColumn(
-                    "Valor Guia AMHPTISS", format="R$ %.2f"
-                ),
+                "quitacao_valor_amhptiss": st.column_config.NumberColumn("Valor Guia AMHPTISS", format="R$ %.2f"),
                 "quitacao_guia_complemento": st.column_config.TextColumn("Guia Complemento"),
-                "quitacao_valor_complemento": st.column_config.NumberColumn(
-                    "Valor Guia Complemento", format="R$ %.2f"
-                ),
+                "quitacao_valor_complemento": st.column_config.NumberColumn("Valor Guia Complemento", format="R$ %.2f"),
             }
         )
 
@@ -1155,7 +1061,6 @@ with tabs[3]:
                 if not changed:
                     continue
 
-                # Data da quitação é obrigatória para finalizar
                 data_q = _to_ddmmyyyy(row["quitacao_data_new"])
                 if not data_q:
                     faltando_data += 1
@@ -1194,9 +1099,6 @@ with tabs[3]:
 with tabs[4]:
     st.header("⚙️ Sistema")
 
-    # -------------------------------
-    # Seção 1: 📋 Procedimentos (lista)
-    # -------------------------------
     st.subheader("📋 Procedimentos — Lista")
     filtro = ["Todos"] + get_hospitais()
     chosen = st.selectbox("Hospital (lista de procedimentos):", filtro, key="sys_proc_hosp")
@@ -1223,9 +1125,6 @@ with tabs[4]:
 
     st.divider()
 
-    # -------------------------------
-    # Seção 2: 🧾 Resumo por Profissional
-    # -------------------------------
     st.subheader("🧾 Resumo por Profissional")
     filtro_prof = ["Todos"] + get_hospitais()
     chosen_prof = st.selectbox("Hospital (resumo por profissional):", filtro_prof, key="sys_prof_hosp")
@@ -1237,7 +1136,6 @@ with tabs[4]:
         INNER JOIN Internacoes I ON I.id = P.internacao_id
         WHERE profissional IS NOT NULL AND profissional <> ''
     """
-
     if chosen_prof == "Todos":
         sql = base_prof + " GROUP BY profissional ORDER BY total DESC"
         df_prof = pd.read_sql_query(sql, conn)
@@ -1245,14 +1143,10 @@ with tabs[4]:
         sql = base_prof + " AND I.hospital = ? GROUP BY profissional ORDER BY total DESC"
         df_prof = pd.read_sql_query(sql, conn, params=(chosen_prof,))
     conn.close()
-
     st.dataframe(df_prof, use_container_width=True)
 
     st.divider()
 
-    # -------------------------------
-    # Seção 3: 💸 Resumo por Convênio
-    # -------------------------------
     st.subheader("💸 Resumo por Convênio")
     filtro_conv = ["Todos"] + get_hospitais()
     chosen_conv = st.selectbox("Hospital (resumo por convênio):", filtro_conv, key="sys_conv_hosp")
@@ -1264,7 +1158,6 @@ with tabs[4]:
         INNER JOIN Procedimentos P ON P.internacao_id = I.id
         WHERE I.convenio IS NOT NULL AND I.convenio <> ''
     """
-
     if chosen_conv == "Todos":
         sql = base_conv + " GROUP BY I.convenio ORDER BY total DESC"
         df_conv = pd.read_sql_query(sql, conn)
@@ -1272,5 +1165,4 @@ with tabs[4]:
         sql = base_conv + " AND I.hospital = ? GROUP BY I.convenio ORDER BY total DESC"
         df_conv = pd.read_sql_query(sql, conn, params=(chosen_conv,))
     conn.close()
-
     st.dataframe(df_conv, use_container_width=True)
