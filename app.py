@@ -1066,26 +1066,31 @@ with tabs[1]:
                     alterados = []
                     for _, row in df_compare.iterrows():
                         changed = any((str(row[c + "_old"] or "") != str(row[c + "_new"] or "")) for c in cols_chk)
-                        if changed:
+                        if changed:                            
                             alterados.append({
                                 "id": int(row["id"]),
                                 "procedimento": row["procedimento_new"],
                                 "situacao": row["situacao_new"],
                                 "observacao": row["observacao_new"],
-                                "grau_participacao": row["grau_participacao_new"] if row["grau_participacao_new"] != "" else None,
+                                "grau_participacao": (
+                                    row["grau_participacao_new"] if row["grau_participacao_new"] != "" else None
+                                ),
+                                "aviso": row["aviso_new"],   #  <<<<<< ADICIONADO
                             })
                     if not alterados:
                         st.info("Nenhuma alteração detectada.")
                     else:
-                        for item in alterados:                            
+                        for item in alterados:                         
+                            
                             atualizar_procedimento(
                                 proc_id=item["id"],
                                 procedimento=item["procedimento"],
                                 situacao=item["situacao"],
                                 observacao=item["observacao"],
                                 grau_participacao=item["grau_participacao"],
-                                aviso=item["aviso"],
+                                aviso=item.get("aviso"),   #  <<<<<< USAR .get
                             )
+                            
                         st.toast(f"{len(alterados)} procedimento(s) atualizado(s).", icon="✅")
                         maybe_sync_up_db("chore(db): edição de procedimentos")
                         st.rerun()
