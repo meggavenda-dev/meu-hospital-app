@@ -1,8 +1,8 @@
 
 [theme]
-base = "dark"
-primaryColor = "#2563eb"            # azul 600
-backgroundColor = "#0E1117"         # quase preto (GitHub dark)
-secondaryBackgroundColor = "#111827"# cinza escuro
-textColor = "#E5E7EB"               # cinza muito claro
+base = "light"
+primaryColor = "#1F6FEB"          # azul discreto
+backgroundColor = "#F5F6F7"       # cinza clarinho (evita tela branca estourada)
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#24292F"
 font = "sans serif"
