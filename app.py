@@ -13,6 +13,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import re
+from datetime import date  # NOVO: para lançamento manual
 
 # >>> NOVO: usar o parser robusto do módulo parser.py
 from parser import parse_tiss_original
@@ -52,7 +53,7 @@ def create_tables():
     );
     """)
 
-    # Procedimentos
+    # >>> NOVO: Procedimentos com situacao/observacao e UNIQUE (internacao_id, data_procedimento)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS Procedimentos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,7 +61,10 @@ def create_tables():
         data_procedimento TEXT,
         profissional TEXT,
         procedimento TEXT,
-        FOREIGN KEY(internacao_id) REFERENCES Internacoes(id)
+        situacao TEXT NOT NULL DEFAULT 'Pendente',
+        observacao TEXT,
+        FOREIGN KEY(internacao_id) REFERENCES Internacoes(id),
+        UNIQUE(internacao_id, data_procedimento)
     );
     """)
 
@@ -270,17 +274,30 @@ def criar_internacao(hospital, atendimento, paciente, data, convenio):
     conn.close()
     return nid
 
-
-def criar_procedimento(internacao_id, data_proc, profissional, procedimento):
+# >>> NOVO: agora aceita situacao/observacao (compatível com tabela nova)
+def criar_procedimento(internacao_id, data_proc, profissional, procedimento, situacao="Pendente", observacao=None):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO Procedimentos (internacao_id, data_procedimento, profissional, procedimento)
-        VALUES (?, ?, ?, ?)
-    """, (internacao_id, data_proc, profissional, procedimento))
+        INSERT OR IGNORE INTO Procedimentos
+        (internacao_id, data_procedimento, profissional, procedimento, situacao, observacao)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (internacao_id, data_proc, profissional, procedimento, situacao, observacao))
     conn.commit()
     conn.close()
 
+# >>> NOVO: checar existência do procedimento-do-dia
+def existe_procedimento_no_dia(internacao_id, data_proc):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1 FROM Procedimentos
+        WHERE internacao_id = ? AND data_procedimento = ?
+        LIMIT 1
+    """, (internacao_id, data_proc))
+    ok = cur.fetchone() is not None
+    conn.close()
+    return ok
 
 def get_internacao_by_atendimento(att):
     conn = get_conn()
@@ -333,7 +350,11 @@ with tabs[0]:
     arquivo = st.file_uploader("Selecione o arquivo CSV")
 
     if arquivo:
-        csv_text = arquivo.getvalue().decode("latin1", errors="ignore")
+        raw_bytes = arquivo.getvalue()
+        try:
+            csv_text = raw_bytes.decode("latin1")
+        except UnicodeDecodeError:
+            csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
 
         # >>> MUDANÇA: usar o parser melhorado do módulo parser.py
         registros = parse_tiss_original(csv_text)
@@ -342,50 +363,66 @@ with tabs[0]:
 
         df_preview = pd.DataFrame(registros)
         st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
-        st.dataframe(df_preview)
+        st.dataframe(df_preview, use_container_width=True)
 
-        lista_at = sorted(set(df_preview["atendimento"].tolist()))
-
-        st.info(f"O sistema reprocessará {len(lista_at)} atendimentos.")
+        # >>> NOVO: pares únicos (atendimento, data) a serem processados
+        pares = sorted({(r["atendimento"], r["data"]) for r in registros if r.get("atendimento") and r.get("data")})
+        st.info(f"O arquivo contém {len(pares)} par(es) (atendimento, data). A regra é 1 procedimento por internação/dia.")
 
         if st.button("Gravar no banco"):
-            apagar_internacoes(lista_at)
+            total_criados, total_ignorados, total_internacoes = 0, 0, 0
+            cache_internacao_id = {}
 
-            # Agrupar por atendimento
-            agrupado = {}
-            for r in registros:
-                att = r["atendimento"]
-                if att not in agrupado:
-                    agrupado[att] = {
-                        "paciente": r["paciente"],
-                        "data": r["data"],
-                        "procedimentos": []
-                    }
-                agrupado[att]["procedimentos"].append(r)
+            for (att, data_proc) in pares:
+                if not att:
+                    continue
 
-            # Inserção
-            for att, info in agrupado.items():
-                paciente = info["paciente"]
-                data = info["data"]
-                conv_total = info["procedimentos"][0]["convenio"]
+                # Internação: get or create
+                df_int = get_internacao_by_atendimento(att)
+                if df_int.empty:
+                    # descobrir paciente e convênio do primeiro registro do atendimento no arquivo
+                    itens_att = [r for r in registros if r["atendimento"] == att]
+                    paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
+                    conv_total = next((x.get("convenio") for x in itens_att if x.get("convenio")), "") if itens_att else ""
+                    data_int = next((x.get("data") for x in itens_att if x.get("data")), data_proc)
 
-                internacao_id = criar_internacao(
-                    hospital,
-                    att,
-                    paciente,
-                    data,
-                    conv_total
-                )
-
-                for p in info["procedimentos"]:
-                    criar_procedimento(
-                        internacao_id,
-                        p["data"],
-                        p["profissional"],
-                        p["procedimento"]
+                    internacao_id = criar_internacao(
+                        hospital,
+                        att,
+                        paciente,
+                        data_int,
+                        conv_total
                     )
+                    total_internacoes += 1
+                else:
+                    internacao_id = int(df_int["id"].iloc[0])
 
-            st.success("Importação concluída com sucesso!")
+                cache_internacao_id[att] = internacao_id
+
+                # Profissional do dia = primeiro que surgir para (att, data)
+                prof_dia = ""
+                for it in registros:
+                    if it["atendimento"] == att and it["data"] == data_proc and it.get("profissional"):
+                        prof_dia = it["profissional"]
+                        break
+
+                # Se já existir proc-do-dia => ignorar
+                if existe_procedimento_no_dia(internacao_id, data_proc):
+                    total_ignorados += 1
+                    continue
+
+                # Criar 1 (um) procedimento-do-dia (status default Pendente, sem descrição obrigatória)
+                criar_procedimento(
+                    internacao_id,
+                    data_proc,
+                    prof_dia,
+                    procedimento="",           # opcional: pode resumir algo se quiser
+                    situacao="Pendente",
+                    observacao=None
+                )
+                total_criados += 1
+
+            st.success(f"Concluído! Internações criadas: {total_internacoes} | Procedimentos criados: {total_criados} | Ignorados (já existiam no dia): {total_ignorados}")
 
 
 # ============================================================
@@ -409,13 +446,57 @@ with tabs[1]:
             st.warning("Nenhuma internação encontrada.")
         else:
             st.subheader("Dados da internação")
-            st.dataframe(df_int)
+            st.dataframe(df_int, use_container_width=True)
 
-            internacao_id = df_int["id"].iloc[0]
-            df_proc = get_procedimentos(internacao_id)
+            internacao_id = int(df_int["id"].iloc[0])
 
-            st.subheader("Procedimentos registrados")
-            st.dataframe(df_proc)
+            # >>> Mostrar procedimentos com situacao/observacao
+            conn = get_conn()
+            df_proc = pd.read_sql_query(
+                "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao "
+                "FROM Procedimentos WHERE internacao_id = ? ORDER BY data_procedimento",
+                conn, params=(internacao_id,)
+            )
+            conn.close()
+
+            st.subheader("Procedimentos (1 por dia)")
+            st.dataframe(df_proc, use_container_width=True)
+
+            # >>> NOVO: Lançar procedimento manual (respeitando 1 por dia)
+            st.divider()
+            st.subheader("➕ Lançar procedimento manual")
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                data_proc = st.date_input("Data do procedimento", value=date.today())
+            with c2:
+                profissional = st.text_input("Profissional (opcional)")
+            with c3:
+                situacao = st.selectbox("Situação", [
+                    "Pendente",
+                    "Não Cobrar",
+                    "Enviado para pagamento",
+                    "Aguardando Digitação - AMHP",
+                    "Finalizado"
+                ], index=0)
+
+            procedimento_txt = st.text_input("Descrição (opcional)")
+            observacao = st.text_area("Observação (opcional)")
+
+            if st.button("Adicionar procedimento"):
+                data_str = data_proc.strftime("%d/%m/%Y")
+                if existe_procedimento_no_dia(internacao_id, data_str):
+                    st.warning("Já existe procedimento para essa data (regra: 1 por dia).")
+                else:
+                    criar_procedimento(
+                        internacao_id,
+                        data_str,
+                        profissional,
+                        procedimento_txt,
+                        situacao=situacao,
+                        observacao=(observacao or None)
+                    )
+                    st.success("Procedimento adicionado.")
 
 
 # ============================================================
@@ -432,7 +513,8 @@ with tabs[2]:
         conn = get_conn()
         base = """
             SELECT P.id, I.hospital, I.atendimento, I.paciente,
-                   P.data_procedimento, P.profissional, P.procedimento
+                   P.data_procedimento, P.profissional, P.procedimento,
+                   P.situacao, P.observacao
             FROM Procedimentos P
             INNER JOIN Internacoes I ON I.id = P.internacao_id
         """
@@ -445,7 +527,7 @@ with tabs[2]:
             df = pd.read_sql_query(sql, conn, params=(chosen,))
 
         conn.close()
-        st.dataframe(df)
+        st.dataframe(df, use_container_width=True)
 
 
 # ============================================================
@@ -464,7 +546,7 @@ with tabs[3]:
         FROM Procedimentos P
         INNER JOIN Internacoes I ON I.id = P.internacao_id
         WHERE profissional IS NOT NULL AND profissional <> ''
-    """
+    """  # <<< corrigido (antes tinha &lt;&gt;)
 
     if chosen == "Todos":
         sql = base + " GROUP BY profissional ORDER BY total DESC"
@@ -474,7 +556,7 @@ with tabs[3]:
         df = pd.read_sql_query(sql, conn, params=(chosen,))
     conn.close()
 
-    st.dataframe(df)
+    st.dataframe(df, use_container_width=True)
 
 
 # ============================================================
@@ -493,7 +575,7 @@ with tabs[4]:
         FROM Internacoes I
         INNER JOIN Procedimentos P ON P.internacao_id = I.id
         WHERE I.convenio IS NOT NULL AND I.convenio <> ''
-    """
+    """  # <<< corrigido (antes tinha &lt;&gt;)
 
     if chosen == "Todos":
         sql = base + " GROUP BY I.convenio ORDER BY total DESC"
@@ -503,4 +585,4 @@ with tabs[4]:
         df = pd.read_sql_query(sql, conn, params=(chosen,))
     conn.close()
 
-    st.dataframe(df)
+    st.dataframe(df, use_container_width=True)
