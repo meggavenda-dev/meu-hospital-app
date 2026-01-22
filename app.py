@@ -11,6 +11,7 @@
 #  - Relatórios (PDF) — Cirurgias por Status (paisagem, ordem: Atendimento, Aviso, Convênio, Paciente, Data, Profissional, Hospital)
 #  - Quitação de Cirurgias (com atualização automática para "Finalizado")
 #  - Ver quitação em cirurgias Finalizadas (botão)
+#  - ⚙️ Sistema: agrega Procedimentos, Resumo por Profissional e por Convênio
 # ============================================================
 
 import streamlit as st
@@ -96,7 +97,7 @@ def create_tables():
         observacao TEXT,
         is_manual INTEGER NOT NULL DEFAULT 0,  -- 0=automático(import), 1=manual
         aviso TEXT,
-        -- Campos de quitação (NOVO)
+        -- Campos de quitação
         quitacao_data TEXT,
         quitacao_guia_amhptiss TEXT,
         quitacao_valor_amhptiss REAL,
@@ -312,7 +313,7 @@ def parse_csv_text(csv_text):
                 })
             continue
 
-        if "Total de Avisos" in linha or "Total de Cirurgias" in linha:
+        if "Total de Avisos" in linha ou "Total de Cirurgias" in linha:
             continue
 
         continue
@@ -481,16 +482,16 @@ st.title("🏥 Sistema de Internações — Versão Final")
 
 # ============================================================
 # INTERFACE EM ABAS
+# (Removidas: 📋 Procedimentos, 🧾 Profissionais, 💸 Convênios)
+# Nova aba ⚙️ Sistema agrega essas três funcionalidades
 # ============================================================
 
 tabs = st.tabs([
     "📤 Importar Arquivo",
     "🔍 Consultar Internação",
-    "📋 Procedimentos",
-    "🧾 Profissionais",
-    "💸 Convênios",
     "📑 Relatórios",
-    "💼 Quitação"
+    "💼 Quitação",
+    "⚙️ Sistema",  # <-- NOVA ABA agregadora
 ])
 
 
@@ -585,7 +586,7 @@ with tabs[0]:
 
 
 # ============================================================
-# 🔍 ABA 2 — CONSULTAR (editar + lançar manual múltiplo por dia)
+# 🔍 ABA 2 — CONSULTAR (editar + lançar manual múltiplo por dia) + Ver quitação
 # ============================================================
 
 with tabs[1]:
@@ -715,7 +716,7 @@ with tabs[1]:
                 st.rerun()  # recarrega a página para exibir o novo item imediatamente
 
             # ====================================================
-            # 🔎 Ver dados de QUITAÇÃO (Finalizados) — NOVO
+            # 🔎 Ver dados de QUITAÇÃO (Finalizados)
             # ====================================================
             st.divider()
             st.subheader("🔎 Quitações desta internação (somente Finalizados)")
@@ -724,7 +725,6 @@ with tabs[1]:
             if finalizados.empty:
                 st.info("Não há procedimentos finalizados nesta internação.")
             else:
-                # Lista simples com botão "Ver quitação" por item
                 for _, r in finalizados.iterrows():
                     colA, colB, colC, colD = st.columns([2, 2, 2, 2])
                     with colA:
@@ -743,7 +743,6 @@ with tabs[1]:
                     df_q = get_quitacao_by_proc_id(pid)
                     if not df_q.empty:
                         q = df_q.iloc[0]
-                        # Soma total
                         total = (q["quitacao_valor_amhptiss"] or 0) + (q["quitacao_valor_complemento"] or 0)
 
                         st.markdown("---")
@@ -785,96 +784,7 @@ with tabs[1]:
 
 
 # ============================================================
-# 📋 ABA 3 — LISTA PROCEDIMENTOS
-# ============================================================
-
-with tabs[2]:
-    st.header("📋 Todos os procedimentos")
-
-    filtro = ["Todos"] + get_hospitais()
-    chosen = st.selectbox("Hospital:", filtro)
-
-    if st.button("Carregar procedimentos"):
-        conn = get_conn()
-        base = """
-            SELECT P.id, I.hospital, I.atendimento, I.paciente,
-                   P.data_procedimento, P.aviso, P.profissional, P.procedimento,
-                   P.situacao, P.observacao
-            FROM Procedimentos P
-            INNER JOIN Internacoes I ON I.id = P.internacao_id
-        """
-
-        if chosen == "Todos":
-            sql = base + " ORDER BY P.data_procedimento DESC, P.id DESC"
-            df = pd.read_sql_query(sql, conn)
-        else:
-            sql = base + " WHERE I.hospital = ? ORDER BY P.data_procedimento DESC, P.id DESC"
-            df = pd.read_sql_query(sql, conn, params=(chosen,))
-
-        conn.close()
-        st.dataframe(df, use_container_width=True)
-
-
-# ============================================================
-# 🧾 ABA 4 — RESUMO POR PROFISSIONAL
-# ============================================================
-
-with tabs[3]:
-    st.header("🧾 Resumo por Profissional")
-
-    filtro = ["Todos"] + get_hospitais()
-    chosen = st.selectbox("Hospital:", filtro, key="prof_h")
-
-    conn = get_conn()
-    base = """
-        SELECT profissional, COUNT(*) AS total
-        FROM Procedimentos P
-        INNER JOIN Internacoes I ON I.id = P.internacao_id
-        WHERE profissional IS NOT NULL AND profissional <> ''
-    """
-
-    if chosen == "Todos":
-        sql = base + " GROUP BY profissional ORDER BY total DESC"
-        df = pd.read_sql_query(sql, conn)
-    else:
-        sql = base + " AND I.hospital = ? GROUP BY profissional ORDER BY total DESC"
-        df = pd.read_sql_query(sql, conn, params=(chosen,))
-    conn.close()
-
-    st.dataframe(df, use_container_width=True)
-
-
-# ============================================================
-# 💸 ABA 5 — RESUMO POR CONVÊNIO
-# ============================================================
-
-with tabs[4]:
-    st.header("💸 Resumo por Convênio")
-
-    filtro = ["Todos"] + get_hospitais()
-    chosen = st.selectbox("Hospital:", filtro, key="conv_h")
-
-    conn = get_conn()
-    base = """
-        SELECT I.convenio, COUNT(*) AS total
-        FROM Internacoes I
-        INNER JOIN Procedimentos P ON P.internacao_id = I.id
-        WHERE I.convenio IS NOT NULL AND I.convenio <> ''
-    """
-
-    if chosen == "Todos":
-        sql = base + " GROUP BY I.convenio ORDER BY total DESC"
-        df = pd.read_sql_query(sql, conn)
-    else:
-        sql = base + " AND I.hospital = ? GROUP BY I.convenio ORDER BY total DESC"
-        df = pd.read_sql_query(sql, conn, params=(chosen,))
-    conn.close()
-
-    st.dataframe(df, use_container_width=True)
-
-
-# ============================================================
-# 📑 ABA 6 — RELATÓRIOS (PDF) — Paisagem, colunas na ordem pedida
+# 📑 ABA 3 — RELATÓRIOS (PDF) — Paisagem, colunas na ordem pedida
 # ============================================================
 
 if REPORTLAB_OK:
@@ -932,7 +842,7 @@ if REPORTLAB_OK:
             elems.append(t_res)
             elems.append(Spacer(1, 10))
 
-        # Tabela detalhada (ordem pedida)
+        # Tabela detalhada
         header = ["Atendimento", "Aviso", "Convênio", "Paciente", "Data", "Profissional", "Hospital"]
         data_rows = []
         for _, r in df.iterrows():
@@ -967,7 +877,7 @@ else:
     def _pdf_cirurgias_por_status(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado. Adicione 'reportlab' ao requirements.txt.")
 
-with tabs[5]:
+with tabs[2]:
     st.header("📑 Relatórios — Central")
 
     st.subheader("1) Cirurgias por Status (PDF)")
@@ -1060,10 +970,10 @@ with tabs[5]:
 
 
 # ============================================================
-# 💼 ABA 7 — QUITAÇÃO
+# 💼 ABA 4 — QUITAÇÃO
 # ============================================================
 
-with tabs[6]:
+with tabs[3]:
     st.header("💼 Quitação de Cirurgias")
 
     # Filtro de hospital
@@ -1094,7 +1004,7 @@ with tabs[6]:
     if df_quit.empty:
         st.info("Não há cirurgias com status 'Enviado para pagamento' para quitação.")
     else:
-        # >>> NORMALIZA TIPOS PARA O data_editor <<<
+        # NORMALIZA TIPOS PARA O data_editor
         df_quit["quitacao_data"] = pd.to_datetime(
             df_quit["quitacao_data"], dayfirst=True, errors="coerce"
         )
@@ -1189,3 +1099,92 @@ with tabs[6]:
             else:
                 st.success(f"{atualizados} quitação(ões) gravada(s).")
                 st.rerun()
+
+
+# ============================================================
+# ⚙️ ABA 5 — SISTEMA (agrega: Procedimentos, Profissionais, Convênios)
+# ============================================================
+
+with tabs[4]:
+    st.header("⚙️ Sistema")
+
+    # -------------------------------
+    # Seção 1: 📋 Procedimentos (lista)
+    # -------------------------------
+    st.subheader("📋 Procedimentos — Lista")
+    filtro = ["Todos"] + get_hospitais()
+    chosen = st.selectbox("Hospital (lista de procedimentos):", filtro, key="sys_proc_hosp")
+
+    if st.button("Carregar procedimentos", key="btn_carregar_proc"):
+        conn = get_conn()
+        base = """
+            SELECT P.id, I.hospital, I.atendimento, I.paciente,
+                   P.data_procedimento, P.aviso, P.profissional, P.procedimento,
+                   P.situacao, P.observacao
+            FROM Procedimentos P
+            INNER JOIN Internacoes I ON I.id = P.internacao_id
+        """
+
+        if chosen == "Todos":
+            sql = base + " ORDER BY P.data_procedimento DESC, P.id DESC"
+            df = pd.read_sql_query(sql, conn)
+        else:
+            sql = base + " WHERE I.hospital = ? ORDER BY P.data_procedimento DESC, P.id DESC"
+            df = pd.read_sql_query(sql, conn, params=(chosen,))
+
+        conn.close()
+        st.dataframe(df, use_container_width=True)
+
+    st.divider()
+
+    # -------------------------------
+    # Seção 2: 🧾 Resumo por Profissional
+    # -------------------------------
+    st.subheader("🧾 Resumo por Profissional")
+    filtro_prof = ["Todos"] + get_hospitais()
+    chosen_prof = st.selectbox("Hospital (resumo por profissional):", filtro_prof, key="sys_prof_hosp")
+
+    conn = get_conn()
+    base_prof = """
+        SELECT profissional, COUNT(*) AS total
+        FROM Procedimentos P
+        INNER JOIN Internacoes I ON I.id = P.internacao_id
+        WHERE profissional IS NOT NULL AND profissional <> ''
+    """
+
+    if chosen_prof == "Todos":
+        sql = base_prof + " GROUP BY profissional ORDER BY total DESC"
+        df_prof = pd.read_sql_query(sql, conn)
+    else:
+        sql = base_prof + " AND I.hospital = ? GROUP BY profissional ORDER BY total DESC"
+        df_prof = pd.read_sql_query(sql, conn, params=(chosen_prof,))
+    conn.close()
+
+    st.dataframe(df_prof, use_container_width=True)
+
+    st.divider()
+
+    # -------------------------------
+    # Seção 3: 💸 Resumo por Convênio
+    # -------------------------------
+    st.subheader("💸 Resumo por Convênio")
+    filtro_conv = ["Todos"] + get_hospitais()
+    chosen_conv = st.selectbox("Hospital (resumo por convênio):", filtro_conv, key="sys_conv_hosp")
+
+    conn = get_conn()
+    base_conv = """
+        SELECT I.convenio, COUNT(*) AS total
+        FROM Internacoes I
+        INNER JOIN Procedimentos P ON P.internacao_id = I.id
+        WHERE I.convenio IS NOT NULL AND I.convenio <> ''
+    """
+
+    if chosen_conv == "Todos":
+        sql = base_conv + " GROUP BY I.convenio ORDER BY total DESC"
+        df_conv = pd.read_sql_query(sql, conn)
+    else:
+        sql = base_conv + " AND I.hospital = ? GROUP BY I.convenio ORDER BY total DESC"
+        df_conv = pd.read_sql_query(sql, conn, params=(chosen_conv,))
+    conn.close()
+
+    st.dataframe(df_conv, use_container_width=True)
