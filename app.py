@@ -75,12 +75,16 @@ if "db_dirty" not in st.session_state:
 
 LOCAL_DB_FILE = "dados.db"  # mesmo diretório do app.py
 
+def github_config_ok() -> bool:
+    """Retorna True se todos os secrets mínimos do GitHub estão configurados."""
+    return bool(GH_TOKEN and GH_REPO and GH_DB_PATH)
+
 def _gh_contents_url(path: str) -> str:
     return f"{_GH_API}/repos/{GH_REPO.strip()}/contents/{path}"
 
 def _gh_get_db():
     """Retorna (bytes, sha) ou (None, None) se não existir no GitHub."""
-    if not (GH_TOKEN and GH_REPO and GH_DB_PATH):
+    if not github_config_ok():
         return None, None
     r = requests.get(
         _gh_contents_url(GH_DB_PATH),
@@ -102,9 +106,10 @@ def _gh_get_db():
     raise RuntimeError(f"GitHub GET {r.status_code}: {r.text}")
 
 def _gh_put_db(content_bytes, message, sha):
-    """PUT seguro (usa sha) — cria/atualiza dados.db no repositório."""
-    if not (GH_TOKEN and GH_REPO and GH_DB_PATH):
-        raise RuntimeError("Config GitHub ausente em secrets.")
+    """PUT seguro (usa sha) — cria/atualiza dados.db no repositório, com diagnóstico amigável."""
+    if not github_config_ok():
+        raise RuntimeError("Config GitHub ausente em secrets (GH_TOKEN, GH_REPO, GH_DB_PATH).")
+
     payload = {
         "message": message,
         "content": base64.b64encode(content_bytes).decode("utf-8"),
@@ -112,23 +117,58 @@ def _gh_put_db(content_bytes, message, sha):
     }
     if sha:
         payload["sha"] = sha
+
     r = requests.put(
         _gh_contents_url(GH_DB_PATH),
         headers=_GH_HEADERS,
         data=json.dumps(payload),
         timeout=60,
     )
+
+    # Sucesso: 200 (update) ou 201 (create)
     if r.status_code in (200, 201):
         data = r.json()
         st.session_state["db_sha"] = data["content"]["sha"]
         st.session_state["db_dirty"] = False
-    elif r.status_code == 409:
+        return
+
+    # Conflito de versionamento (sha mudou no remoto)
+    if r.status_code == 409:
         raise RuntimeError("Conflito: versão do banco mudou no GitHub (sha diferente). Faça sync‑down e tente novamente.")
+
+    # Mensagens de ajuda por código
+    try:
+        err_json = r.json()
+    except Exception:
+        err_json = None
+
+    msg_api = (err_json.get("message") if isinstance(err_json, dict) else r.text).strip()
+
+    if r.status_code == 403:
+        hint = (
+            "403 Forbidden. Verifique se o token tem escopo **repo** (Contents API) "
+            "e se não há proteção de branch bloqueando commits."
+        )
+    elif r.status_code == 404:
+        hint = (
+            "404 Not Found. Verifique `GH_REPO` (ex.: usuario/repo), `GH_BRANCH` e `GH_DB_PATH`. "
+            "Repositório privado requer token com acesso."
+        )
+    elif r.status_code == 422:
+        hint = (
+            "422 Unprocessable Entity. Geralmente é caminho inválido, base64 inválido ou `sha` ausente/errado para atualização. "
+            "Faça um **sync_down_db()** antes para atualizar o `sha` local."
+        )
     else:
-        raise RuntimeError(f"GitHub PUT {r.status_code}: {r.text}")
+        hint = f"Erro {r.status_code}. Resposta da API: {msg_api[:500]}"
+
+    raise RuntimeError(f"GitHub PUT falhou: {hint}")
 
 def sync_down_db():
     """Baixa o dados.db do GitHub (se existir) ANTES de abrir o SQLite local."""
+    if not github_config_ok():
+        st.info("⏭️ Modo local: sincronização do GitHub desativada (secrets ausentes).")
+        return
     try:
         content, sha = _gh_get_db()
         if content:
@@ -150,18 +190,29 @@ def maybe_sync_up_db(commit_msg="chore(db): update dados.db"):
     """Se houve escrita local e não há conexões abertas, envia o arquivo ao GitHub."""
     if not st.session_state.get("db_dirty"):
         return
+
+    if not github_config_ok():
+        st.info("💾 Alterações salvas localmente. Configure `GH_TOKEN`, `GH_REPO` e `GH_DB_PATH` nos Secrets para sincronizar com o GitHub.")
+        return
+
     # Compactar para reduzir tamanho (sem conexões abertas)
     try:
         conn = sqlite3.connect(LOCAL_DB_FILE)
         conn.execute("VACUUM")
         conn.close()
     except Exception:
-        # Se estiver travado, seguimos sem VACUUM
         pass
+
     with open(LOCAL_DB_FILE, "rb") as f:
         content_bytes = f.read()
-    _gh_put_db(content_bytes, commit_msg, st.session_state.get("db_sha"))
-    st.success("📤 Banco enviado ao GitHub com sucesso.")
+
+    try:
+        _gh_put_db(content_bytes, commit_msg, st.session_state.get("db_sha"))
+        st.success("📤 Banco enviado ao GitHub com sucesso.")
+    except Exception as e:
+        # Não derruba o app: mantém db_dirty=True para tentar novamente depois
+        st.error(f"⚠️ Não foi possível enviar o DB ao GitHub: {e}")
+        st.info("O app continuará funcionando em **modo local**. Corrija a configuração e tente novamente.")
 
 # ============================================================
 # BANCO
@@ -453,6 +504,13 @@ seed_hospitais()    # seeds
 
 st.set_page_config(page_title="Gestão de Internações", layout="wide")
 st.title("🏥 Sistema de Internações — Versão Final")
+
+# Indicador de status do modo de persistência
+if github_config_ok():
+    st.caption("🔗 Persistência **GitHub** ativa — "
+               f"branch: `{GH_BRANCH}` • path: `{GH_DB_PATH}` • repo: `{GH_REPO}`")
+else:
+    st.caption("💾 Persistência **local** — configure `GH_TOKEN`, `GH_REPO` e `GH_DB_PATH` em *Secrets* para sincronizar com o GitHub.")
 
 # ============================================================
 # ABAS
