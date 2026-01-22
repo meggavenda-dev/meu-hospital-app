@@ -4,8 +4,9 @@
 #  Inclui:
 #  - Parser robusto
 #  - Dry-run antes de gravar
-#  - 1 procedimento-do-dia por (internação, data)
+#  - 1 procedimento-do-dia automático por (internação, data)
 #  - Edição de situação/observação/tipo de procedimento
+#  - Lançamento manual (permite mais de um no mesmo dia)
 #  - Filtros por hospital
 #  - Seeds de hospitais
 # ============================================================
@@ -16,10 +17,9 @@ import pandas as pd
 import re
 from datetime import date
 
-# >>> Parser robusto do seu módulo
+# Parser robusto do seu módulo
 from parser import parse_tiss_original
 
-# Opções fixas de negócio
 STATUS_OPCOES = [
     "Pendente",
     "Não Cobrar",
@@ -64,9 +64,11 @@ def create_tables():
     );
     """)
 
-    # Procedimentos (inclui situacao/observacao + unicidade por internação/data)
+    # >>> RECRIAR Procedimentos para suportar manual (múltiplos no dia)
+    # Remove a tabela se existir (você informou que não tem dados)
+    cur.execute("DROP TABLE IF EXISTS Procedimentos;")
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS Procedimentos (
+    CREATE TABLE Procedimentos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         internacao_id INTEGER,
         data_procedimento TEXT,
@@ -74,9 +76,15 @@ def create_tables():
         procedimento TEXT,
         situacao TEXT NOT NULL DEFAULT 'Pendente',
         observacao TEXT,
-        FOREIGN KEY(internacao_id) REFERENCES Internacoes(id),
-        UNIQUE(internacao_id, data_procedimento)
+        is_manual INTEGER NOT NULL DEFAULT 0,  -- 0 = automático (import), 1 = manual
+        FOREIGN KEY(internacao_id) REFERENCES Internacoes(id)
     );
+    """)
+    # Índice ÚNICO parcial: impede duplicar AUTOMÁTICO no mesmo (internação, data)
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_proc_auto
+      ON Procedimentos(internacao_id, data_procedimento)
+      WHERE is_manual = 0;
     """)
 
     conn.commit()
@@ -136,7 +144,6 @@ def parse_csv_text(csv_text):
         if not linha or linha.strip() == "":
             continue
 
-        # DATA DO BLOCO
         if "Data de Realização" in linha:
             partes = [p.strip() for p in linha.split(",")]
             for p in partes:
@@ -144,24 +151,13 @@ def parse_csv_text(csv_text):
                     data_atual = p
             continue
 
-        # LINHA MESTRE
         if re.match(r"^,\s*\d{7,12},", raw):
             cols = [c for c in raw.split(",")]
-
-            # 5 últimas colunas (convênio, prestador, anestesista, tipo, quarto)
             conv, prest, anest, tipo, quarto = map(clean, tail(cols, 5))
-
-            # cirurgia = 6ª coluna a partir do fim
             procedimento = clean(tail(cols, 6)[0])
-
-            # horas
-            hora_ini = clean(tail(cols, 8)[2])   # posição -8
-            hora_fim = clean(tail(cols, 7)[1])   # posição -7
-
-            # aviso
+            hora_ini = clean(tail(cols, 8)[2])
+            hora_fim = clean(tail(cols, 7)[1])
             aviso = clean(tail(cols, 9)[0])
-
-            # lado esquerdo: atendimento + paciente
             esquerda = [c.strip() for c in cols]
             i = 0
             while i < len(esquerda) and esquerda[i] == "":
@@ -171,9 +167,7 @@ def parse_csv_text(csv_text):
             while j < len(esquerda) and esquerda[j] == "":
                 j += 1
             paciente = esquerda[j] if j < len(esquerda) else ""
-
             hora_ini_mestre, hora_fim_mestre = hora_ini, hora_fim
-
             atual = {
                 "data": data_atual or "",
                 "atendimento": atendimento,
@@ -182,7 +176,6 @@ def parse_csv_text(csv_text):
                 "hora_fim": hora_fim,
                 "procedimentos": []
             }
-
             atual["procedimentos"].append({
                 "procedimento": procedimento,
                 "convenio": conv,
@@ -193,17 +186,13 @@ def parse_csv_text(csv_text):
                 "hora_ini": hora_ini,
                 "hora_fim": hora_fim
             })
-
             internacoes.append(atual)
             continue
 
-        # LINHA FILHA (procedimento extra)
         if re.match(r"^,{10,}", raw):
             cols = [c for c in raw.split(",")]
-
             conv, prest, anest, tipo, quarto = map(clean, tail(cols, 5))
             procedimento = clean(tail(cols, 6)[0])
-
             if atual:
                 atual["procedimentos"].append({
                     "procedimento": procedimento,
@@ -217,14 +206,11 @@ def parse_csv_text(csv_text):
                 })
             continue
 
-        # Totais ignorados
         if "Total de Avisos" in linha or "Total de Cirurgias" in linha:
             continue
 
-        # Demais linhas ignoradas
         continue
 
-    # FLAT: um registro por procedimento
     registros = []
     for it in internacoes:
         for p in it["procedimentos"]:
@@ -253,10 +239,7 @@ def apagar_internacoes(lista_at):
         return
     conn = get_conn()
     cur = conn.cursor()
-
     qmarks = ",".join(["?"] * len(lista_at))
-
-    # Apaga procedimentos
     cur.execute(f"""
         DELETE FROM Procedimentos
          WHERE internacao_id IN (
@@ -264,10 +247,7 @@ def apagar_internacoes(lista_at):
               WHERE atendimento IN ({qmarks})
          )
     """, lista_at)
-
-    # Apaga internações
     cur.execute(f"DELETE FROM Internacoes WHERE atendimento IN ({qmarks})", lista_at)
-
     conn.commit()
     conn.close()
 
@@ -284,43 +264,40 @@ def criar_internacao(hospital, atendimento, paciente, data, convenio):
     conn.close()
     return nid
 
-# Aceita situacao/observacao e usa OR IGNORE por causa do UNIQUE (internacao_id, data)
-def criar_procedimento(internacao_id, data_proc, profissional, procedimento, situacao="Pendente", observacao=None):
+# Aceita situacao/observacao/is_manual. OR IGNORE por conta do UNIQUE parcial nos automáticos.
+def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
+                       situacao="Pendente", observacao=None, is_manual=0):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         INSERT OR IGNORE INTO Procedimentos
-        (internacao_id, data_procedimento, profissional, procedimento, situacao, observacao)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (internacao_id, data_proc, profissional, procedimento, situacao, observacao))
+        (internacao_id, data_procedimento, profissional, procedimento, situacao, observacao, is_manual)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (internacao_id, data_proc, profissional, procedimento, situacao, observacao, is_manual))
     conn.commit()
     conn.close()
 
+# Para o import: só impede duplicar AUTOMÁTICO
 def existe_procedimento_no_dia(internacao_id, data_proc):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         SELECT 1 FROM Procedimentos
-        WHERE internacao_id = ? AND data_procedimento = ?
+        WHERE internacao_id = ? AND data_procedimento = ? AND is_manual = 0
         LIMIT 1
     """, (internacao_id, data_proc))
     ok = cur.fetchone() is not None
     conn.close()
     return ok
 
-# >>> NOVO: atualizar campos editáveis do procedimento
 def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao=None):
-    sets = []
-    params = []
+    sets, params = [], []
     if procedimento is not None:
-        sets.append("procedimento = ?")
-        params.append(procedimento)
+        sets.append("procedimento = ?"); params.append(procedimento)
     if situacao is not None:
-        sets.append("situacao = ?")
-        params.append(situacao)
+        sets.append("situacao = ?"); params.append(situacao)
     if observacao is not None:
-        sets.append("observacao = ?")
-        params.append(observacao)
+        sets.append("observacao = ?"); params.append(observacao)
     if not sets:
         return
     params.append(proc_id)
@@ -336,7 +313,6 @@ def get_internacao_by_atendimento(att):
     df = pd.read_sql_query("SELECT * FROM Internacoes WHERE atendimento = ?", conn, params=(att,))
     conn.close()
     return df
-
 
 def get_procedimentos(internacao_id):
     conn = get_conn()
@@ -370,7 +346,7 @@ tabs = st.tabs([
 
 
 # ============================================================
-# 📤 ABA 1 — IMPORTAR COM DRY RUN
+# 📤 ABA 1 — IMPORTAR COM DRY RUN (1 auto por dia; manual pode ter vários)
 # ============================================================
 
 with tabs[0]:
@@ -388,18 +364,16 @@ with tabs[0]:
         except UnicodeDecodeError:
             csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
 
-        # Parser robusto do módulo
         registros = parse_tiss_original(csv_text)
 
         st.success(f"{len(registros)} registros interpretados!")
-
         df_preview = pd.DataFrame(registros)
         st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
         st.dataframe(df_preview, use_container_width=True)
 
-        # Pares únicos (atendimento, data)
         pares = sorted({(r["atendimento"], r["data"]) for r in registros if r.get("atendimento") and r.get("data")})
-        st.info(f"O arquivo contém {len(pares)} par(es) (atendimento, data). A regra é 1 procedimento por internação/dia.")
+        st.info(f"O arquivo contém {len(pares)} par(es) (atendimento, data). "
+                "Regra: 1 procedimento AUTOMÁTICO por internação/dia (manuais podem ser vários).")
 
         if st.button("Gravar no banco"):
             total_criados, total_ignorados, total_internacoes = 0, 0, 0
@@ -434,27 +408,29 @@ with tabs[0]:
                         prof_dia = it["profissional"]
                         break
 
-                # Se já existir proc-do-dia => ignorar
+                # Se já existir proc-do-dia AUTOMÁTICO => ignorar
                 if existe_procedimento_no_dia(internacao_id, data_proc):
                     total_ignorados += 1
                     continue
 
-                # Criar 1 (um) procedimento-do-dia
+                # Criar 1 (um) procedimento-do-dia AUTOMÁTICO
                 criar_procedimento(
                     internacao_id,
                     data_proc,
                     prof_dia,
-                    procedimento="Cirurgia / Procedimento",  # padrão definido
+                    procedimento="Cirurgia / Procedimento",
                     situacao="Pendente",
-                    observacao=None
+                    observacao=None,
+                    is_manual=0
                 )
                 total_criados += 1
 
-            st.success(f"Concluído! Internações criadas: {total_internacoes} | Procedimentos criados: {total_criados} | Ignorados (já existiam no dia): {total_ignorados}")
+            st.success(f"Concluído! Internações criadas: {total_internacoes} | "
+                       f"Automáticos criados: {total_criados} | Ignorados (auto já existia): {total_ignorados}")
 
 
 # ============================================================
-# 🔍 ABA 2 — CONSULTAR (com edição dos procedimentos)
+# 🔍 ABA 2 — CONSULTAR (edição + manual pode lançar vários no dia)
 # ============================================================
 
 with tabs[1]:
@@ -481,19 +457,18 @@ with tabs[1]:
             conn = get_conn()
             df_proc = pd.read_sql_query(
                 "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao "
-                "FROM Procedimentos WHERE internacao_id = ? ORDER BY data_procedimento",
+                "FROM Procedimentos WHERE internacao_id = ? ORDER BY data_procedimento, id",
                 conn, params=(internacao_id,)
             )
             conn.close()
 
-            # Garantir colunas e defaults
             if "procedimento" not in df_proc.columns:
                 df_proc["procedimento"] = "Cirurgia / Procedimento"
             df_proc["procedimento"] = df_proc["procedimento"].fillna("Cirurgia / Procedimento")
             df_proc["situacao"] = df_proc.get("situacao", pd.Series(dtype=str)).fillna("Pendente")
             df_proc["observacao"] = df_proc.get("observacao", pd.Series(dtype=str)).fillna("")
 
-            st.subheader("Procedimentos (1 por dia) — Editáveis")
+            st.subheader("Procedimentos — Editáveis")
             edited = st.data_editor(
                 df_proc,
                 key="editor_proc",
@@ -515,9 +490,7 @@ with tabs[1]:
                 },
             )
 
-            # Detectar alterações e salvar
             if st.button("💾 Salvar alterações"):
-                # comparamos apenas colunas editáveis
                 cols_chk = ["procedimento", "situacao", "observacao"]
                 df_compare = df_proc[["id"] + cols_chk].merge(
                     edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new")
@@ -535,7 +508,6 @@ with tabs[1]:
                             "situacao": row["situacao_new"],
                             "observacao": row["observacao_new"],
                         })
-
                 if not alterados:
                     st.info("Nenhuma alteração detectada.")
                 else:
@@ -546,11 +518,11 @@ with tabs[1]:
                             situacao=item["situacao"],
                             observacao=item["observacao"],
                         )
-                    st.success(f"{len(alterados)} procedimento(s) atualizado(s). Recarregue a tela se desejar ver os dados novamente.")
+                    st.success(f"{len(alterados)} procedimento(s) atualizado(s).")
 
-            # Lançar procedimento manual
             st.divider()
-            st.subheader("➕ Lançar procedimento manual (respeita 1 por dia)")
+            st.subheader("➕ Lançar procedimento manual (permite mais de um no mesmo dia)")
+
             c1, c2, c3 = st.columns(3)
             with c1:
                 data_proc = st.date_input("Data do procedimento", value=date.today())
@@ -567,18 +539,17 @@ with tabs[1]:
 
             if st.button("Adicionar procedimento"):
                 data_str = data_proc.strftime("%d/%m/%Y")
-                if existe_procedimento_no_dia(internacao_id, data_str):
-                    st.warning("Já existe procedimento para essa data (regra: 1 por dia).")
-                else:
-                    criar_procedimento(
-                        internacao_id,
-                        data_str,
-                        profissional,
-                        procedimento_tipo,
-                        situacao=situacao,
-                        observacao=(observacao or None)
-                    )
-                    st.success("Procedimento adicionado.")
+                # AGORA: manual pode ter vários no mesmo dia (não checamos existência)
+                criar_procedimento(
+                    internacao_id,
+                    data_str,
+                    profissional,
+                    procedimento_tipo,
+                    situacao=situacao,
+                    observacao=(observacao or None),
+                    is_manual=1
+                )
+                st.success("Procedimento (manual) adicionado.")
 
 
 # ============================================================
@@ -602,10 +573,10 @@ with tabs[2]:
         """
 
         if chosen == "Todos":
-            sql = base + " ORDER BY P.data_procedimento DESC"
+            sql = base + " ORDER BY P.data_procedimento DESC, P.id DESC"
             df = pd.read_sql_query(sql, conn)
         else:
-            sql = base + " WHERE I.hospital = ? ORDER BY P.data_procedimento DESC"
+            sql = base + " WHERE I.hospital = ? ORDER BY P.data_procedimento DESC, P.id DESC"
             df = pd.read_sql_query(sql, conn, params=(chosen,))
 
         conn.close()
