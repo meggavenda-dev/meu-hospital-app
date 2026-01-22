@@ -1166,14 +1166,30 @@ with tabs[1]:
             with colp3: grau_part = st.selectbox("Grau de Participação", [""] + GRAU_PARTICIPACAO_OPCOES, index=0)
 
             col_add = st.columns(6)[-1]
-            with col_add:
+            with col_add:    
+                
+                # Data da internação já carregada do banco
+                data_internacao_str = df_int["data_internacao"].iloc[0]
+                try:
+                    dt_internacao = datetime.strptime(data_internacao_str, "%d/%m/%Y").date()
+                except:
+                    dt_internacao = date.today()   # fallback seguro
+
                 if st.button("Adicionar procedimento", key="btn_add_manual", type="primary"):
+                
+                    # VALIDAÇÃO 🔥 (BLOQUEIO)
+                    if data_proc < dt_internacao:
+                        st.error("❌ A data do procedimento não pode ser anterior à data da internação.")
+                        st.stop()
+                
                     data_str = data_proc.strftime("%d/%m/%Y")
+                
                     criar_procedimento(
                         internacao_id, data_str, profissional, procedimento_tipo,
                         situacao=situacao, observacao=(observacao or None), is_manual=1,
                         aviso=None, grau_participacao=(grau_part if grau_part != "" else None),
                     )
+                
                     st.toast("Procedimento (manual) adicionado.", icon="✅")
                     maybe_sync_up_db("chore(db): novo procedimento manual")
                     st.rerun()
