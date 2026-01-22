@@ -49,127 +49,121 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 
 
 
+
 def inject_css():
     st.markdown("""
     <style>
 
-    /* ----------------------------------------------------
-       PALETA MICROSOFT - NEUTRA E LEVE
-       ---------------------------------------------------- */
+    /* ============================================================
+       TEMA TRADICIONAL ELEGANTE - CINZA CLARO + AZUL CLÁSSICO
+       ============================================================ */
+
     :root {
-        --ms-primary: #0067C0;         /* Azul Microsoft */
-        --ms-primary-hover: #005A9E;
-        --border-soft: #D0D7DE;        /* Cinza claro */
-        --text: #24292F;               /* Quase preto */
-        --text-muted: #57606A;
-        --surface: #FFFFFF;
-        --surface-alt: #F6F8FA;        /* Cinza suavíssimo */
+        --bg-main: #F5F6F7;       /* Cinza claro tradicional */
+        --bg-card: #FFFFFF;       /* Cartões / áreas internas */
+        --border: #D0D3D6;        /* Bordas suaves */
+        --text-main: #2E2E2E;     /* Cinza escuro legível */
+        --text-muted: #6E6E6E;    /* Cinza suave */
+        --primary: #1A73E8;       /* Azul clássico */
+        --primary-hover: #1558B0; /* Azul escurecido */
         --radius: 6px;
     }
 
+    /* Fundo geral */
     html, body, .stApp {
-        background-color: var(--surface) !important;
-        color: var(--text);
-        font-family: "Segoe UI", sans-serif;
+        background-color: var(--bg-main) !important;
+        color: var(--text-main) !important;
+        font-family: "Segoe UI", Arial, sans-serif !important;
     }
 
-    /* ----------------------------------------------------
-       HEADER DO APP (leve, institucional)
-       ---------------------------------------------------- */
+    /* Header */
     .app-header {
-        padding: 16px 12px;
-        margin: -1.2rem -1rem 0.8rem -1rem;
-        border-bottom: 1px solid var(--border-soft);
-        background: rgba(255,255,255,0.90);
-        backdrop-filter: blur(3px);
+        background: var(--bg-main);
+        padding: 10px 12px;
+        margin-bottom: 12px;
+        border-bottom: 1px solid var(--border);
     }
+
     .app-header .title {
-        font-size: 1.22rem;
-        font-weight: 700;
-        color: var(--ms-primary);
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--primary);
     }
+
     .app-header .sub {
         font-size: 0.85rem;
         color: var(--text-muted);
-        margin-top: -4px;
     }
 
-    /* ----------------------------------------------------
-       CARDS (painéis suaves)
-       ---------------------------------------------------- */
+    /* Cards tradicionais */
     .soft-card {
-        background: var(--surface-alt);
-        padding: 16px 18px;
+        background: var(--bg-card);
+        padding: 14px 18px;
         border-radius: var(--radius);
-        border: 1px solid var(--border-soft);
-        margin-bottom: 10px;
+        border: 1px solid var(--border);
+        margin-bottom: 12px;
     }
 
-    /* ----------------------------------------------------
-       TABELAS / EDITORES
-       ---------------------------------------------------- */
-    .element-container:has(.stDataFrame) .st-emotion-cache-1wmy9hl,
-    .element-container:has(.stDataEditor) .st-emotion-cache-1wmy9hl {
-        border: 1px solid var(--border-soft);
-        border-radius: var(--radius);
-        background: var(--surface);
-        padding-top: 6px;
+    /* Inputs – CINZA CLARO, NÃO ESCURO */
+    input, textarea, select, .stTextInput input, .stDateInput input {
+        background: #FFFFFF !important;
+        color: var(--text-main) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: var(--radius) !important;
     }
 
-    /* ----------------------------------------------------
-       PILLS DE STATUS (MUUUUITO LEVES)
-       ---------------------------------------------------- */
+    /* Selectbox wrapper */
+    [data-baseweb="select"] {
+        background: white !important;
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+    }
+
+    /* Botões – azul tradicional */
+    .stButton>button {
+        background: var(--primary) !important;
+        color: white !important;
+        border-radius: var(--radius) !important;
+        border: none !important;
+        padding: 6px 18px !important;
+        font-weight: 600 !important;
+        font-size: 0.9rem !important;
+    }
+    .stButton>button:hover {
+        background: var(--primary-hover) !important;
+    }
+
+    /* Pills (Status) suaves e legíveis */
     .pill {
-        padding: 2px 10px;
+        padding: 3px 10px;
         border-radius: 999px;
         font-size: 0.75rem;
         font-weight: 600;
         border: 1px solid transparent;
     }
+    .pill-pendente  { background:#FFF3CD; color:#856404; border-color:#FFECB5; }
+    .pill-nc        { background:#EDEDED; color:#4F4F4F; border-color:#DCDCDC; }
+    .pill-enviado   { background:#D6E6FF; color:#0B4BAD; border-color:#ACC9F4; }
+    .pill-digitacao { background:#D8F3DC; color:#205B28; border-color:#B6E2BB; }
+    .pill-ok        { background:#DFF5E3; color:#1B7A20; border-color:#BFEAC6; }
 
-    .pill-pendente  { background:#FFF2CC; color:#8A6D00; border-color:#F7D48A; }
-    .pill-nc        { background:#F3F3F3; color:#555; border-color:#E0E0E0; }
-    .pill-enviado   { background:#E7F3FF; color:#0B5CBD; border-color:#C2E0FF; }
-    .pill-digitacao { background:#E6F4EA; color:#1B5E20; border-color:#C8E6C9; }
-    .pill-ok        { background:#E9F7EF; color:#107C10; border-color:#C8ECCC; }
-
-    /* ----------------------------------------------------
-       BOTÕES (Microsoft Fluent)
-       ---------------------------------------------------- */
-    .stButton > button {
-        background-color: var(--ms-primary) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: var(--radius) !important;
-        font-weight: 600 !important;
-        padding: 6px 18px !important;
-        font-size: 0.9rem !important;
-    }
-    .stButton > button:hover {
-        background-color: var(--ms-primary-hover) !important;
+    /* Tabelas */
+    .element-container:has(.stDataFrame) .st-emotion-cache-1wmy9hl,
+    .element-container:has(.stDataEditor) .st-emotion-cache-1wmy9hl {
+        background: var(--bg-card);
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
     }
 
-    /* Secundário */
-    .secondary-btn {
-        background: var(--surface-alt) !important;
-        color: var(--text) !important;
-        border: 1px solid var(--border-soft) !important;
-    }
-    .secondary-btn:hover {
-        background: #ECECEC !important;
-    }
-
-    /* ----------------------------------------------------
-       SIDEBAR
-       ---------------------------------------------------- */
+    /* Sidebar */
     section[data-testid="stSidebar"] .block-container {
-        background: var(--surface-alt);
-        padding: 18px 14px;
-        border-right: 1px solid var(--border-soft);
+        background: var(--bg-main);
+        border-right: 1px solid var(--border);
     }
 
     </style>
     """, unsafe_allow_html=True)
+
 
 
 def pill(situacao: str) -> str:
