@@ -1011,7 +1011,7 @@ with tabs[1]:
                     "id": st.column_config.Column("ID", disabled=True),
                     "data_procedimento": st.column_config.Column("Data", disabled=True),
                     "profissional": st.column_config.Column("Profissional", disabled=True),
-                    "aviso": st.column_config.Column("Aviso", disabled=True),
+                    "aviso": st.column_config.TextColumn("Aviso"),
                     "grau_participacao": st.column_config.SelectboxColumn(
                         "Grau de Participação", options=[""] + GRAU_PARTICIPACAO_OPCOES, required=False
                     ),
@@ -1024,7 +1024,7 @@ with tabs[1]:
             col_save = st.columns(6)[-1]
             with col_save:
                 if st.button("💾 Salvar alterações", key="btn_save_proc", type="primary"):
-                    cols_chk = ["procedimento", "situacao", "observacao", "grau_participacao"]
+                    cols_chk = ["procedimento", "situacao", "observacao", "grau_participacao", "aviso"]
                     df_compare = df_proc[["id"] + cols_chk].merge(edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new"))
                     alterados = []
                     for _, row in df_compare.iterrows():
