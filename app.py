@@ -1,4 +1,4 @@
-esse é o app.py completo original # ============================================================
+# ============================================================
 #  SISTEMA DE INTERNAÇÕES — VERSÃO FINAL
 #  Inclui:
 #  - Parser robusto
