@@ -581,6 +581,41 @@ def apagar_internacoes(lista_at):
     conn.commit(); conn.close()
     mark_db_dirty()
 
+
+def atualizar_internacao(internacao_id, paciente=None, convenio=None, data_internacao=None, hospital=None):
+    sets, params = [], []
+
+    if paciente is not None:
+        sets.append("paciente = ?")
+        params.append(paciente)
+
+    if convenio is not None:
+        sets.append("convenio = ?")
+        params.append(convenio)
+
+    if data_internacao is not None:
+        sets.append("data_internacao = ?")
+        params.append(data_internacao)
+
+    if hospital is not None:
+        sets.append("hospital = ?")
+        params.append(hospital)
+
+    if not sets:
+        return
+
+    params.append(internacao_id)
+
+    sql = f"UPDATE Internacoes SET {', '.join(sets)} WHERE id = ?"
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    conn.commit()
+    conn.close()
+    mark_db_dirty()
+
+
 def deletar_internacao(internacao_id: int):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("DELETE FROM Procedimentos WHERE internacao_id = ?", (internacao_id,))
@@ -889,6 +924,52 @@ with tabs[1]:
             st.subheader("Dados da internação")
             st.dataframe(df_int, use_container_width=True, hide_index=True)
             internacao_id = int(df_int["id"].iloc[0])
+
+            
+            # ============================
+            # ✏️ Edição dos dados da internação
+            # ============================
+            
+            st.subheader("✏️ Editar dados da internação")
+            
+            with st.container():
+                c1, c2, c3, c4 = st.columns(4)
+            
+                with c1:
+                    novo_paciente = st.text_input("Paciente:", value=df_int["paciente"].iloc[0])
+            
+                with c2:
+                    novo_convenio = st.text_input("Convênio:", value=df_int["convenio"].iloc[0])
+            
+                with c3:
+                    data_atual = df_int["data_internacao"].iloc[0]
+                    try:
+                        dt_atual = datetime.strptime(data_atual, "%d/%m/%Y").date()
+                    except:
+                        dt_atual = date.today()
+            
+                    nova_data = st.date_input("Data da internação:", value=dt_atual)
+            
+                with c4:
+                    todos_hospitais = get_hospitais(include_inactive=True)
+                    novo_hospital = st.selectbox("Hospital:", todos_hospitais, index=todos_hospitais.index(df_int["hospital"].iloc[0]))
+            
+                col_save_int = st.columns(6)[-1]
+                with col_save_int:
+                    if st.button("💾 Salvar alterações da internação", type="primary"):
+                        atualizar_internacao(
+                            internacao_id,
+                            paciente=novo_paciente,
+                            convenio=novo_convenio,
+                            data_internacao=nova_data.strftime("%d/%m/%Y"),
+                            hospital=novo_hospital
+                        )
+            
+                        st.toast("Dados da internação atualizados!", icon="✅")
+                        maybe_sync_up_db("chore(db): edição de internação")
+                        st.rerun()
+
+            
 
             # Excluir internação
             with st.expander("🗑️ Excluir esta internação"):
