@@ -21,8 +21,8 @@ import io
 # ==== PDF (ReportLab) - import protegido ====
 REPORTLAB_OK = True
 try:
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.pagesizes import A4, landscape  # <-- (NOVO) landscape
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet
 except ModuleNotFoundError:
@@ -719,19 +719,18 @@ with tabs[4]:
 # 📑 ABA 6 — RELATÓRIOS (PDF)
 # ============================================================
 
-# Define o gerador de PDF apenas se reportlab estiver disponível
+# (NOVO) PDF em PAISAGEM + ordem de colunas solicitada
 if REPORTLAB_OK:
     def _pdf_cirurgias_por_status(df, filtros):
         """
-        Gera PDF (bytes) do relatório 'Cirurgias por Status'.
-        df: DataFrame já filtrado.
-        filtros: dict com texto dos filtros (hospital, status, período).
+        Gera PDF (bytes) do relatório 'Cirurgias por Status' em PAISAGEM.
+        Colunas (na ordem): Atendimento, Aviso, Convênio, Paciente, Data, Profissional, Hospital.
         """
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
             buf,
-            pagesize=A4,
-            leftMargin=22, rightMargin=22, topMargin=28, bottomMargin=22
+            pagesize=landscape(A4),  # <-- (NOVO) paisagem
+            leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
         )
         styles = getSampleStyleSheet()
         H1 = styles["Heading1"]
@@ -746,8 +745,8 @@ if REPORTLAB_OK:
 
         # Filtros
         filtros_txt = (
-            f"Período: {filtros['ini']} a {filtros['fim']} &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"Hospital: {filtros['hospital']} &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"Período: {filtros['ini']} a {filtros['fim']}  |  "
+            f"Hospital: {filtros['hospital']}  |  "
             f"Status: {filtros['status']}"
         )
         elems.append(Paragraph(filtros_txt, N))
@@ -776,18 +775,18 @@ if REPORTLAB_OK:
             elems.append(t_res)
             elems.append(Spacer(1, 10))
 
-        # Tabela detalhada
-        header = ["Data", "Hospital", "Atendimento", "Paciente", "Profissional", "Status", "Aviso"]
+        # (NOVO) Tabela detalhada na ordem pedida
+        header = ["Atendimento", "Aviso", "Convênio", "Paciente", "Data", "Profissional", "Hospital"]
         data_rows = []
         for _, r in df.iterrows():
             data_rows.append([
-                r.get("data_procedimento") or "",
-                r.get("hospital") or "",
                 r.get("atendimento") or "",
-                r.get("paciente") or "",
-                r.get("profissional") or "",
-                r.get("situacao") or "",
                 r.get("aviso") or "",
+                r.get("convenio") or "",
+                r.get("paciente") or "",
+                r.get("data_procedimento") or "",
+                r.get("profissional") or "",
+                r.get("hospital") or "",
             ])
 
         table = Table([header] + data_rows, repeatRows=1)
@@ -808,7 +807,6 @@ if REPORTLAB_OK:
         buf.close()
         return pdf_bytes
 else:
-    # Stub para sinalizar ausência do reportlab
     def _pdf_cirurgias_por_status(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado. Adicione 'reportlab' ao requirements.txt.")
 
@@ -826,17 +824,16 @@ with tabs[5]:
         status_opts = ["Todos"] + STATUS_OPCOES
         status_sel = st.selectbox("Status", status_opts, index=0, key="rel_status")
     with colf3:
-        # Período do procedimento: data inicial/final
         hoje = date.today()
         ini_default = hoje.replace(day=1)
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
-    # Carregar base
+    # Carregar base (NOVO: incluindo 'convenio' para a tabela)
     conn = get_conn()
     sql_rel = """
         SELECT 
-            I.hospital, I.atendimento, I.paciente,
+            I.hospital, I.atendimento, I.paciente, I.convenio,
             P.data_procedimento, P.aviso, P.profissional,
             P.procedimento, P.situacao
         FROM Procedimentos P
@@ -865,7 +862,7 @@ with tabs[5]:
         gerar_pdf = st.button("Gerar PDF")
 
     with colb2:
-        # Fallback imediato: exportar CSV se desejar
+        # Fallback: exportar CSV (colunas em ordem padrão do DataFrame)
         if not df_rel.empty:
             csv_bytes = df_rel.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
