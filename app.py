@@ -48,14 +48,6 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 # ---------------------------
 
 
-
-Entendo perfeitamente o problema. Pelas imagens, o contraste está baixíssimo: o fundo está branco e as caixas de seleção/inputs também estão brancas ou com bordas quase invisíveis, o que torna a interface exaustiva para trabalhar.
-
-O erro principal no seu código atual é que o Streamlit, em versões recentes, força temas específicos que conflitam com seletores CSS genéricos. Vamos resolver isso com uma paleta "High Contrast Executive", focada em legibilidade e separação visual clara.
-
-Substitua sua função inject_css() por esta versão aprimorada:
-
-Python
 def inject_css():
     st.markdown("""
     <style>
