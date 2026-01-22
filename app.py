@@ -10,6 +10,7 @@
 #  - Filtros por hospital + Seeds
 #  - Relatórios (PDF) — Cirurgias por Status (paisagem, ordem: Atendimento, Aviso, Convênio, Paciente, Data, Profissional, Hospital)
 #  - Quitação de Cirurgias (com atualização automática para "Finalizado")
+#  - Ver quitação em cirurgias Finalizadas (botão)
 # ============================================================
 
 import streamlit as st
@@ -210,6 +211,19 @@ def _to_float_or_none(v):
         except Exception:
             return None
 
+def _format_currency_br(v) -> str:
+    """Formata número em BRL simples sem depender de locale do SO."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "R$ 0,00"
+    try:
+        v = float(v)
+        s = f"{v:,.2f}"
+        # USA -> BR: separador milhar ponto, decimal vírgula
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"R$ {s}"
+    except Exception:
+        return f"R$ {v}"
+
 # ============================================================
 # (LEGADO) PARSER AUXILIAR — mantido para referência (NÃO USADO)
 # ============================================================
@@ -298,7 +312,7 @@ def parse_csv_text(csv_text):
                 })
             continue
 
-        if "Total de Avisos" in linha or "Total de Cirurgias" in linha:
+        if "Total de Avisos" in linha ou "Total de Cirurgias" in linha:
             continue
 
         continue
@@ -431,13 +445,28 @@ def get_internacao_by_atendimento(att):
     conn.close()
     return df
 
-
 def get_procedimentos(internacao_id):
     conn = get_conn()
     df = pd.read_sql_query("SELECT * FROM Procedimentos WHERE internacao_id = ?", conn, params=(internacao_id,))
     conn.close()
     return df
 
+def get_quitacao_by_proc_id(proc_id: int):
+    """Busca dados completos da quitação e metadados da cirurgia."""
+    conn = get_conn()
+    sql = """
+        SELECT
+            P.id, P.data_procedimento, P.profissional, P.situacao, P.aviso, P.observacao,
+            P.quitacao_data, P.quitacao_guia_amhptiss, P.quitacao_valor_amhptiss,
+            P.quitacao_guia_complemento, P.quitacao_valor_complemento,
+            I.hospital, I.atendimento, I.paciente, I.convenio
+        FROM Procedimentos P
+        INNER JOIN Internacoes I ON I.id = P.internacao_id
+        WHERE P.id = ?
+    """
+    df = pd.read_sql_query(sql, conn, params=(proc_id,))
+    conn.close()
+    return df
 
 # ============================================================
 # INICIALIZAÇÃO
@@ -684,6 +713,75 @@ with tabs[1]:
                 )
                 st.success("Procedimento (manual) adicionado.")
                 st.rerun()  # recarrega a página para exibir o novo item imediatamente
+
+            # ====================================================
+            # 🔎 Ver dados de QUITAÇÃO (Finalizados) — NOVO
+            # ====================================================
+            st.divider()
+            st.subheader("🔎 Quitações desta internação (somente Finalizados)")
+
+            finalizados = df_proc[df_proc["situacao"] == "Finalizado"]
+            if finalizados.empty:
+                st.info("Não há procedimentos finalizados nesta internação.")
+            else:
+                # Lista simples com botão "Ver quitação" por item
+                for _, r in finalizados.iterrows():
+                    colA, colB, colC, colD = st.columns([2, 2, 2, 2])
+                    with colA:
+                        st.markdown(f"**Data:** {r['data_procedimento']}")
+                    with colB:
+                        st.markdown(f"**Profissional:** {r['profissional'] or '-'}")
+                    with colC:
+                        st.markdown(f"**Aviso:** {r['aviso'] or '-'}")
+                    with colD:
+                        if st.button("Ver quitação", key=f"verquit_{int(r['id'])}"):
+                            st.session_state["show_quit_id"] = int(r["id"])
+
+                # Painel de detalhes
+                if "show_quit_id" in st.session_state and st.session_state["show_quit_id"]:
+                    pid = int(st.session_state["show_quit_id"])
+                    df_q = get_quitacao_by_proc_id(pid)
+                    if not df_q.empty:
+                        q = df_q.iloc[0]
+                        # Soma total
+                        total = (q["quitacao_valor_amhptiss"] or 0) + (q["quitacao_valor_complemento"] or 0)
+
+                        st.markdown("---")
+                        st.markdown("### 🧾 Detalhes da quitação")
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.markdown(f"**Atendimento:** {q['atendimento']}")
+                            st.markdown(f"**Hospital:** {q['hospital']}")
+                            st.markdown(f"**Convênio:** {q['convenio'] or '-'}")
+                        with c2:
+                            st.markdown(f"**Paciente:** {q['paciente']}")
+                            st.markdown(f"**Data procedimento:** {q['data_procedimento'] or '-'}")
+                            st.markdown(f"**Profissional:** {q['profissional'] or '-'}")
+                        with c3:
+                            st.markdown(f"**Status:** {q['situacao']}")
+                            st.markdown(f"**Aviso:** {q['aviso'] or '-'}")
+                            st.markdown(f"**Observações:** {q['observacao'] or '-'}")
+
+                        st.markdown("#### 💳 Quitação")
+                        c4, c5, c6 = st.columns(3)
+                        with c4:
+                            st.markdown(f"**Data da quitação:** {q['quitacao_data'] or '-'}")
+                            st.markdown(f"**Guia AMHPTISS:** {q['quitacao_guia_amhptiss'] or '-'}")
+                        with c5:
+                            st.markdown(f"**Valor Guia AMHPTISS:** {_format_currency_br(q['quitacao_valor_amhptiss'])}")
+                            st.markdown(f"**Guia Complemento:** {q['quitacao_guia_complemento'] or '-'}")
+                        with c6:
+                            st.markdown(f"**Valor Guia Complemento:** {_format_currency_br(q['quitacao_valor_complemento'])}")
+                            st.markdown(f"**Total Quitado:** **{_format_currency_br(total)}**")
+
+                        if st.button("Fechar", key="fechar_quit"):
+                            st.session_state["show_quit_id"] = None
+                            st.rerun()
+                    else:
+                        st.warning("Não foi possível carregar os dados da quitação.")
+                        if st.button("Fechar", key="fechar_quit_err"):
+                            st.session_state["show_quit_id"] = None
+                            st.rerun()
 
 
 # ============================================================
@@ -997,11 +1095,9 @@ with tabs[6]:
         st.info("Não há cirurgias com status 'Enviado para pagamento' para quitação.")
     else:
         # >>> NORMALIZA TIPOS PARA O data_editor <<<
-        # Data da quitação: datetime64[ns] (aceita dd/mm/aaaa que veio do banco)
         df_quit["quitacao_data"] = pd.to_datetime(
             df_quit["quitacao_data"], dayfirst=True, errors="coerce"
         )
-        # Valores numéricos: garantir dtype float (coerce converte inválidos em NaN)
         for col in ["quitacao_valor_amhptiss", "quitacao_valor_complemento"]:
             df_quit[col] = pd.to_numeric(df_quit[col], errors="coerce")
 
