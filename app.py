@@ -1174,25 +1174,24 @@ with tabs[1]:
                     dt_internacao = datetime.strptime(data_internacao_str, "%d/%m/%Y").date()
                 except:
                     dt_internacao = date.today()   # fallback seguro
-
+                
                 if st.button("Adicionar procedimento", key="btn_add_manual", type="primary"):
                 
-                    # VALIDAÇÃO 🔥 (BLOQUEIO)
+                    # ⚠️ VALIDAÇÃO (sem st.stop)
                     if data_proc < dt_internacao:
                         st.error("❌ A data do procedimento não pode ser anterior à data da internação.")
-                        st.session_state["add_proc_error"] = True
+                    else:
+                        data_str = data_proc.strftime("%d/%m/%Y")
                 
-                    data_str = data_proc.strftime("%d/%m/%Y")
+                        criar_procedimento(
+                            internacao_id, data_str, profissional, procedimento_tipo,
+                            situacao=situacao, observacao=(observacao or None), is_manual=1,
+                            aviso=None, grau_participacao=(grau_part if grau_part != "" else None),
+                        )
                 
-                    criar_procedimento(
-                        internacao_id, data_str, profissional, procedimento_tipo,
-                        situacao=situacao, observacao=(observacao or None), is_manual=1,
-                        aviso=None, grau_participacao=(grau_part if grau_part != "" else None),
-                    )
-                
-                    st.toast("Procedimento (manual) adicionado.", icon="✅")
-                    maybe_sync_up_db("chore(db): novo procedimento manual")
-                    st.rerun()
+                        st.toast("Procedimento (manual) adicionado.", icon="✅")
+                        maybe_sync_up_db("chore(db): novo procedimento manual")
+                        st.rerun()
 
             # Ver quitação (Finalizados)
             st.divider()
