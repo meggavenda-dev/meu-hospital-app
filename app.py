@@ -29,14 +29,14 @@ if APP_DIR not in sys.path:
 # ------------------------------------------------------------
 from parser import parse_tiss_original
 from models import (
-    criar_internacao,
-    criar_procedimento,
-    # Se quiser usar aqui também: get_internacao_by_atendimento
+    get_internacao_by_atendimento,  # retorna fetchone()
+    criar_internacao,               # (numero_internacao, hospital, atendimento, paciente, data_internacao, convenio)
+    criar_procedimento,             # (internacao_id, data_procedimento, profissional, procedimento)
 )
-from database import create_tables  # cria Internacoes e Procedimentos
+from database import create_tables  # cria Internacoes e Procedimentos (dados.db)
 
 # ============================================================
-# BANCO LOCAL (dados.db) — para Hospitals e helpers de exibição
+# CONEXÃO (dados.db) — para Hospitals e consultas auxiliares
 # ============================================================
 
 DB_PATH = os.path.join(APP_DIR, "dados.db")
@@ -93,7 +93,7 @@ def clean(s: str) -> str:
     return s.strip().strip('"').strip()
 
 # ============================================================
-# FUNÇÕES AUXILIARES (exibição em DataFrame e reprocessamento)
+# AUXILIARES (exibição e reprocessamento)
 # ============================================================
 
 def apagar_internacoes(lista_at):
@@ -104,7 +104,6 @@ def apagar_internacoes(lista_at):
     cur = conn.cursor()
 
     qmarks = ",".join(["?"] * len(lista_at))
-
     # Apaga procedimentos relacionados
     cur.execute(f"""
         DELETE FROM Procedimentos
@@ -113,19 +112,23 @@ def apagar_internacoes(lista_at):
               WHERE atendimento IN ({qmarks})
          )
     """, lista_at)
-
     # Apaga internações
     cur.execute(f"DELETE FROM Internacoes WHERE atendimento IN ({qmarks})", lista_at)
 
     conn.commit()
     conn.close()
 
-def get_internacao_df_by_atendimento(att):
-    """Retorna DataFrame para exibição no Streamlit."""
-    conn = get_conn()
-    df = pd.read_sql_query("SELECT * FROM Internacoes WHERE atendimento = ?", conn, params=(att,))
-    conn.close()
-    return df
+def get_internacao_df(att):
+    """
+    Converte a row retornada por models.get_internacao_by_atendimento(att)
+    em DataFrame para exibir no Streamlit. Retorna DataFrame vazio se não houver.
+    """
+    row = get_internacao_by_atendimento(att)
+    if not row:
+        return pd.DataFrame(columns=["id","numero_internacao","hospital","atendimento","paciente","data_internacao","convenio"])
+    # A ordem das colunas segue o CREATE TABLE das suas tabelas
+    cols = ["id","numero_internacao","hospital","atendimento","paciente","data_internacao","convenio"]
+    return pd.DataFrame([row], columns=cols)
 
 def get_procedimentos_df(internacao_id):
     conn = get_conn()
@@ -135,8 +138,8 @@ def get_procedimentos_df(internacao_id):
 
 # ============================================================
 # INICIALIZAÇÃO
-#   - Internacoes/Procedimentos: via database.create_tables()
-#   - Hospitals: aqui (como no original)
+#  - Internacoes/Procedimentos: via database.create_tables()
+#  - Hospitals: aqui (como no original)
 # ============================================================
 
 create_tables()
@@ -144,7 +147,7 @@ create_hospitals_table()
 seed_hospitais()
 
 st.set_page_config(page_title="Gestão de Internações", layout="wide")
-st.title("🏥 Sistema de Internações — Versão Final")
+st.title("🏥 Sistema de Internações — Versão Final (estrutura original)")
 
 # ============================================================
 # INTERFACE EM ABAS
@@ -244,7 +247,7 @@ with tabs[1]:
     codigo = st.text_input("Digite o atendimento:")
 
     if codigo:
-        df_int = get_internacao_df_by_atendimento(codigo)
+        df_int = get_internacao_df(codigo)
         if filtro_hosp != "Todos":
             df_int = df_int[df_int["hospital"] == filtro_hosp]
 
@@ -344,3 +347,4 @@ with tabs[4]:
     conn.close()
 
     st.dataframe(df, use_container_width=True)
+``
