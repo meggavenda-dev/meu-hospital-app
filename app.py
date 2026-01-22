@@ -1180,7 +1180,7 @@ with tabs[1]:
                     # VALIDAÇÃO 🔥 (BLOQUEIO)
                     if data_proc < dt_internacao:
                         st.error("❌ A data do procedimento não pode ser anterior à data da internação.")
-                        st.stop()
+                        st.session_state["add_proc_error"] = True
                 
                     data_str = data_proc.strftime("%d/%m/%Y")
                 
