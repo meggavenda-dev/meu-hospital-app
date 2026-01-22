@@ -52,139 +52,122 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 def inject_css():
     st.markdown("""
     <style>
+    /* Importando fonte Inter para um look mais moderno */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
 
-    /* ---------------------------------------------------
-       PALETA FLUENT LIGHT (MICROSOFT)
-       --------------------------------------------------- */
     :root {
-      --ms-blue: #0078D4;          /* Ação primária */
-      --ms-blue-light: #EFF6FC;    /* Hover leve */
-      --surface: #ffffff;          /* Cartões */
-      --surface-alt: #F3F2F1;      /* Áreas secundárias */
-      --border: #D1D1D1;           /* Bordas leves */
-      --text: #323130;             /* Texto padrão */
-      --text-muted: #605E5C;       /* Labels suaves */
-      --radius: 6px;
+        --primary: #1E293B;        /* Azul Escuro Executivo */
+        --accent: #0078D4;         /* Azul Ação */
+        --bg-main: #F8FAFC;        /* Fundo suave */
+        --text-main: #334155;
+        --border-soft: #E2E8F0;
+        --radius-lg: 12px;
+        --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
     }
 
-    html, body, .stApp {
-        background: #ffffff !important;
-        color: var(--text);
-        font-family: Segoe UI, Roboto, sans-serif;
+    /* Reset Geral */
+    .stApp {
+        background-color: var(--bg-main);
+        font-family: 'Inter', sans-serif;
     }
 
-    /* ---------------------------------------------------
-       HEADER
-       --------------------------------------------------- */
+    /* HEADER EXECUTIVO */
     .app-header {
-      position: sticky;
-      top: -4px;
-      padding: 18px 16px;
-      margin: -1.5rem -1rem 10px -1rem;
-      background: rgba(255,255,255,0.85);
-      backdrop-filter: blur(6px);
-      border-bottom: 1px solid var(--border);
-      z-index: 1000;
+        background: white;
+        padding: 1.5rem 2rem;
+        margin: -4rem -2rem 2rem -2rem;
+        border-bottom: 1px solid var(--border-soft);
+        box-shadow: var(--shadow);
     }
     .app-header .title {
-      font-weight: 700;
-      font-size: 1.3rem;
-      color: var(--ms-blue);
+        color: var(--primary);
+        font-size: 1.6rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
     }
     .app-header .sub {
-      font-size: .9rem;
-      color: var(--text-muted);
+        color: #64748b;
+        font-size: 0.95rem;
     }
 
-    /* ---------------------------------------------------
-       CARDS
-       --------------------------------------------------- */
+    /* CARDS DE CONTEÚDO */
     .soft-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 16px 18px;
-      margin-bottom: 12px;
+        background: white;
+        border: 1px solid var(--border-soft);
+        border-radius: var(--radius-lg);
+        padding: 24px;
+        margin-bottom: 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
 
-    /* ---------------------------------------------------
-       INPUTS (corrige fundo escuro)
-       --------------------------------------------------- */
-    .stTextInput>div>div>input,
-    .stDateInput>div>div>input,
-    .stSelectbox>div>div>div {
-      background-color: #ffffff !important;
-      border: 1px solid var(--border) !important;
-      color: var(--text) !important;
-      border-radius: var(--radius);
-    }
-
-    /* Dropdown fix */
-    .stSelectbox div[data-baseweb="select"] {
-      background-color: white !important;
-      border-radius: var(--radius);
-    }
-
-    /* ---------------------------------------------------
-       BOTÕES — estilo Microsoft
-       --------------------------------------------------- */
+    /* ESTILO DOS BOTÕES */
     .stButton>button {
-      background: var(--ms-blue) !important;
-      color: white !important;
-      border-radius: var(--radius) !important;
-      border: none !important;
-      padding: 6px 18px !important;
-      font-size: .9rem !important;
-      font-weight: 600 !important;
+        background-color: var(--primary) !important;
+        color: white !important;
+        border-radius: 8px !important;
+        border: none !important;
+        padding: 0.5rem 1.2rem !important;
+        font-weight: 600 !important;
+        transition: all 0.2s ease;
     }
     .stButton>button:hover {
-      background: #005A9E !important;
+        background-color: var(--accent) !important;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0,120,212,0.2);
     }
 
-    /* Botão secundário */
-    .secondary-btn {
-      background: var(--surface-alt) !important;
-      color: var(--text) !important;
-      border: 1px solid var(--border) !important;
+    /* KPI CARDS (Dashboard) */
+    .kpi-wrap {
+        display: flex;
+        gap: 15px;
+        margin-bottom: 25px;
     }
-    .secondary-btn:hover {
-      background: #E1DFDD !important;
+    .kpi {
+        background: white;
+        flex: 1;
+        padding: 20px;
+        border-radius: var(--radius-lg);
+        border-left: 5px solid var(--accent);
+        box-shadow: var(--shadow);
+    }
+    .kpi .label {
+        font-size: 0.85rem;
+        color: #64748b;
+        text-transform: uppercase;
+        font-weight: 600;
+    }
+    .kpi .value {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: var(--primary);
     }
 
-    /* ---------------------------------------------------
-       TABLE WRAPPER
-       --------------------------------------------------- */
-    .element-container:has(.stDataFrame) .st-emotion-cache-1wmy9hl,
-    .element-container:has(.stDataEditor) .st-emotion-cache-1wmy9hl {
-      border:1px solid var(--border);
-      border-radius: var(--radius);
-      background: white;
-      padding: 6px;
-    }
-
-    /* ---------------------------------------------------
-       STATUS PILLS — versão neutra
-       --------------------------------------------------- */
+    /* STATUS PILLS (Refinados) */
     .pill {
-      display:inline-block;
-      padding: 3px 10px;
-      border-radius: 999px;
-      font-size: .75rem;
-      font-weight:600;
-      border:1px solid transparent;
+        padding: 4px 12px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
     }
-    .pill-pendente  { background:#FFF4CE; color:#8A6D00; border-color:#FFE08A; }
-    .pill-nc        { background:#F3F2F1; color:#605E5C; border-color:#E1DFDD; }
-    .pill-enviado   { background:#DEECF9; color:#005A9E; border-color:#C7E0F4; }
-    .pill-digitacao { background:#DFF6DD; color:#0E7000; border-color:#BDDABD; }
-    .pill-ok        { background:#E7F4E4; color:#107C10; border-color:#A7D8A7; }
+    .pill-pendente { background: #FEF3C7; color: #92400E; }
+    .pill-enviado  { background: #DBEAFE; color: #1E40AF; }
+    .pill-ok       { background: #DCFCE7; color: #166534; }
+    .pill-nc       { background: #F1F5F9; color: #475569; }
 
-    /* ---------------------------------------------------
-       SIDEBAR
-       --------------------------------------------------- */
-    section[data-testid="stSidebar"] .block-container {
-      padding: 20px 14px 30px 14px;
-      background: var(--surface-alt);
+    /* Customização da Tabela/DataFrame */
+    [data-testid="stMetric"] {
+        background: white;
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: var(--shadow);
+    }
+
+    /* Ajuste de inputs para parecerem mais integrados */
+    .stTextInput input, .stSelectbox select {
+        border-radius: 8px !important;
+        border: 1px solid var(--border-soft) !important;
     }
 
     </style>
