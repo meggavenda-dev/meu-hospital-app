@@ -3,3 +3,4 @@ pandas
 reportlab
 pypdf2
 openpyxl
+requests
