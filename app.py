@@ -1526,12 +1526,6 @@ with tabs[3]:
 
         st.markdown("Preencha os dados e clique em **Gravar quitação(ões)**. Ao gravar, o status muda para **Finalizado**.")
         
-        for col in ["procedimento", "situacao", "observacao", "aviso", "grau_participacao"]:
-            if col not in df_proc.columns:
-                df_proc[col] = ""
-            df_proc[col] = df_proc[col].fillna("")
-
-
         edited = st.data_editor(
             df_quit, key="editor_quit", use_container_width=True, hide_index=True,
             column_config={
