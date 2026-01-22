@@ -1,3 +1,4 @@
+
 # ============================================================
 #  SISTEMA DE INTERNAÇÕES — VERSÃO FINAL
 #  Inclui:
@@ -145,13 +146,13 @@ def parse_csv_text(csv_text):
             # lado esquerdo: atendimento + paciente
             esquerda = [c.strip() for c in cols]
             i = 0
-            while i &lt; len(esquerda) and esquerda[i] == "":
+            while i < len(esquerda) and esquerda[i] == "":
                 i += 1
-            atendimento = esquerda[i] if i &lt; len(esquerda) else ""
+            atendimento = esquerda[i] if i < len(esquerda) else ""
             j = i + 1
-            while j &lt; len(esquerda) and esquerda[j] == "":
+            while j < len(esquerda) and esquerda[j] == "":
                 j += 1
-            paciente = esquerda[j] if j &lt; len(esquerda) else ""
+            paciente = esquerda[j] if j < len(esquerda) else ""
 
             hora_ini_mestre, hora_fim_mestre = hora_ini, hora_fim
 
@@ -298,7 +299,7 @@ def get_procedimentos(internacao_id):
 create_tables()
 seed_hospitais()
 
-st.set_page_config("Gestão de Internações", layout="wide")
+st.set_page_config(page_title="Gestão de Internações", layout="wide")
 st.title("🏥 Sistema de Internações — Versão Final")
 
 
@@ -456,7 +457,7 @@ with tabs[3]:
         SELECT profissional, COUNT(*) AS total
         FROM Procedimentos P
         INNER JOIN Internacoes I ON I.id = P.internacao_id
-        WHERE profissional IS NOT NULL AND profissional &lt;&gt; ''
+        WHERE profissional IS NOT NULL AND profissional <> ''
     """
 
     if chosen == "Todos":
@@ -485,7 +486,7 @@ with tabs[4]:
         SELECT I.convenio, COUNT(*) AS total
         FROM Internacoes I
         INNER JOIN Procedimentos P ON P.internacao_id = I.id
-        WHERE I.convenio IS NOT NULL AND I.convenio &lt;&gt; ''
+        WHERE I.convenio IS NOT NULL AND I.convenio <> ''
     """
 
     if chosen == "Todos":
