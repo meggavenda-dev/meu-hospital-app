@@ -41,7 +41,7 @@ def get_conn():
 def create_tables():
     """
     Cria/migra tabelas sem apagar dados (sem DROP).
-    - Adiciona colunas faltantes em Procedimentos (situacao, observacao, is_manual).
+    - Adiciona colunas faltantes em Procedimentos (situacao, observacao, is_manual, aviso).
     - Cria índice único parcial ux_proc_auto para evitar duplicata AUTOMÁTICA por dia.
     """
     conn = get_conn()
@@ -80,6 +80,7 @@ def create_tables():
         situacao TEXT NOT NULL DEFAULT 'Pendente',
         observacao TEXT,
         is_manual INTEGER NOT NULL DEFAULT 0,  -- 0=automático(import), 1=manual
+        aviso TEXT,
         FOREIGN KEY(internacao_id) REFERENCES Internacoes(id)
     );
     """)
@@ -95,6 +96,10 @@ def create_tables():
         pass
     try:
         cur.execute("ALTER TABLE Procedimentos ADD COLUMN is_manual INTEGER NOT NULL DEFAULT 0;")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE Procedimentos ADD COLUMN aviso TEXT;")
     except sqlite3.OperationalError:
         pass
 
@@ -298,16 +303,16 @@ def criar_internacao(hospital, atendimento, paciente, data, convenio):
     conn.close()
     return nid
 
-# Aceita situacao/observacao/is_manual; OR IGNORE por causa do UNIQUE parcial nos automáticos
+# Aceita situacao/observacao/is_manual/aviso; OR IGNORE por causa do UNIQUE parcial nos automáticos
 def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
-                       situacao="Pendente", observacao=None, is_manual=0):
+                       situacao="Pendente", observacao=None, is_manual=0, aviso=None):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         INSERT OR IGNORE INTO Procedimentos
-        (internacao_id, data_procedimento, profissional, procedimento, situacao, observacao, is_manual)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (internacao_id, data_proc, profissional, procedimento, situacao, observacao, is_manual))
+        (internacao_id, data_procedimento, profissional, procedimento, situacao, observacao, is_manual, aviso)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (internacao_id, data_proc, profissional, procedimento, situacao, observacao, is_manual, aviso))
     conn.commit()
     conn.close()
 
@@ -439,10 +444,15 @@ with tabs[0]:
 
                 # Profissional do dia = primeiro que surgir para (att, data)
                 prof_dia = ""
+                aviso_dia = ""
                 for it in registros:
-                    if it["atendimento"] == att and it["data"] == data_proc and it.get("profissional"):
-                        prof_dia = it["profissional"]
-                        break
+                    if it["atendimento"] == att and it["data"] == data_proc:
+                        if not prof_dia and it.get("profissional"):
+                            prof_dia = it["profissional"]
+                        if not aviso_dia and it.get("aviso"):
+                            aviso_dia = it["aviso"]
+                        if prof_dia and aviso_dia:
+                            break
 
                 # Já existe auto do dia?
                 if existe_procedimento_no_dia(internacao_id, data_proc):
@@ -457,7 +467,8 @@ with tabs[0]:
                     procedimento="Cirurgia / Procedimento",
                     situacao="Pendente",
                     observacao=None,
-                    is_manual=0
+                    is_manual=0,
+                    aviso=aviso_dia or None
                 )
                 total_criados += 1
 
@@ -492,7 +503,7 @@ with tabs[1]:
 
             conn = get_conn()
             df_proc = pd.read_sql_query(
-                "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao "
+                "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao, aviso "
                 "FROM Procedimentos WHERE internacao_id = ? ORDER BY data_procedimento, id",
                 conn, params=(internacao_id,)
             )
@@ -504,6 +515,7 @@ with tabs[1]:
             df_proc["procedimento"] = df_proc["procedimento"].fillna("Cirurgia / Procedimento")
             df_proc["situacao"] = df_proc.get("situacao", pd.Series(dtype=str)).fillna("Pendente")
             df_proc["observacao"] = df_proc.get("observacao", pd.Series(dtype=str)).fillna("")
+            df_proc["aviso"] = df_proc.get("aviso", pd.Series(dtype=str)).fillna("")
 
             st.subheader("Procedimentos — Editáveis")
             edited = st.data_editor(
@@ -515,6 +527,7 @@ with tabs[1]:
                     "id": st.column_config.Column("ID", disabled=True),
                     "data_procedimento": st.column_config.Column("Data", disabled=True),
                     "profissional": st.column_config.Column("Profissional", disabled=True),
+                    "aviso": st.column_config.Column("Aviso", disabled=True),
                     "procedimento": st.column_config.SelectboxColumn(
                         "Tipo de Procedimento", options=PROCEDIMENTO_OPCOES, required=True
                     ),
@@ -574,6 +587,9 @@ with tabs[1]:
             with colp2:
                 observacao = st.text_input("Observações (opcional)")
 
+            # Campo adicional para AVISO (opcional)
+            aviso_manual = st.text_input("Aviso (opcional)")
+
             if st.button("Adicionar procedimento"):
                 data_str = data_proc.strftime("%d/%m/%Y")
                 # Manual pode ter vários no mesmo dia (não checamos existência)
@@ -584,7 +600,8 @@ with tabs[1]:
                     procedimento_tipo,
                     situacao=situacao,
                     observacao=(observacao or None),
-                    is_manual=1
+                    is_manual=1,
+                    aviso=(aviso_manual or None)
                 )
                 st.success("Procedimento (manual) adicionado.")
                 st.rerun()  # recarrega a página para exibir o novo item imediatamente
@@ -604,7 +621,7 @@ with tabs[2]:
         conn = get_conn()
         base = """
             SELECT P.id, I.hospital, I.atendimento, I.paciente,
-                   P.data_procedimento, P.profissional, P.procedimento,
+                   P.data_procedimento, P.aviso, P.profissional, P.procedimento,
                    P.situacao, P.observacao
             FROM Procedimentos P
             INNER JOIN Internacoes I ON I.id = P.internacao_id
