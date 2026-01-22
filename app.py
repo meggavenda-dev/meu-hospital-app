@@ -48,6 +48,157 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 # ---------------------------
 
 
+def inject_css():
+    st.markdown("""
+    <style>
+    /* ============================
+       PALHETA NEUTRA TRADICIONAL
+       ============================ */
+    :root{
+      --bg-main: #F5F6F7;       /* cinza claro de fundo */
+      --bg-card: #FFFFFF;       /* cartões */
+      --border:  #D0D7DE;       /* borda suave */
+      --text:    #24292F;       /* texto principal */
+      --muted:   #6B7280;       /* texto secundário */
+      --primary: #1F6FEB;       /* azul discreto */
+      --primary-hover: #1558B0; /* hover */
+      --radius:  8px;
+    }
+
+    html, body, .stApp{
+      background-color: var(--bg-main) !important;
+      color: var(--text) !important;
+      font-family: "Segoe UI", Roboto, Arial, sans-serif;
+    }
+
+    /* HEADER simples */
+    .app-header{
+      background: var(--bg-main);
+      padding: 10px 12px;
+      margin: -1.2rem -1rem 0.8rem -1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .app-header .title{ font-size:1.2rem; font-weight:700; color: var(--primary); }
+    .app-header .sub  { font-size:.9rem;  color: var(--muted); }
+
+    /* CARDS */
+    .soft-card{
+      background: var(--bg-card);
+      border:1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+
+    /* ============================
+       INPUTS (Texto/Number/Date)
+       ============================ */
+    .stTextInput input,
+    .stNumberInput input,
+    .stDateInput input,
+    .stTextArea textarea{
+      background:#FFFFFF !important;
+      color: var(--text) !important;
+      border:1px solid var(--border) !important;
+      border-radius: var(--radius) !important;
+      box-shadow:none !important;
+    }
+
+    /* Label mais visível, porém discreto */
+    label, .st-emotion-cache-1qg05tj p, .stMarkdown p{
+      color: var(--muted) !important;
+    }
+
+    /* ============================
+       SELECTBOX (BaseWeb) CLARO
+       ============================ */
+    /* Caixa do select (sem fundo escuro) */
+    div[data-baseweb="select"]{
+      background:#FFFFFF !important;
+      border:1px solid var(--border) !important;
+      border-radius: var(--radius) !important;
+      color: var(--text) !important;
+    }
+    /* Área de valor */
+    div[data-baseweb="select"] div[role="combobox"]{
+      background:#FFFFFF !important;
+      color: var(--text) !important;
+    }
+    /* Itens do menu */
+    div[data-baseweb="menu"]{
+      background:#FFFFFF !important;
+      border:1px solid var(--border) !important;
+      border-radius: var(--radius) !important;
+      color: var(--text) !important;
+    }
+    div[data-baseweb="option"]{
+      background:#FFFFFF !important;
+      color: var(--text) !important;
+    }
+    div[data-baseweb="option"][aria-selected="true"]{
+      background:#EEF2FF !important; /* leve */
+      color:#111827 !important;
+    }
+    div[data-baseweb="option"]:hover{
+      background:#F3F4F6 !important;
+    }
+
+    /* ============================
+       FILE UPLOADER CLARO
+       ============================ */
+    .stFileUploader > section{
+      border:1px solid var(--border) !important;
+      background:#FFFFFF !important;
+      border-radius: var(--radius) !important;
+    }
+    .stFileUploader div[role="button"]{
+      background:#FFFFFF !important;
+      color: var(--text) !important;
+      border:1px solid var(--border) !important;
+      border-radius: var(--radius) !important;
+    }
+
+    /* ============================
+       BOTÕES
+       ============================ */
+    .stButton>button{
+      background: var(--primary) !important;
+      color:#FFFFFF !important;
+      border:none !important;
+      border-radius: var(--radius) !important;
+      padding: 6px 16px !important;
+      font-weight:600 !important;
+      box-shadow:none !important;
+    }
+    .stButton>button:hover{ background: var(--primary-hover) !important; }
+
+    /* ============================
+       TABELAS/EDITORES
+       ============================ */
+    .element-container:has(.stDataFrame) .st-emotion-cache-1wmy9hl,
+    .element-container:has(.stDataEditor) .st-emotion-cache-1wmy9hl{
+      background:#FFFFFF;
+      border:1px solid var(--border);
+      border-radius: var(--radius);
+      padding-top:6px;
+    }
+
+    /* ============================
+       TABS (linha ativa discreta)
+       ============================ */
+    button[role="tab"][aria-selected="true"]{
+      border-bottom:2px solid var(--primary) !important;
+      color: var(--text) !important;
+    }
+
+    /* SIDEBAR neutra */
+    section[data-testid="stSidebar"] .block-container{
+      background: var(--bg-main);
+      border-right: 1px solid var(--border);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 
 
 
