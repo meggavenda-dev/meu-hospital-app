@@ -47,89 +47,132 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 # Aparência — CSS e componentes auxiliares
 # ---------------------------
 
+
 def inject_css():
     st.markdown("""
     <style>
     :root {
-      /* As cores reais virão do tema do Streamlit; aqui ajustamos detalhes */
-      --primary: #2563eb;         /* fallback p/ primaryColor */
-      --success: #16a34a;
-      --warning: #f59e0b;
-      --danger:  #dc2626;
-      --muted:   #9ca3af;
-      --radius:  12px;
-      --card-bg: var(--secondary-bg, rgba(255,255,255,0.02));
-      --border:  rgba(127, 127, 127, .15);
-    }
-    /* Ajuste dinâmico conforme tema claro/escuro */
-    html[data-theme="dark"] :root {
-      --card-bg: #0f172a66;  /* slate-900 ~ com transparência */
+      --primary: #1E3A8A;         /* Azul executivo 800 */
+      --primary-light: #3B82F6;   /* Azul claro de ação */
+      --background: #ffffff;
+      --surface: #f8fafc;         /* Cinza muito claro */
+      --border: #e2e8f0;          /* Cinza suave */
+      --text: #0f172a;            /* Azul grafite */
+      --text-muted: #64748b;      /* Cinza azulado */
+      --radius: 10px;
     }
 
+    html, body, .stApp {
+        background: var(--background) !important;
+        color: var(--text);
+    }
+
+    /* HEADER */
     .app-header {
-      position: sticky; top: -6px; z-index: 999;
-      padding: 12px 16px; margin: -1.5rem -1rem 8px -1rem;
-      background: linear-gradient(180deg, rgba(0,0,0,.25), rgba(0,0,0,0));
-      backdrop-filter: blur(6px);
+      position: sticky; top: -4px; z-index: 999;
+      padding: 18px 16px;
+      margin: -1.5rem -1rem 10px -1rem;
+      background: #ffffffE6;
+      backdrop-filter: blur(4px);
       border-bottom: 1px solid var(--border);
     }
     .app-header .title {
-      font-weight: 800; font-size: 1.2rem; letter-spacing: .2px;
-      display:flex; align-items:center; gap:10px;
+      font-weight: 800; 
+      font-size: 1.25rem;
+      color: var(--primary);
     }
     .app-header .sub {
-      font-size: .88rem; opacity: .85;
+      font-size: .9rem;
+      color: var(--text-muted);
     }
 
+    /* CARDS */
     .soft-card {
-      background: var(--card-bg);
+      background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 12px 14px;
+      padding: 18px 18px;
+      margin-bottom: 12px;
     }
 
-    .kpi-wrap { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-    @media (max-width: 1000px) { .kpi-wrap { grid-template-columns: 1fr; } }
+    /* KPI CARDS */
+    .kpi-wrap { 
+        display: grid; 
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); 
+        gap: 14px; 
+        margin-top: 8px;
+    }
     .kpi {
-      border-radius: var(--radius);
+      background: #ffffff;
       border: 1px solid var(--border);
-      padding: 14px 16px;
-      background: var(--card-bg);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      box-shadow: 0 1px 2px rgba(0,0,0,.04);
     }
-    .kpi .label { font-size:.85rem; color: var(--muted); }
-    .kpi .value { font-size:1.6rem; font-weight:800; line-height:1.1; }
-    .kpi .hint  { font-size:.80rem; opacity:.9; margin-top:4px; }
+    .kpi .label {
+      font-size:.85rem; 
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+    .kpi .value {
+      font-size:1.6rem; 
+      font-weight:800; 
+      color: var(--primary);
+    }
+    .kpi .hint {
+      font-size:.8rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
 
-    /* Pills de status */
+    /* STATUS PILLS */
     .pill {
-      display:inline-block; padding: 3px 10px; border-radius: 999px;
-      font-weight: 700; font-size: .78rem; border: 1px solid transparent;
-      letter-spacing: .2px; white-space: nowrap;
+      display:inline-block;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: .78rem;
+      font-weight:600;
+      border:1px solid transparent;
     }
-    .pill-pendente  { color:#b45309; background: rgba(245,158,11,.15); border-color: rgba(245,158,11,.35); }
-    .pill-nc        { color:#64748b; background: rgba(148,163,184,.20); border-color: rgba(148,163,184,.35); }
-    .pill-enviado   { color:#1e40af; background: rgba(37,99,235,.15);  border-color: rgba(37,99,235,.35); }
-    .pill-digitacao { color:#0f766e; background: rgba(45,212,191,.15); border-color: rgba(45,212,191,.35); }
-    .pill-ok        { color:#166534; background: rgba(22,163,74,.18);  border-color: rgba(22,163,74,.35); }
+    .pill-pendente  { background:#FEF3C7; color:#92400E; border-color:#FCD34D; }
+    .pill-nc        { background:#E2E8F0; color:#475569; border-color:#CBD5E1; }
+    .pill-enviado   { background:#DBEAFE; color:#1E40AF; border-color:#93C5FD; }
+    .pill-digitacao { background:#CCFBF1; color:#0F766E; border-color:#5EEAD4; }
+    .pill-ok        { background:#DCFCE7; color:#166534; border-color:#86EFAC; }
 
-    /* Botões */
-    .stButton>button {
-      border-radius: 10px !important; border: 1px solid var(--border) !important;
-    }
-    .primary-btn { background: var(--primary) !important; color: #fff !important; }
-    .danger-btn  { background: #dc2626 !important; color: #fff !important; }
-
-    /* Tabelas (contorno sutil) */
-    .element-container:has(.stDataFrame) .st-emotion-cache-1wmy9hl, /* wrapper df */
+    /* TABLE WRAPPER */
+    .element-container:has(.stDataFrame) .st-emotion-cache-1wmy9hl,
     .element-container:has(.stDataEditor) .st-emotion-cache-1wmy9hl {
-      border: 1px solid var(--border);
+      border:1px solid var(--border);
       border-radius: var(--radius);
-      padding-top: 6px;
+      background: #ffffff;
+      padding-top: 8px;
     }
 
-    /* Sidebar um pouco mais espaçosa */
+    /* BOTÕES */
+    .stButton>button {
+      border-radius: var(--radius) !important;
+      border: 1px solid var(--border) !important;
+      padding: 8px 18px !important;
+      font-weight:600 !important;
+    }
+    .stButton>button:hover {
+      border-color: var(--primary-light) !important;
+    }
+    .primary-btn {
+      background: var(--primary-light) !important;
+      color: white !important;
+      border: 0 !important;
+    }
+    .danger-btn {
+      background: #DC2626 !important;
+      color: white !important;
+      border: 0 !important;
+    }
+
+    /* SIDEBAR */
     section[data-testid="stSidebar"] .block-container {
-      padding: 16px 10px 24px 10px;
+      padding: 20px 14px 30px 14px;
     }
     </style>
     """, unsafe_allow_html=True)
