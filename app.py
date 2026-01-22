@@ -1025,7 +1025,7 @@ with tabs[1]:
             df_proc["aviso"] = df_proc.get("aviso", pd.Series(dtype=str)).fillna("")
             df_proc["grau_participacao"] = df_proc.get("grau_participacao", pd.Series(dtype=str)).fillna("")
 
-            st.subheader("Procedimentos — Editáveis")
+            st.subheader("Procedimentos — Editáveis")            
             edited = st.data_editor(
                 df_proc,
                 key="editor_proc",
@@ -1034,15 +1034,29 @@ with tabs[1]:
                     "id": st.column_config.Column("ID", disabled=True),
                     "data_procedimento": st.column_config.Column("Data", disabled=True),
                     "profissional": st.column_config.Column("Profissional", disabled=True),
+            
+                    # 🔥 IMPORTANTE: TEM QUE SER TextColumn
                     "aviso": st.column_config.TextColumn("Aviso"),
+            
                     "grau_participacao": st.column_config.SelectboxColumn(
-                        "Grau de Participação", options=[""] + GRAU_PARTICIPACAO_OPCOES, required=False
+                        "Grau de Participação",
+                        options=[""] + GRAU_PARTICIPACAO_OPCOES,
+                        required=False
                     ),
-                    "procedimento": st.column_config.SelectboxColumn("Tipo de Procedimento", options=PROCEDIMENTO_OPCOES, required=True),
-                    "situacao": st.column_config.SelectboxColumn("Situação", options=STATUS_OPCOES, required=True),
-                    "observacao": st.column_config.TextColumn("Observações", help="Texto livre"),
+                    "procedimento": st.column_config.SelectboxColumn(
+                        "Tipo de Procedimento",
+                        options=PROCEDIMENTO_OPCOES,
+                        required=True
+                    ),
+                    "situacao": st.column_config.SelectboxColumn(
+                        "Situação",
+                        options=STATUS_OPCOES,
+                        required=True
+                    ),
+                    "observacao": st.column_config.TextColumn("Observações"),
                 },
             )
+
 
             col_save = st.columns(6)[-1]
             with col_save:
@@ -1511,6 +1525,12 @@ with tabs[3]:
             df_quit[col] = pd.to_numeric(df_quit[col], errors="coerce")
 
         st.markdown("Preencha os dados e clique em **Gravar quitação(ões)**. Ao gravar, o status muda para **Finalizado**.")
+        
+        for col in ["procedimento", "situacao", "observacao", "aviso", "grau_participacao"]:
+            if col not in df_proc.columns:
+                df_proc[col] = ""
+            df_proc[col] = df_proc[col].fillna("")
+
 
         edited = st.data_editor(
             df_quit, key="editor_quit", use_container_width=True, hide_index=True,
