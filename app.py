@@ -4,11 +4,10 @@
 #  Inclui:
 #  - Parser robusto
 #  - Dry-run antes de gravar
-#  - 1 procedimento-do-dia automático por (internação, data)
-#  - Edição de situação/observação/tipo de procedimento
-#  - Lançamento manual (permite mais de um no mesmo dia)
-#  - Filtros por hospital
-#  - Seeds de hospitais
+#  - 1 procedimento AUTOMÁTICO por (internação, data)
+#  - Lançamento manual (permite >1 no mesmo dia)
+#  - Edição de procedimento (tipo/situação/observações)
+#  - Filtros por hospital + Seeds
 # ============================================================
 
 import streamlit as st
@@ -17,9 +16,10 @@ import pandas as pd
 import re
 from datetime import date
 
-# Parser robusto do seu módulo
+# >>> Parser robusto do seu módulo parser.py
 from parser import parse_tiss_original
 
+# Opções de domínio
 STATUS_OPCOES = [
     "Pendente",
     "Não Cobrar",
@@ -39,10 +39,15 @@ def get_conn():
     return conn
 
 def create_tables():
+    """
+    Cria/migra tabelas sem apagar dados (sem DROP).
+    - Adiciona colunas faltantes em Procedimentos (situacao, observacao, is_manual).
+    - Cria índice único parcial ux_proc_auto para evitar duplicata AUTOMÁTICA por dia.
+    """
     conn = get_conn()
     cur = conn.cursor()
 
-    # Catálogo de hospitais
+    # Hospitals
     cur.execute("""
     CREATE TABLE IF NOT EXISTS Hospitals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,11 +69,9 @@ def create_tables():
     );
     """)
 
-    # >>> RECRIAR Procedimentos para suportar manual (múltiplos no dia)
-    # Remove a tabela se existir (você informou que não tem dados)
-    cur.execute("DROP TABLE IF EXISTS Procedimentos;")
+    # Procedimentos (se não existir, cria já com as colunas novas)
     cur.execute("""
-    CREATE TABLE Procedimentos (
+    CREATE TABLE IF NOT EXISTS Procedimentos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         internacao_id INTEGER,
         data_procedimento TEXT,
@@ -76,11 +79,26 @@ def create_tables():
         procedimento TEXT,
         situacao TEXT NOT NULL DEFAULT 'Pendente',
         observacao TEXT,
-        is_manual INTEGER NOT NULL DEFAULT 0,  -- 0 = automático (import), 1 = manual
+        is_manual INTEGER NOT NULL DEFAULT 0,  -- 0=automático(import), 1=manual
         FOREIGN KEY(internacao_id) REFERENCES Internacoes(id)
     );
     """)
-    # Índice ÚNICO parcial: impede duplicar AUTOMÁTICO no mesmo (internação, data)
+
+    # Migração incremental (se a tabela já existia sem as colunas)
+    try:
+        cur.execute("ALTER TABLE Procedimentos ADD COLUMN situacao TEXT NOT NULL DEFAULT 'Pendente';")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE Procedimentos ADD COLUMN observacao TEXT;")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE Procedimentos ADD COLUMN is_manual INTEGER NOT NULL DEFAULT 0;")
+    except sqlite3.OperationalError:
+        pass
+
+    # Índice ÚNICO parcial: evita duplicar AUTOMÁTICO no mesmo (internacao_id, data)
     cur.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS ux_proc_auto
       ON Procedimentos(internacao_id, data_procedimento)
@@ -144,6 +162,7 @@ def parse_csv_text(csv_text):
         if not linha or linha.strip() == "":
             continue
 
+        # DATA DO BLOCO
         if "Data de Realização" in linha:
             partes = [p.strip() for p in linha.split(",")]
             for p in partes:
@@ -151,13 +170,16 @@ def parse_csv_text(csv_text):
                     data_atual = p
             continue
 
+        # LINHA MESTRE
         if re.match(r"^,\s*\d{7,12},", raw):
             cols = [c for c in raw.split(",")]
+
+            # 5 últimas colunas (convênio, prestador, anestesista, tipo, quarto)
             conv, prest, anest, tipo, quarto = map(clean, tail(cols, 5))
             procedimento = clean(tail(cols, 6)[0])
             hora_ini = clean(tail(cols, 8)[2])
             hora_fim = clean(tail(cols, 7)[1])
-            aviso = clean(tail(cols, 9)[0])
+
             esquerda = [c.strip() for c in cols]
             i = 0
             while i < len(esquerda) and esquerda[i] == "":
@@ -167,7 +189,9 @@ def parse_csv_text(csv_text):
             while j < len(esquerda) and esquerda[j] == "":
                 j += 1
             paciente = esquerda[j] if j < len(esquerda) else ""
+
             hora_ini_mestre, hora_fim_mestre = hora_ini, hora_fim
+
             atual = {
                 "data": data_atual or "",
                 "atendimento": atendimento,
@@ -176,6 +200,7 @@ def parse_csv_text(csv_text):
                 "hora_fim": hora_fim,
                 "procedimentos": []
             }
+
             atual["procedimentos"].append({
                 "procedimento": procedimento,
                 "convenio": conv,
@@ -186,13 +211,16 @@ def parse_csv_text(csv_text):
                 "hora_ini": hora_ini,
                 "hora_fim": hora_fim
             })
+
             internacoes.append(atual)
             continue
 
+        # LINHA FILHA
         if re.match(r"^,{10,}", raw):
             cols = [c for c in raw.split(",")]
             conv, prest, anest, tipo, quarto = map(clean, tail(cols, 5))
             procedimento = clean(tail(cols, 6)[0])
+
             if atual:
                 atual["procedimentos"].append({
                     "procedimento": procedimento,
@@ -239,7 +267,10 @@ def apagar_internacoes(lista_at):
         return
     conn = get_conn()
     cur = conn.cursor()
+
     qmarks = ",".join(["?"] * len(lista_at))
+
+    # Apaga procedimentos
     cur.execute(f"""
         DELETE FROM Procedimentos
          WHERE internacao_id IN (
@@ -247,7 +278,10 @@ def apagar_internacoes(lista_at):
               WHERE atendimento IN ({qmarks})
          )
     """, lista_at)
+
+    # Apaga internações
     cur.execute(f"DELETE FROM Internacoes WHERE atendimento IN ({qmarks})", lista_at)
+
     conn.commit()
     conn.close()
 
@@ -264,7 +298,7 @@ def criar_internacao(hospital, atendimento, paciente, data, convenio):
     conn.close()
     return nid
 
-# Aceita situacao/observacao/is_manual. OR IGNORE por conta do UNIQUE parcial nos automáticos.
+# Aceita situacao/observacao/is_manual; OR IGNORE por causa do UNIQUE parcial nos automáticos
 def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
                        situacao="Pendente", observacao=None, is_manual=0):
     conn = get_conn()
@@ -277,7 +311,7 @@ def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
     conn.commit()
     conn.close()
 
-# Para o import: só impede duplicar AUTOMÁTICO
+# Import automático só verifica duplicata automática (is_manual=0)
 def existe_procedimento_no_dia(internacao_id, data_proc):
     conn = get_conn()
     cur = conn.cursor()
@@ -290,6 +324,7 @@ def existe_procedimento_no_dia(internacao_id, data_proc):
     conn.close()
     return ok
 
+# Atualiza campos editáveis
 def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao=None):
     sets, params = [], []
     if procedimento is not None:
@@ -313,6 +348,7 @@ def get_internacao_by_atendimento(att):
     df = pd.read_sql_query("SELECT * FROM Internacoes WHERE atendimento = ?", conn, params=(att,))
     conn.close()
     return df
+
 
 def get_procedimentos(internacao_id):
     conn = get_conn()
@@ -346,7 +382,7 @@ tabs = st.tabs([
 
 
 # ============================================================
-# 📤 ABA 1 — IMPORTAR COM DRY RUN (1 auto por dia; manual pode ter vários)
+# 📤 ABA 1 — IMPORTAR (1 AUTOMÁTICO por dia; manuais podem repetir)
 # ============================================================
 
 with tabs[0]:
@@ -408,7 +444,7 @@ with tabs[0]:
                         prof_dia = it["profissional"]
                         break
 
-                # Se já existir proc-do-dia AUTOMÁTICO => ignorar
+                # Já existe auto do dia?
                 if existe_procedimento_no_dia(internacao_id, data_proc):
                     total_ignorados += 1
                     continue
@@ -430,7 +466,7 @@ with tabs[0]:
 
 
 # ============================================================
-# 🔍 ABA 2 — CONSULTAR (edição + manual pode lançar vários no dia)
+# 🔍 ABA 2 — CONSULTAR (editar + lançar manual múltiplo por dia)
 # ============================================================
 
 with tabs[1]:
@@ -462,6 +498,7 @@ with tabs[1]:
             )
             conn.close()
 
+            # Defaults
             if "procedimento" not in df_proc.columns:
                 df_proc["procedimento"] = "Cirurgia / Procedimento"
             df_proc["procedimento"] = df_proc["procedimento"].fillna("Cirurgia / Procedimento")
@@ -521,7 +558,7 @@ with tabs[1]:
                     st.success(f"{len(alterados)} procedimento(s) atualizado(s).")
 
             st.divider()
-            st.subheader("➕ Lançar procedimento manual (permite mais de um no mesmo dia)")
+            st.subheader("➕ Lançar procedimento manual (permite vários no mesmo dia)")
 
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -539,7 +576,7 @@ with tabs[1]:
 
             if st.button("Adicionar procedimento"):
                 data_str = data_proc.strftime("%d/%m/%Y")
-                # AGORA: manual pode ter vários no mesmo dia (não checamos existência)
+                # Manual pode ter vários no mesmo dia (não checamos existência)
                 criar_procedimento(
                     internacao_id,
                     data_str,
@@ -550,6 +587,7 @@ with tabs[1]:
                     is_manual=1
                 )
                 st.success("Procedimento (manual) adicionado.")
+                st.rerun()  # recarrega a página para exibir o novo item imediatamente
 
 
 # ============================================================
