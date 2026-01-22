@@ -1,5 +1,4 @@
 
-
 def parse_tiss_original(csv_text):
     """
     Parser robusto para o relatório do Centro Cirúrgico/Hemodinâmica/Obstétrico.
@@ -16,7 +15,6 @@ def parse_tiss_original(csv_text):
         return (s or "").replace("\x00", "").strip().strip('"').strip()
 
     def is_time(s: str) -> bool:
-        # aceita H:MM ou HH:MM
         return bool(re.fullmatch(r"\d{1,2}:\d{2}", s or ""))
 
     def is_digits(s: str) -> bool:
@@ -31,7 +29,6 @@ def parse_tiss_original(csv_text):
                 if len(out) == n:
                     break
         out.reverse()
-        # se faltou, preenche à esquerda
         if len(out) < n:
             out = [""] * (n - len(out)) + out
         return out
@@ -43,12 +40,10 @@ def parse_tiss_original(csv_text):
     contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": ""}
 
     for cols in reader:
-        # normaliza
         cols = [clean(c) for c in cols]
         if all(c == "" for c in cols):
             continue
 
-        # Texto da linha (para filtros de cabeçalho/total)
         line_txt = " ".join(cols)
 
         # DATA DO BLOCO
@@ -59,12 +54,12 @@ def parse_tiss_original(csv_text):
                     break
             continue
 
-        # Ignorar cabeçalhos e totais/repetições de seção
+        # Ignorar cabeçalhos/totais/seções
         if (
             ("Hora" in line_txt and "Início" in line_txt)
             or any(k in line_txt for k in [
-                "Atendimento", "Convênio", "Centro", "Total de Avisos",
-                "Total de Cirurgias", "Total Geral"
+                "Atendimento", "Convênio", "Centro Cirurgico", "HEMODINAMICA", "OBSTETRICO",
+                "Total de Avisos", "Total de Cirurgias", "Total Geral"
             ])
         ):
             continue
@@ -77,20 +72,20 @@ def parse_tiss_original(csv_text):
             atendimento = cols[1]
             paciente    = cols[2] if len(cols) > 2 else ""
 
-            # acha 'aviso' (número) + horas subsequentes
+            # achar 'aviso' (número) seguido de duas horas
             aviso_idx = None
             for k in range(3, len(cols) - 2):
                 if is_digits(cols[k]) and is_time(cols[k+1]) and is_time(cols[k+2]):
                     aviso_idx = k
                     break
             if aviso_idx is None:
-                # fallback: acha primeiro horário e usa o anterior como aviso se for número
+                # fallback: primeiro horário cujo anterior é um número (aviso)
                 for k in range(3, len(cols)):
                     if is_time(cols[k]) and k - 1 >= 0 and is_digits(cols[k-1]):
                         aviso_idx = k - 1
                         break
             if aviso_idx is None:
-                # linha inconsistente; ignora
+                # linha inconsistente
                 continue
 
             hora_ini = cols[aviso_idx + 1] if aviso_idx + 1 < len(cols) else ""
@@ -98,12 +93,11 @@ def parse_tiss_original(csv_text):
             proc_idx = aviso_idx + 3
             procedimento = cols[proc_idx] if proc_idx < len(cols) else ""
 
-            # ÂNCORA PELA DIREITA: tipo e quarto são os 2 últimos campos não vazios
-            # antes disso vêm anestesista, prestador, convênio (ordem reversa)
+            # ÂNCORA PELA DIREITA: 5 últimos não vazios tendem a ser [conv, prest, anest, tipo, quarto]
             conv = prest = anest = tipo = quarto = ""
-            tail5 = last_n_nonempty(cols, 5)  # [conv, prest, anest, tipo, quarto] na maioria dos casos
+            tail5 = last_n_nonempty(cols, 5)
 
-            # Preferir campos imediatos após o procedimento quando existirem
+            # Preferir os campos imediatamente após o procedimento, se existirem
             if proc_idx + 1 < len(cols) and cols[proc_idx + 1] != "":
                 conv = cols[proc_idx + 1]
             else:
@@ -119,10 +113,10 @@ def parse_tiss_original(csv_text):
             else:
                 anest = tail5[2]
 
-            # tipo/quarto quase sempre são os 2 últimos não vazios
+            # tipo e quarto — normalmente os 2 últimos campos não vazios
             tipo, quarto = tail5[3], tail5[4]
 
-            # guarda contexto p/ linhas-filhas
+            # contexto para filhas
             contexto = {
                 "atendimento": atendimento,
                 "paciente": paciente,
@@ -146,21 +140,21 @@ def parse_tiss_original(csv_text):
             continue
 
         # ---------------------------
-        # LINHA-FILHA (procedimento extra)
+        # LINHA-FILHA
         # ---------------------------
-        # primeira coluna não vazia surge a partir do índice >= 10
+        # primeira coluna não vazia em posição >= 10 caracteriza filha
         first_idx = next((i for i, c in enumerate(cols) if c != ""), None)
         if first_idx is not None and first_idx >= 10:
             proc_idx = first_idx
             procedimento = cols[proc_idx]
 
-            conv = cols[proc_idx + 1] if proc_idx + 1 < len(cols) else ""
+            conv  = cols[proc_idx + 1] if proc_idx + 1 < len(cols) else ""
             prest = cols[proc_idx + 2] if proc_idx + 2 < len(cols) else ""
             anest = cols[proc_idx + 3] if proc_idx + 3 < len(cols) else ""
 
-            # tipo e quarto: 2 últimos não vazios da linha
+            # tipo/quarto ancorados pelos 2 últimos não vazios
             tipo = quarto = ""
-            tail2 = [v for v in last_n_nonempty(cols, 2)]
+            tail2 = last_n_nonempty(cols, 2)
             if len(tail2) == 2:
                 tipo, quarto = tail2[0], tail2[1]
             elif len(tail2) == 1:
@@ -186,5 +180,3 @@ def parse_tiss_original(csv_text):
         continue
 
     return registros
-
-
