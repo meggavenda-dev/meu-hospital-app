@@ -1,33 +1,39 @@
 
 import sqlite3
 
-def get_internacao_by_atendimento(atendimento):
-    conn = sqlite3.connect("dados.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM Internacoes WHERE atendimento = ?", (atendimento,))
-    row = cursor.fetchone()
-    conn.close()
-    return row
+DB_PATH = "dados.db"
 
-def criar_internacao(numero_internacao, hospital, atendimento, paciente, data_internacao, convenio):
-    conn = sqlite3.connect("dados.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO Internacoes
-        (numero_internacao, hospital, atendimento, paciente, data_internacao, convenio)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (numero_internacao, hospital, atendimento, paciente, data_internacao, convenio))
-    conn.commit()
-    internacao_id = cursor.lastrowid
-    conn.close()
-    return internacao_id
+def create_tables():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
 
-def criar_procedimento(internacao_id, data_procedimento, profissional, procedimento):
-    conn = sqlite3.connect("dados.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO Procedimentos (internacao_id, data_procedimento, profissional, procedimento)
-        VALUES (?, ?, ?, ?)
-    """, (internacao_id, data_procedimento, profissional, procedimento))
+    # Internações
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS Internacoes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        numero_internacao REAL,
+        hospital TEXT,
+        atendimento TEXT UNIQUE,
+        paciente TEXT,
+        data_internacao TEXT,
+        convenio TEXT
+    );
+    """)
+
+    # Procedimentos (já com situação/observação e UNIQUE por (internação, data))
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS Procedimentos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        internacao_id INTEGER,
+        data_procedimento TEXT,
+        profissional TEXT,
+        procedimento TEXT,
+        situacao TEXT NOT NULL DEFAULT 'Pendente',
+        observacao TEXT,
+        FOREIGN KEY(internacao_id) REFERENCES Internacoes(id),
+        UNIQUE(internacao_id, data_procedimento)
+    );
+    """)
+
     conn.commit()
     conn.close()
