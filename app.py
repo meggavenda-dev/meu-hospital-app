@@ -1,8 +1,8 @@
 
 # ============================================================
-#  SISTEMA DE INTERNAÇÕES — VERSÃO FINAL (modular, nomes originais)
+#  SISTEMA DE INTERNAÇÕES — VERSÃO FINAL (estrutura original)
 #  Inclui:
-#  - Parser (do parser.py) — parse_tiss_original
+#  - Parser (parser.py → parse_tiss_original)
 #  - Dry-run antes de gravar
 #  - Reprocessamento de atendimentos existentes
 #  - Filtros por hospital
@@ -18,11 +18,11 @@ import pandas as pd
 import streamlit as st
 
 # ------------------------------------------------------------
-# PATH SAFETY (útil no Streamlit Cloud)
+# IMPORT SAFETY (ajuda no Streamlit Cloud)
 # ------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 
 # ------------------------------------------------------------
 # IMPORTS — nomes EXATOS dos seus módulos
@@ -31,15 +31,15 @@ from parser import parse_tiss_original
 from models import (
     criar_internacao,
     criar_procedimento,
-    # Se quiser usar: get_internacao_by_atendimento
+    # Se quiser usar aqui também: get_internacao_by_atendimento
 )
 from database import create_tables  # cria Internacoes e Procedimentos
 
 # ============================================================
-# CONEXÃO LOCAL (dados.db) — para Hospitals e auxiliares
+# BANCO LOCAL (dados.db) — para Hospitals e helpers de exibição
 # ============================================================
 
-DB_PATH = os.path.join(BASE_DIR, "dados.db")
+DB_PATH = os.path.join(APP_DIR, "dados.db")
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -86,20 +86,25 @@ def get_hospitais():
     return df["name"].tolist()
 
 # ============================================================
-# AUXILIARES (iguais em comportamento ao seu app original)
+# UTIL
 # ============================================================
 
 def clean(s: str) -> str:
     return s.strip().strip('"').strip()
 
+# ============================================================
+# FUNÇÕES AUXILIARES (exibição em DataFrame e reprocessamento)
+# ============================================================
+
 def apagar_internacoes(lista_at):
-    """Apaga procedimentos e internações dos atendimentos informados."""
+    """Apaga procedimentos e internações pelos atendimentos informados."""
     if not lista_at:
         return
     conn = get_conn()
     cur = conn.cursor()
 
     qmarks = ",".join(["?"] * len(lista_at))
+
     # Apaga procedimentos relacionados
     cur.execute(f"""
         DELETE FROM Procedimentos
@@ -108,6 +113,7 @@ def apagar_internacoes(lista_at):
               WHERE atendimento IN ({qmarks})
          )
     """, lista_at)
+
     # Apaga internações
     cur.execute(f"DELETE FROM Internacoes WHERE atendimento IN ({qmarks})", lista_at)
 
@@ -129,8 +135,8 @@ def get_procedimentos_df(internacao_id):
 
 # ============================================================
 # INICIALIZAÇÃO
-#  - Internacoes/Procedimentos: via database.create_tables()
-#  - Hospitals: aqui no app (como no original)
+#   - Internacoes/Procedimentos: via database.create_tables()
+#   - Hospitals: aqui (como no original)
 # ============================================================
 
 create_tables()
@@ -138,7 +144,7 @@ create_hospitals_table()
 seed_hospitais()
 
 st.set_page_config(page_title="Gestão de Internações", layout="wide")
-st.title("🏥 Sistema de Internações — Versão Final (estrutura original)")
+st.title("🏥 Sistema de Internações — Versão Final")
 
 # ============================================================
 # INTERFACE EM ABAS
@@ -165,14 +171,14 @@ with tabs[0]:
     arquivo = st.file_uploader("Selecione o arquivo CSV", type=["csv"])
 
     if arquivo:
-        # Decodificação igual ao original, com fallback
+        # Decodificação como no original (com fallback)
         raw_bytes = arquivo.getvalue()
         try:
             csv_text = raw_bytes.decode("latin1")
         except UnicodeDecodeError:
             csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
 
-        # ⚠️ Usa o parser do seu módulo (parse_tiss_original)
+        # Parser do seu módulo
         registros = parse_tiss_original(csv_text)
 
         st.success(f"{len(registros)} registros interpretados!")
@@ -200,7 +206,7 @@ with tabs[0]:
                     }
                 agrupado[att]["procedimentos"].append(r)
 
-            # Inserção — usa models.criar_internacao (6 parâmetros)
+            # Inserção (mantendo seu fluxo: numero_internacao REAL = float(att))
             for att, info in agrupado.items():
                 paciente = info["paciente"]
                 data = info["data"]
