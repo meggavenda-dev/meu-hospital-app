@@ -48,134 +48,148 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 # ---------------------------
 
 
-def inject_css():
+
+ef inject_css():
     st.markdown("""
     <style>
+
+    /* ---------------------------------------------------
+       PALETA FLUENT LIGHT (MICROSOFT)
+       --------------------------------------------------- */
     :root {
-      --primary: #1E3A8A;         /* Azul executivo 800 */
-      --primary-light: #3B82F6;   /* Azul claro de ação */
-      --background: #ffffff;
-      --surface: #f8fafc;         /* Cinza muito claro */
-      --border: #e2e8f0;          /* Cinza suave */
-      --text: #0f172a;            /* Azul grafite */
-      --text-muted: #64748b;      /* Cinza azulado */
-      --radius: 10px;
+      --ms-blue: #0078D4;          /* Ação primária */
+      --ms-blue-light: #EFF6FC;    /* Hover leve */
+      --surface: #ffffff;          /* Cartões */
+      --surface-alt: #F3F2F1;      /* Áreas secundárias */
+      --border: #D1D1D1;           /* Bordas leves */
+      --text: #323130;             /* Texto padrão */
+      --text-muted: #605E5C;       /* Labels suaves */
+      --radius: 6px;
     }
 
     html, body, .stApp {
-        background: var(--background) !important;
+        background: #ffffff !important;
         color: var(--text);
+        font-family: Segoe UI, Roboto, sans-serif;
     }
 
-    /* HEADER */
+    /* ---------------------------------------------------
+       HEADER
+       --------------------------------------------------- */
     .app-header {
-      position: sticky; top: -4px; z-index: 999;
+      position: sticky;
+      top: -4px;
       padding: 18px 16px;
       margin: -1.5rem -1rem 10px -1rem;
-      background: #ffffffE6;
-      backdrop-filter: blur(4px);
+      background: rgba(255,255,255,0.85);
+      backdrop-filter: blur(6px);
       border-bottom: 1px solid var(--border);
+      z-index: 1000;
     }
     .app-header .title {
-      font-weight: 800; 
-      font-size: 1.25rem;
-      color: var(--primary);
+      font-weight: 700;
+      font-size: 1.3rem;
+      color: var(--ms-blue);
     }
     .app-header .sub {
       font-size: .9rem;
       color: var(--text-muted);
     }
 
-    /* CARDS */
+    /* ---------------------------------------------------
+       CARDS
+       --------------------------------------------------- */
     .soft-card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 18px 18px;
+      padding: 16px 18px;
       margin-bottom: 12px;
     }
 
-    /* KPI CARDS */
-    .kpi-wrap { 
-        display: grid; 
-        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); 
-        gap: 14px; 
-        margin-top: 8px;
-    }
-    .kpi {
-      background: #ffffff;
-      border: 1px solid var(--border);
+    /* ---------------------------------------------------
+       INPUTS (corrige fundo escuro)
+       --------------------------------------------------- */
+    .stTextInput>div>div>input,
+    .stDateInput>div>div>input,
+    .stSelectbox>div>div>div {
+      background-color: #ffffff !important;
+      border: 1px solid var(--border) !important;
+      color: var(--text) !important;
       border-radius: var(--radius);
-      padding: 16px 18px;
-      box-shadow: 0 1px 2px rgba(0,0,0,.04);
-    }
-    .kpi .label {
-      font-size:.85rem; 
-      color: var(--text-muted);
-      margin-bottom: 4px;
-    }
-    .kpi .value {
-      font-size:1.6rem; 
-      font-weight:800; 
-      color: var(--primary);
-    }
-    .kpi .hint {
-      font-size:.8rem;
-      color: var(--text-muted);
-      margin-top: 4px;
     }
 
-    /* STATUS PILLS */
-    .pill {
-      display:inline-block;
-      padding: 4px 12px;
-      border-radius: 999px;
-      font-size: .78rem;
-      font-weight:600;
-      border:1px solid transparent;
+    /* Dropdown fix */
+    .stSelectbox div[data-baseweb="select"] {
+      background-color: white !important;
+      border-radius: var(--radius);
     }
-    .pill-pendente  { background:#FEF3C7; color:#92400E; border-color:#FCD34D; }
-    .pill-nc        { background:#E2E8F0; color:#475569; border-color:#CBD5E1; }
-    .pill-enviado   { background:#DBEAFE; color:#1E40AF; border-color:#93C5FD; }
-    .pill-digitacao { background:#CCFBF1; color:#0F766E; border-color:#5EEAD4; }
-    .pill-ok        { background:#DCFCE7; color:#166534; border-color:#86EFAC; }
 
-    /* TABLE WRAPPER */
+    /* ---------------------------------------------------
+       BOTÕES — estilo Microsoft
+       --------------------------------------------------- */
+    .stButton>button {
+      background: var(--ms-blue) !important;
+      color: white !important;
+      border-radius: var(--radius) !important;
+      border: none !important;
+      padding: 6px 18px !important;
+      font-size: .9rem !important;
+      font-weight: 600 !important;
+    }
+    .stButton>button:hover {
+      background: #005A9E !important;
+    }
+
+    /* Botão secundário */
+    .secondary-btn {
+      background: var(--surface-alt) !important;
+      color: var(--text) !important;
+      border: 1px solid var(--border) !important;
+    }
+    .secondary-btn:hover {
+      background: #E1DFDD !important;
+    }
+
+    /* ---------------------------------------------------
+       TABLE WRAPPER
+       --------------------------------------------------- */
     .element-container:has(.stDataFrame) .st-emotion-cache-1wmy9hl,
     .element-container:has(.stDataEditor) .st-emotion-cache-1wmy9hl {
       border:1px solid var(--border);
       border-radius: var(--radius);
-      background: #ffffff;
-      padding-top: 8px;
+      background: white;
+      padding: 6px;
     }
 
-    /* BOTÕES */
-    .stButton>button {
-      border-radius: var(--radius) !important;
-      border: 1px solid var(--border) !important;
-      padding: 8px 18px !important;
-      font-weight:600 !important;
+    /* ---------------------------------------------------
+       STATUS PILLS — versão neutra
+       --------------------------------------------------- */
+    .pill {
+      display:inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: .75rem;
+      font-weight:600;
+      border:1px solid transparent;
     }
-    .stButton>button:hover {
-      border-color: var(--primary-light) !important;
-    }
-    .primary-btn {
-      background: var(--primary-light) !important;
-      color: white !important;
-      border: 0 !important;
-    }
-    .danger-btn {
-      background: #DC2626 !important;
-      color: white !important;
-      border: 0 !important;
-    }
+    .pill-pendente  { background:#FFF4CE; color:#8A6D00; border-color:#FFE08A; }
+    .pill-nc        { background:#F3F2F1; color:#605E5C; border-color:#E1DFDD; }
+    .pill-enviado   { background:#DEECF9; color:#005A9E; border-color:#C7E0F4; }
+    .pill-digitacao { background:#DFF6DD; color:#0E7000; border-color:#BDDABD; }
+    .pill-ok        { background:#E7F4E4; color:#107C10; border-color:#A7D8A7; }
 
-    /* SIDEBAR */
+    /* ---------------------------------------------------
+       SIDEBAR
+       --------------------------------------------------- */
     section[data-testid="stSidebar"] .block-container {
       padding: 20px 14px 30px 14px;
+      background: var(--surface-alt);
     }
+
     </style>
     """, unsafe_allow_html=True)
+
 
 def pill(situacao: str) -> str:
     """Retorna HTML de um pill colorido por status."""
