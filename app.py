@@ -8,8 +8,8 @@
 #  - Lançamento manual (permite >1 no mesmo dia)
 #  - Edição de procedimento (tipo/situação/observações)
 #  - Filtros por hospital + Seeds
-#  - Relatórios (PDF) — Cirurgias por Status (paisagem)
-#  - Quitação de Cirurgias (novo)
+#  - Relatórios (PDF) — Cirurgias por Status (paisagem, ordem: Atendimento, Aviso, Convênio, Paciente, Data, Profissional, Hospital)
+#  - Quitação de Cirurgias (com atualização automática para "Finalizado")
 # ============================================================
 
 import streamlit as st
@@ -23,13 +23,13 @@ import io
 REPORTLAB_OK = True
 try:
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.pagesizes import A4, landscape  # paisagem
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet
 except ModuleNotFoundError:
     REPORTLAB_OK = False
 
-# >>> Parser robusto do seu módulo parser.py
+# >>> Parser robusto do seu módulo parser.py (precisa retornar 'aviso' nos registros)
 from parser import parse_tiss_original
 
 # Opções de domínio
@@ -95,7 +95,7 @@ def create_tables():
         observacao TEXT,
         is_manual INTEGER NOT NULL DEFAULT 0,  -- 0=automático(import), 1=manual
         aviso TEXT,
-        -- Campos de quitação
+        -- Campos de quitação (NOVO)
         quitacao_data TEXT,
         quitacao_guia_amhptiss TEXT,
         quitacao_valor_amhptiss REAL,
@@ -298,7 +298,7 @@ def parse_csv_text(csv_text):
                 })
             continue
 
-        if "Total de Avisos" in linha or "Total de Cirurgias" in linha:
+        if "Total de Avisos" in linha ou "Total de Cirurgias" in linha:
             continue
 
         continue
@@ -461,7 +461,7 @@ tabs = st.tabs([
     "🧾 Profissionais",
     "💸 Convênios",
     "📑 Relatórios",
-    "💼 Quitação"  # <-- NOVA ABA
+    "💼 Quitação"
 ])
 
 
@@ -776,10 +776,9 @@ with tabs[4]:
 
 
 # ============================================================
-# 📑 ABA 6 — RELATÓRIOS (PDF)
+# 📑 ABA 6 — RELATÓRIOS (PDF) — Paisagem, colunas na ordem pedida
 # ============================================================
 
-# PDF em PAISAGEM + ordem de colunas solicitada
 if REPORTLAB_OK:
     def _pdf_cirurgias_por_status(df, filtros):
         """
@@ -963,7 +962,7 @@ with tabs[5]:
 
 
 # ============================================================
-# 💼 ABA 7 — QUITAÇÃO (NOVO)
+# 💼 ABA 7 — QUITAÇÃO
 # ============================================================
 
 with tabs[6]:
@@ -997,11 +996,19 @@ with tabs[6]:
     if df_quit.empty:
         st.info("Não há cirurgias com status 'Enviado para pagamento' para quitação.")
     else:
-        # Normalizar datas de quitação para exibir/editar
-        df_quit["quitacao_data"] = df_quit["quitacao_data"].apply(lambda v: _to_ddmmyyyy(v))
+        # >>> NORMALIZA TIPOS PARA O data_editor <<<
+        # Data da quitação: datetime64[ns] (aceita dd/mm/aaaa que veio do banco)
+        df_quit["quitacao_data"] = pd.to_datetime(
+            df_quit["quitacao_data"], dayfirst=True, errors="coerce"
+        )
+        # Valores numéricos: garantir dtype float (coerce converte inválidos em NaN)
+        for col in ["quitacao_valor_amhptiss", "quitacao_valor_complemento"]:
+            df_quit[col] = pd.to_numeric(df_quit[col], errors="coerce")
 
-        st.markdown("Preencha os dados de quitação e clique em **Gravar quitação(ões)**. "
-                    "Ao gravar, o status muda automaticamente para **Finalizado**.")
+        st.markdown(
+            "Preencha os dados de quitação e clique em **Gravar quitação(ões)**. "
+            "Ao gravar, o status muda automaticamente para **Finalizado**."
+        )
 
         edited = st.data_editor(
             df_quit,
@@ -1019,7 +1026,7 @@ with tabs[6]:
                 "aviso": st.column_config.Column("Aviso", disabled=True),
                 "situacao": st.column_config.Column("Situação", disabled=True),
 
-                # Campos editáveis de quitação
+                # Campos editáveis de quitação (tipos compatíveis)
                 "quitacao_data": st.column_config.DateColumn(
                     "Data da quitação", format="DD/MM/YYYY", help="Obrigatório para quitação"
                 ),
@@ -1035,7 +1042,6 @@ with tabs[6]:
         )
 
         if st.button("💾 Gravar quitação(ões)"):
-            # Compara original x editado
             cols_chk = [
                 "quitacao_data",
                 "quitacao_guia_amhptiss",
@@ -1057,7 +1063,7 @@ with tabs[6]:
                 if not changed:
                     continue
 
-                # Regras: Data da quitação é obrigatória para finalizar
+                # Data da quitação é obrigatória para finalizar
                 data_q = _to_ddmmyyyy(row["quitacao_data_new"])
                 if not data_q:
                     faltando_data += 1
