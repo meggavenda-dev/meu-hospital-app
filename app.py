@@ -14,6 +14,9 @@ import sqlite3
 import pandas as pd
 import re
 
+# >>> NOVO: usar o parser robusto do módulo parser.py
+from parser import parse_tiss_original
+
 # ============================================================
 # BANCO
 # ============================================================
@@ -104,6 +107,7 @@ def clean(s):
 
 # ============================================================
 # PARSER ROBUSTO — versão final com ancoragem pelas 5 últimas colunas
+# (MANTIDO no arquivo para referência; não é mais utilizado)
 # ============================================================
 
 def parse_csv_text(csv_text):
@@ -330,7 +334,9 @@ with tabs[0]:
 
     if arquivo:
         csv_text = arquivo.getvalue().decode("latin1", errors="ignore")
-        registros = parse_csv_text(csv_text)
+
+        # >>> MUDANÇA: usar o parser melhorado do módulo parser.py
+        registros = parse_tiss_original(csv_text)
 
         st.success(f"{len(registros)} registros interpretados!")
 
