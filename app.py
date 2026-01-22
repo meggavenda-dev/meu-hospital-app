@@ -49,7 +49,7 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 
 
 
-ef inject_css():
+def inject_css():
     st.markdown("""
     <style>
 
