@@ -8,7 +8,8 @@
 #  - Lançamento manual (permite >1 no mesmo dia)
 #  - Edição de procedimento (tipo/situação/observações)
 #  - Filtros por hospital + Seeds
-#  - Relatórios (PDF) — Cirurgias por Status
+#  - Relatórios (PDF) — Cirurgias por Status (paisagem)
+#  - Quitação de Cirurgias (novo)
 # ============================================================
 
 import streamlit as st
@@ -22,7 +23,7 @@ import io
 REPORTLAB_OK = True
 try:
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib.pagesizes import A4, landscape  # <-- (NOVO) landscape
+    from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet
 except ModuleNotFoundError:
@@ -54,6 +55,7 @@ def create_tables():
     """
     Cria/migra tabelas sem apagar dados (sem DROP).
     - Adiciona colunas faltantes em Procedimentos (situacao, observacao, is_manual, aviso).
+    - Adiciona colunas de quitação (quitacao_*).
     - Cria índice único parcial ux_proc_auto para evitar duplicata AUTOMÁTICA por dia.
     """
     conn = get_conn()
@@ -93,27 +95,32 @@ def create_tables():
         observacao TEXT,
         is_manual INTEGER NOT NULL DEFAULT 0,  -- 0=automático(import), 1=manual
         aviso TEXT,
+        -- Campos de quitação
+        quitacao_data TEXT,
+        quitacao_guia_amhptiss TEXT,
+        quitacao_valor_amhptiss REAL,
+        quitacao_guia_complemento TEXT,
+        quitacao_valor_complemento REAL,
         FOREIGN KEY(internacao_id) REFERENCES Internacoes(id)
     );
     """)
 
     # Migração incremental (se a tabela já existia sem as colunas)
-    try:
-        cur.execute("ALTER TABLE Procedimentos ADD COLUMN situacao TEXT NOT NULL DEFAULT 'Pendente';")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE Procedimentos ADD COLUMN observacao TEXT;")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE Procedimentos ADD COLUMN is_manual INTEGER NOT NULL DEFAULT 0;")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE Procedimentos ADD COLUMN aviso TEXT;")
-    except sqlite3.OperationalError:
-        pass
+    for alter in [
+        "ALTER TABLE Procedimentos ADD COLUMN situacao TEXT NOT NULL DEFAULT 'Pendente';",
+        "ALTER TABLE Procedimentos ADD COLUMN observacao TEXT;",
+        "ALTER TABLE Procedimentos ADD COLUMN is_manual INTEGER NOT NULL DEFAULT 0;",
+        "ALTER TABLE Procedimentos ADD COLUMN aviso TEXT;",
+        "ALTER TABLE Procedimentos ADD COLUMN quitacao_data TEXT;",
+        "ALTER TABLE Procedimentos ADD COLUMN quitacao_guia_amhptiss TEXT;",
+        "ALTER TABLE Procedimentos ADD COLUMN quitacao_valor_amhptiss REAL;",
+        "ALTER TABLE Procedimentos ADD COLUMN quitacao_guia_complemento TEXT;",
+        "ALTER TABLE Procedimentos ADD COLUMN quitacao_valor_complemento REAL;",
+    ]:
+        try:
+            cur.execute(alter)
+        except sqlite3.OperationalError:
+            pass
 
     # Índice ÚNICO parcial: evita duplicar AUTOMÁTICO no mesmo (internacao_id, data)
     cur.execute("""
@@ -168,6 +175,40 @@ def _pt_date_to_dt(s):
         return datetime.strptime(s, "%d/%m/%Y").date()
     except Exception:
         return None
+
+def _to_ddmmyyyy(value):
+    """Converte pandas.Timestamp/date/str em 'dd/mm/AAAA' (ou retorna '')."""
+    if value is None or value == "":
+        return ""
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%d/%m/%Y")
+    if isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y")
+    if isinstance(value, date):
+        return value.strftime("%d/%m/%Y")
+    # string já no formato?
+    try:
+        dt = datetime.strptime(str(value), "%Y-%m-%d")
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        pass
+    try:
+        dt = datetime.strptime(str(value), "%d/%m/%Y")
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        return str(value)
+
+def _to_float_or_none(v):
+    if v is None or v == "":
+        return None
+    try:
+        # aceita vírgula decimal
+        return float(str(v).replace(".", "").replace(",", "."))
+    except Exception:
+        try:
+            return float(v)
+        except Exception:
+            return None
 
 # ============================================================
 # (LEGADO) PARSER AUXILIAR — mantido para referência (NÃO USADO)
@@ -366,6 +407,24 @@ def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao
     conn.commit()
     conn.close()
 
+def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_amhptiss=None,
+                        guia_complemento=None, valor_complemento=None):
+    """Grava quitação e atualiza situação para 'Finalizado'."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE Procedimentos
+           SET quitacao_data = ?,
+               quitacao_guia_amhptiss = ?,
+               quitacao_valor_amhptiss = ?,
+               quitacao_guia_complemento = ?,
+               quitacao_valor_complemento = ?,
+               situacao = 'Finalizado'
+         WHERE id = ?
+    """, (data_quitacao, guia_amhptiss, valor_amhptiss, guia_complemento, valor_complemento, proc_id))
+    conn.commit()
+    conn.close()
+
 def get_internacao_by_atendimento(att):
     conn = get_conn()
     df = pd.read_sql_query("SELECT * FROM Internacoes WHERE atendimento = ?", conn, params=(att,))
@@ -401,7 +460,8 @@ tabs = st.tabs([
     "📋 Procedimentos",
     "🧾 Profissionais",
     "💸 Convênios",
-    "📑 Relatórios"
+    "📑 Relatórios",
+    "💼 Quitação"  # <-- NOVA ABA
 ])
 
 
@@ -719,7 +779,7 @@ with tabs[4]:
 # 📑 ABA 6 — RELATÓRIOS (PDF)
 # ============================================================
 
-# (NOVO) PDF em PAISAGEM + ordem de colunas solicitada
+# PDF em PAISAGEM + ordem de colunas solicitada
 if REPORTLAB_OK:
     def _pdf_cirurgias_por_status(df, filtros):
         """
@@ -729,7 +789,7 @@ if REPORTLAB_OK:
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
             buf,
-            pagesize=landscape(A4),  # <-- (NOVO) paisagem
+            pagesize=landscape(A4),
             leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
         )
         styles = getSampleStyleSheet()
@@ -775,7 +835,7 @@ if REPORTLAB_OK:
             elems.append(t_res)
             elems.append(Spacer(1, 10))
 
-        # (NOVO) Tabela detalhada na ordem pedida
+        # Tabela detalhada (ordem pedida)
         header = ["Atendimento", "Aviso", "Convênio", "Paciente", "Data", "Profissional", "Hospital"]
         data_rows = []
         for _, r in df.iterrows():
@@ -829,7 +889,7 @@ with tabs[5]:
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
-    # Carregar base (NOVO: incluindo 'convenio' para a tabela)
+    # Carregar base (inclui 'convenio' para a tabela)
     conn = get_conn()
     sql_rel = """
         SELECT 
@@ -862,7 +922,6 @@ with tabs[5]:
         gerar_pdf = st.button("Gerar PDF")
 
     with colb2:
-        # Fallback: exportar CSV (colunas em ordem padrão do DataFrame)
         if not df_rel.empty:
             csv_bytes = df_rel.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
@@ -901,3 +960,130 @@ with tabs[5]:
                     mime="application/pdf",
                     use_container_width=True
                 )
+
+
+# ============================================================
+# 💼 ABA 7 — QUITAÇÃO (NOVO)
+# ============================================================
+
+with tabs[6]:
+    st.header("💼 Quitação de Cirurgias")
+
+    # Filtro de hospital
+    hosp_opts = ["Todos"] + get_hospitais()
+    hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="quit_hosp")
+
+    # Carrega somente cirurgias "Enviado para pagamento"
+    conn = get_conn()
+    base = """
+        SELECT 
+            P.id, I.hospital, I.atendimento, I.paciente, I.convenio,
+            P.data_procedimento, P.profissional, P.aviso, P.situacao,
+            P.quitacao_data, P.quitacao_guia_amhptiss, P.quitacao_valor_amhptiss,
+            P.quitacao_guia_complemento, P.quitacao_valor_complemento
+        FROM Procedimentos P
+        INNER JOIN Internacoes I ON I.id = P.internacao_id
+        WHERE P.procedimento = 'Cirurgia / Procedimento'
+          AND P.situacao = 'Enviado para pagamento'
+    """
+    if hosp_sel == "Todos":
+        sql = base + " ORDER BY P.data_procedimento, I.hospital, I.atendimento"
+        df_quit = pd.read_sql_query(sql, conn)
+    else:
+        sql = base + " AND I.hospital = ? ORDER BY P.data_procedimento, I.hospital, I.atendimento"
+        df_quit = pd.read_sql_query(sql, conn, params=(hosp_sel,))
+    conn.close()
+
+    if df_quit.empty:
+        st.info("Não há cirurgias com status 'Enviado para pagamento' para quitação.")
+    else:
+        # Normalizar datas de quitação para exibir/editar
+        df_quit["quitacao_data"] = df_quit["quitacao_data"].apply(lambda v: _to_ddmmyyyy(v))
+
+        st.markdown("Preencha os dados de quitação e clique em **Gravar quitação(ões)**. "
+                    "Ao gravar, o status muda automaticamente para **Finalizado**.")
+
+        edited = st.data_editor(
+            df_quit,
+            key="editor_quit",
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "id": st.column_config.Column("ID", disabled=True),
+                "hospital": st.column_config.Column("Hospital", disabled=True),
+                "atendimento": st.column_config.Column("Atendimento", disabled=True),
+                "paciente": st.column_config.Column("Paciente", disabled=True),
+                "convenio": st.column_config.Column("Convênio", disabled=True),
+                "data_procedimento": st.column_config.Column("Data Procedimento", disabled=True),
+                "profissional": st.column_config.Column("Profissional", disabled=True),
+                "aviso": st.column_config.Column("Aviso", disabled=True),
+                "situacao": st.column_config.Column("Situação", disabled=True),
+
+                # Campos editáveis de quitação
+                "quitacao_data": st.column_config.DateColumn(
+                    "Data da quitação", format="DD/MM/YYYY", help="Obrigatório para quitação"
+                ),
+                "quitacao_guia_amhptiss": st.column_config.TextColumn("Guia AMHPTISS"),
+                "quitacao_valor_amhptiss": st.column_config.NumberColumn(
+                    "Valor Guia AMHPTISS", format="R$ %.2f"
+                ),
+                "quitacao_guia_complemento": st.column_config.TextColumn("Guia Complemento"),
+                "quitacao_valor_complemento": st.column_config.NumberColumn(
+                    "Valor Guia Complemento", format="R$ %.2f"
+                ),
+            }
+        )
+
+        if st.button("💾 Gravar quitação(ões)"):
+            # Compara original x editado
+            cols_chk = [
+                "quitacao_data",
+                "quitacao_guia_amhptiss",
+                "quitacao_valor_amhptiss",
+                "quitacao_guia_complemento",
+                "quitacao_valor_complemento",
+            ]
+            compare = df_quit[["id"] + cols_chk].merge(
+                edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new")
+            )
+
+            atualizados = 0
+            faltando_data = 0
+            for _, row in compare.iterrows():
+                changed = any(
+                    (str(row[c + "_old"] or "") != str(row[c + "_new"] or ""))
+                    for c in cols_chk
+                )
+                if not changed:
+                    continue
+
+                # Regras: Data da quitação é obrigatória para finalizar
+                data_q = _to_ddmmyyyy(row["quitacao_data_new"])
+                if not data_q:
+                    faltando_data += 1
+                    continue
+
+                guia_amhp = row["quitacao_guia_amhptiss_new"] or None
+                v_amhp = _to_float_or_none(row["quitacao_valor_amhptiss_new"])
+                guia_comp = row["quitacao_guia_complemento_new"] or None
+                v_comp = _to_float_or_none(row["quitacao_valor_complemento_new"])
+
+                quitar_procedimento(
+                    proc_id=int(row["id"]),
+                    data_quitacao=data_q,
+                    guia_amhptiss=guia_amhp,
+                    valor_amhptiss=v_amhp,
+                    guia_complemento=guia_comp,
+                    valor_complemento=v_comp,
+                )
+                atualizados += 1
+
+            if faltando_data > 0 and atualizados == 0:
+                st.warning("Nenhuma quitação gravada. Preencha a **Data da quitação** para finalizar.")
+            elif faltando_data > 0 and atualizados > 0:
+                st.success(f"{atualizados} quitação(ões) gravada(s). "
+                           f"Atenção: {faltando_data} linha(s) ignoradas por falta de **Data da quitação**.")
+                st.rerun()
+            else:
+                st.success(f"{atualizados} quitação(ões) gravada(s).")
+                st.rerun()
