@@ -13,6 +13,7 @@
 #  - Ver quitação em cirurgias Finalizadas (botão)
 #  - ⚙️ Sistema: agrega Procedimentos, Resumo por Profissional e por Convênio
 #  - Importação: seleção de médicos (todos / multiseleção) + cadastro de internação manual
+#  - NOVO: Observações na quitação (quitacao_observacao)
 # ============================================================
 
 import streamlit as st
@@ -62,7 +63,7 @@ def create_tables():
     """
     Cria/migra tabelas sem apagar dados (sem DROP).
     - Adiciona colunas faltantes em Procedimentos (situacao, observacao, is_manual, aviso, grau_participacao).
-    - Adiciona colunas de quitação (quitacao_*).
+    - Adiciona colunas de quitação (quitacao_* + quitacao_observacao).
     - Cria índice único parcial ux_proc_auto para evitar duplicata AUTOMÁTICA por dia.
     """
     conn = get_conn()
@@ -90,7 +91,7 @@ def create_tables():
     );
     """)
 
-    # Procedimentos (se não existir, cria já com as colunas novas)
+    # Procedimentos
     cur.execute("""
     CREATE TABLE IF NOT EXISTS Procedimentos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,11 +110,12 @@ def create_tables():
         quitacao_valor_amhptiss REAL,
         quitacao_guia_complemento TEXT,
         quitacao_valor_complemento REAL,
+        quitacao_observacao TEXT,              -- NOVO
         FOREIGN KEY(internacao_id) REFERENCES Internacoes(id)
     );
     """)
 
-    # Migração incremental (se a tabela já existia sem as colunas)
+    # Migração incremental
     for alter in [
         "ALTER TABLE Procedimentos ADD COLUMN situacao TEXT NOT NULL DEFAULT 'Pendente';",
         "ALTER TABLE Procedimentos ADD COLUMN observacao TEXT;",
@@ -125,13 +127,14 @@ def create_tables():
         "ALTER TABLE Procedimentos ADD COLUMN quitacao_valor_amhptiss REAL;",
         "ALTER TABLE Procedimentos ADD COLUMN quitacao_guia_complemento TEXT;",
         "ALTER TABLE Procedimentos ADD COLUMN quitacao_valor_complemento REAL;",
+        "ALTER TABLE Procedimentos ADD COLUMN quitacao_observacao TEXT;",
     ]:
         try:
             cur.execute(alter)
         except sqlite3.OperationalError:
             pass
 
-    # Índice ÚNICO parcial: evita duplicar AUTOMÁTICO no mesmo (internacao_id, data)
+    # Índice ÚNICO parcial (auto 1 por dia)
     cur.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS ux_proc_auto
       ON Procedimentos(internacao_id, data_procedimento)
@@ -332,7 +335,7 @@ def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao
     conn.close()
 
 def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_amhptiss=None,
-                        guia_complemento=None, valor_complemento=None):
+                        guia_complemento=None, valor_complemento=None, quitacao_observacao=None):
     """Grava quitação e atualiza situação para 'Finalizado'."""
     conn = get_conn()
     cur = conn.cursor()
@@ -343,9 +346,10 @@ def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_a
                quitacao_valor_amhptiss = ?,
                quitacao_guia_complemento = ?,
                quitacao_valor_complemento = ?,
+               quitacao_observacao = ?,
                situacao = 'Finalizado'
          WHERE id = ?
-    """, (data_quitacao, guia_amhptiss, valor_amhptiss, guia_complemento, valor_complemento, proc_id))
+    """, (data_quitacao, guia_amhptiss, valor_amhptiss, guia_complemento, valor_complemento, quitacao_observacao, proc_id))
     conn.commit()
     conn.close()
 
@@ -368,7 +372,7 @@ def get_quitacao_by_proc_id(proc_id: int):
         SELECT
             P.id, P.data_procedimento, P.profissional, P.situacao, P.aviso, P.observacao, P.grau_participacao,
             P.quitacao_data, P.quitacao_guia_amhptiss, P.quitacao_valor_amhptiss,
-            P.quitacao_guia_complemento, P.quitacao_valor_complemento,
+            P.quitacao_guia_complemento, P.quitacao_valor_complemento, P.quitacao_observacao,
             I.hospital, I.atendimento, I.paciente, I.convenio
         FROM Procedimentos P
         INNER JOIN Internacoes I ON I.id = P.internacao_id
@@ -403,15 +407,13 @@ tabs = st.tabs([
 
 
 # ============================================================
-# 📤 ABA 1 — IMPORTAR (1 AUTOMÁTICO por dia; manuais podem repetir)
-#  - NOVO: cadastrar internação manual
-#  - NOVO: selecionar médicos a importar (todos / multiseleção com default obrigatório)
+# 📤 ABA 1 — IMPORTAR (cadastro manual + seleção de médicos)
 # ============================================================
 
 with tabs[0]:
     st.header("📤 Importar arquivo")
 
-    # ---------- Cadastro de internação manual na aba de importação ----------
+    # Cadastro de internação manual na importação
     st.subheader("➕ Cadastrar internação manualmente (na importação)")
     cmi1, cmi2, cmi3, cmi4, cmi5 = st.columns(5)
     with cmi1:
@@ -436,7 +438,6 @@ with tabs[0]:
                 st.success(f"Internação criada (ID {nid}).")
 
     st.divider()
-    # ------------------------------------------------------------------------
 
     hospitais = get_hospitais()
     hospital = st.selectbox("Hospital para esta importação:", hospitais)
@@ -460,7 +461,7 @@ with tabs[0]:
 
         st.success(f"{len(registros)} registros interpretados!")
 
-        # --------------------- Seleção de médicos ---------------------
+        # Seleção de médicos
         pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
         st.subheader("👨‍⚕️ Selecione os médicos a importar")
 
@@ -472,7 +473,6 @@ with tabs[0]:
                 st.info("Todos os médicos do arquivo serão importados.")
                 selected_pros = pros[:]  # todos
             else:
-                # Pré-seleção: garante que os "sempre marcados" entrem por padrão se existem no arquivo
                 default_pre = sorted([p for p in pros if p in ALWAYS_SELECTED_PROS])
                 selected_pros = st.multiselect(
                     "Médicos a importar (os da lista fixa sempre serão incluídos na gravação):",
@@ -480,18 +480,18 @@ with tabs[0]:
                     default=st.session_state["import_selected_docs"] or default_pre,
                 )
 
-        # Salva estado atual
+        # Salva estado
         st.session_state["import_all_docs"] = import_all
         st.session_state["import_selected_docs"] = selected_pros
 
-        # Constrói a lista *final* de médicos: seleção do usuário ∪ ALWAYS_SELECTED_PROS (se existirem no arquivo)
+        # Lista final de médicos = seleção ∪ ALWAYS_SELECTED_PROS presentes no arquivo
         always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
         final_pros = set(selected_pros if not import_all else pros).union(always_in_file)
         final_pros = sorted(final_pros)
 
         # Filtra registros conforme médicos
         if import_all:
-            registros_filtrados = registros[:]  # nenhum filtro
+            registros_filtrados = registros[:]
         else:
             registros_filtrados = [r for r in registros if (r.get("profissional") or "") in final_pros]
 
@@ -503,7 +503,7 @@ with tabs[0]:
         st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
         st.dataframe(df_preview, use_container_width=True)
 
-        # Pares (atendimento, data) apenas do conjunto filtrado
+        # Pares (atendimento, data) considerando filtros
         pares = sorted({(r["atendimento"], r["data"]) for r in registros_filtrados if r.get("atendimento") and r.get("data")})
         st.info(f"O arquivo contém {len(pares)} par(es) (atendimento, data) considerando os filtros de médicos. "
                 "Regra: 1 procedimento AUTOMÁTICO por internação/dia (manuais podem ser vários).")
@@ -518,7 +518,6 @@ with tabs[0]:
                 # Internação: get or create
                 df_int = get_internacao_by_atendimento(att)
                 if df_int.empty:
-                    # Itens deste atendimento no CONJUNTO FILTRADO
                     itens_att = [r for r in registros_filtrados if r["atendimento"] == att]
                     paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
                     conv_total = next((x.get("convenio") for x in itens_att if x.get("convenio")), "") if itens_att else ""
@@ -535,7 +534,7 @@ with tabs[0]:
                 else:
                     internacao_id = int(df_int["id"].iloc[0])
 
-                # Profissional do dia (no conjunto filtrado) = primeiro que surgir para (att, data)
+                # Profissional/aviso do dia (no conjunto filtrado)
                 prof_dia = ""
                 aviso_dia = ""
                 for it in registros_filtrados:
@@ -547,7 +546,6 @@ with tabs[0]:
                         if prof_dia and aviso_dia:
                             break
 
-                # Se não encontrar profissional (caso muito raro), ignora a criação automática desse dia
                 if not prof_dia:
                     total_ignorados += 1
                     continue
@@ -576,13 +574,13 @@ with tabs[0]:
 
 
 # ============================================================
-# 🔍 ABA 2 — CONSULTAR (com grau participação, excluir internação/cirurgia, quitação, etc.)
+# 🔍 ABA 2 — CONSULTAR (com grau participação, excluir, quitação, etc.)
 # ============================================================
 
 with tabs[1]:
     st.header("🔍 Consultar Internação")
 
-    # Cadastro manual (também disponível aqui)
+    # Cadastro manual (também aqui)
     st.subheader("➕ Cadastrar internação manualmente")
     colm1, colm2, colm3, colm4, colm5 = st.columns(5)
     with colm1:
@@ -824,6 +822,9 @@ with tabs[1]:
                             st.markdown(f"**Valor Guia Complemento:** {_format_currency_br(q['quitacao_valor_complemento'])}")
                             st.markdown(f"**Total Quitado:** **{_format_currency_br(total)}**")
 
+                        st.markdown("**Observações da quitação:**")
+                        st.write(q["quitacao_observacao"] or "-")
+
                         if st.button("Fechar", key="fechar_quit"):
                             st.session_state["show_quit_id"] = None
                             st.rerun()
@@ -835,7 +836,7 @@ with tabs[1]:
 
 
 # ============================================================
-# 📑 ABA 3 — RELATÓRIOS (PDF) — Paisagem, colunas na ordem pedida
+# 📑 ABA 3 — RELATÓRIOS (PDF)
 # ============================================================
 
 if REPORTLAB_OK:
@@ -976,7 +977,7 @@ with tabs[2]:
 
 
 # ============================================================
-# 💼 ABA 4 — QUITAÇÃO
+# 💼 ABA 4 — QUITAÇÃO (com Observações da quitação)
 # ============================================================
 
 with tabs[3]:
@@ -991,7 +992,7 @@ with tabs[3]:
             P.id, I.hospital, I.atendimento, I.paciente, I.convenio,
             P.data_procedimento, P.profissional, P.aviso, P.situacao,
             P.quitacao_data, P.quitacao_guia_amhptiss, P.quitacao_valor_amhptiss,
-            P.quitacao_guia_complemento, P.quitacao_valor_complemento
+            P.quitacao_guia_complemento, P.quitacao_valor_complemento, P.quitacao_observacao
         FROM Procedimentos P
         INNER JOIN Internacoes I ON I.id = P.internacao_id
         WHERE P.procedimento = 'Cirurgia / Procedimento'
@@ -1008,6 +1009,7 @@ with tabs[3]:
     if df_quit.empty:
         st.info("Não há cirurgias com status 'Enviado para pagamento' para quitação.")
     else:
+        # Tipagem para o editor
         df_quit["quitacao_data"] = pd.to_datetime(
             df_quit["quitacao_data"], dayfirst=True, errors="coerce"
         )
@@ -1031,11 +1033,14 @@ with tabs[3]:
                 "profissional": st.column_config.Column("Profissional", disabled=True),
                 "aviso": st.column_config.Column("Aviso", disabled=True),
                 "situacao": st.column_config.Column("Situação", disabled=True),
+
+                # Campos de quitação (inclui observações)
                 "quitacao_data": st.column_config.DateColumn("Data da quitação", format="DD/MM/YYYY"),
                 "quitacao_guia_amhptiss": st.column_config.TextColumn("Guia AMHPTISS"),
                 "quitacao_valor_amhptiss": st.column_config.NumberColumn("Valor Guia AMHPTISS", format="R$ %.2f"),
                 "quitacao_guia_complemento": st.column_config.TextColumn("Guia Complemento"),
                 "quitacao_valor_complemento": st.column_config.NumberColumn("Valor Guia Complemento", format="R$ %.2f"),
+                "quitacao_observacao": st.column_config.TextColumn("Observações da quitação"),
             }
         )
 
@@ -1046,6 +1051,7 @@ with tabs[3]:
                 "quitacao_valor_amhptiss",
                 "quitacao_guia_complemento",
                 "quitacao_valor_complemento",
+                "quitacao_observacao",
             ]
             compare = df_quit[["id"] + cols_chk].merge(
                 edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new")
@@ -1070,6 +1076,7 @@ with tabs[3]:
                 v_amhp = _to_float_or_none(row["quitacao_valor_amhptiss_new"])
                 guia_comp = row["quitacao_guia_complemento_new"] or None
                 v_comp = _to_float_or_none(row["quitacao_valor_complemento_new"])
+                obs_q = (row["quitacao_observacao_new"] or None)
 
                 quitar_procedimento(
                     proc_id=int(row["id"]),
@@ -1078,6 +1085,7 @@ with tabs[3]:
                     valor_amhptiss=v_amhp,
                     guia_complemento=guia_comp,
                     valor_complemento=v_comp,
+                    quitacao_observacao=obs_q,
                 )
                 atualizados += 1
 
