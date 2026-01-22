@@ -48,110 +48,129 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 # ---------------------------
 
 
+
 def inject_css():
     st.markdown("""
     <style>
-    /* Importando fonte Inter para clareza extrema */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
+    /* ----------------------------------------------------
+       PALETA MICROSOFT - NEUTRA E LEVE
+       ---------------------------------------------------- */
     :root {
-        --primary-dark: #0F172A;    /* Azul Marinho Profundo */
-        --accent-blue: #2563EB;     /* Azul Royal para Ações */
-        --bg-app: #F1F5F9;          /* Cinza gelo para fundo (tira o ofuscamento do branco) */
-        --border-color: #CBD5E1;    /* Bordas visíveis mas suaves */
-        --text-main: #1E293B;
-        --radius: 8px;
+        --ms-primary: #0067C0;         /* Azul Microsoft */
+        --ms-primary-hover: #005A9E;
+        --border-soft: #D0D7DE;        /* Cinza claro */
+        --text: #24292F;               /* Quase preto */
+        --text-muted: #57606A;
+        --surface: #FFFFFF;
+        --surface-alt: #F6F8FA;        /* Cinza suavíssimo */
+        --radius: 6px;
     }
 
-    /* Ajuste de Fundo Geral */
-    .stApp {
-        background-color: var(--bg-app);
-        font-family: 'Inter', sans-serif;
+    html, body, .stApp {
+        background-color: var(--surface) !important;
+        color: var(--text);
+        font-family: "Segoe UI", sans-serif;
     }
 
-    /* HEADER COM CONTRASTE REAL */
+    /* ----------------------------------------------------
+       HEADER DO APP (leve, institucional)
+       ---------------------------------------------------- */
     .app-header {
-        background: white;
-        padding: 1.5rem 2rem;
-        margin: -4rem -2rem 1.5rem -2rem;
-        border-bottom: 2px solid var(--border-color);
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+        padding: 16px 12px;
+        margin: -1.2rem -1rem 0.8rem -1rem;
+        border-bottom: 1px solid var(--border-soft);
+        background: rgba(255,255,255,0.90);
+        backdrop-filter: blur(3px);
     }
     .app-header .title {
-        color: var(--primary-dark);
-        font-size: 1.5rem;
+        font-size: 1.22rem;
         font-weight: 700;
+        color: var(--ms-primary);
     }
     .app-header .sub {
-        color: #64748B;
-        font-weight: 500;
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        margin-top: -4px;
     }
 
-    /* CARDS BRANCOS SOBRE FUNDO CINZA (Cria profundidade) */
+    /* ----------------------------------------------------
+       CARDS (painéis suaves)
+       ---------------------------------------------------- */
     .soft-card {
-        background: white !important;
-        border: 1px solid var(--border-color) !important;
+        background: var(--surface-alt);
+        padding: 16px 18px;
         border-radius: var(--radius);
-        padding: 20px;
-        margin-bottom: 1rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        border: 1px solid var(--border-soft);
+        margin-bottom: 10px;
     }
 
-    /* RESOLVENDO O PROBLEMA DOS INPUTS "INVISÍVEIS" */
-    /* Força bordas e cores em todos os tipos de input do Streamlit */
-    div[data-baseweb="input"], div[data-baseweb="select"], .stTextArea textarea {
-        background-color: white !important;
-        border: 1px solid var(--border-color) !important;
-        border-radius: var(--radius) !important;
-        color: var(--text-main) !important;
+    /* ----------------------------------------------------
+       TABELAS / EDITORES
+       ---------------------------------------------------- */
+    .element-container:has(.stDataFrame) .st-emotion-cache-1wmy9hl,
+    .element-container:has(.stDataEditor) .st-emotion-cache-1wmy9hl {
+        border: 1px solid var(--border-soft);
+        border-radius: var(--radius);
+        background: var(--surface);
+        padding-top: 6px;
     }
 
-    /* Destaque quando o campo é clicado */
-    div[data-baseweb="input"]:focus-within, div[data-baseweb="select"]:focus-within {
-        border-color: var(--accent-blue) !important;
-        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2) !important;
+    /* ----------------------------------------------------
+       PILLS DE STATUS (MUUUUITO LEVES)
+       ---------------------------------------------------- */
+    .pill {
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        border: 1px solid transparent;
     }
 
-    /* Rótulos (Labels) mais escuros e visíveis */
-    .stWidgetLabel p {
-        color: var(--primary-dark) !important;
-        font-weight: 600 !important;
-        font-size: 0.9rem !important;
-        margin-bottom: 8px !important;
-    }
+    .pill-pendente  { background:#FFF2CC; color:#8A6D00; border-color:#F7D48A; }
+    .pill-nc        { background:#F3F3F3; color:#555; border-color:#E0E0E0; }
+    .pill-enviado   { background:#E7F3FF; color:#0B5CBD; border-color:#C2E0FF; }
+    .pill-digitacao { background:#E6F4EA; color:#1B5E20; border-color:#C8E6C9; }
+    .pill-ok        { background:#E9F7EF; color:#107C10; border-color:#C8ECCC; }
 
-    /* BOTÕES COM CORES SÓLIDAS */
-    .stButton>button {
-        background-color: var(--primary-dark) !important;
+    /* ----------------------------------------------------
+       BOTÕES (Microsoft Fluent)
+       ---------------------------------------------------- */
+    .stButton > button {
+        background-color: var(--ms-primary) !important;
         color: white !important;
         border: none !important;
-        padding: 0.5rem 1.5rem !important;
+        border-radius: var(--radius) !important;
         font-weight: 600 !important;
-        transition: 0.2s;
+        padding: 6px 18px !important;
+        font-size: 0.9rem !important;
     }
-    .stButton>button:hover {
-        background-color: var(--accent-blue) !important;
-        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
-    }
-
-    /* TABS (Abas) mais legíveis */
-    button[data-baseweb="tab"] {
-        color: #64748B !important;
-        font-weight: 500 !important;
-    }
-    button[data-baseweb="tab"][aria-selected="true"] {
-        color: var(--accent-blue) !important;
-        border-bottom-color: var(--accent-blue) !important;
+    .stButton > button:hover {
+        background-color: var(--ms-primary-hover) !important;
     }
 
-    /* Estilo para as Tabelas */
-    .stDataFrame, .stTable {
-        background: white;
-        border-radius: var(--radius);
-        border: 1px solid var(--border-color);
+    /* Secundário */
+    .secondary-btn {
+        background: var(--surface-alt) !important;
+        color: var(--text) !important;
+        border: 1px solid var(--border-soft) !important;
     }
+    .secondary-btn:hover {
+        background: #ECECEC !important;
+    }
+
+    /* ----------------------------------------------------
+       SIDEBAR
+       ---------------------------------------------------- */
+    section[data-testid="stSidebar"] .block-container {
+        background: var(--surface-alt);
+        padding: 18px 14px;
+        border-right: 1px solid var(--border-soft);
+    }
+
     </style>
     """, unsafe_allow_html=True)
+
 
 def pill(situacao: str) -> str:
     """Retorna HTML de um pill colorido por status."""
