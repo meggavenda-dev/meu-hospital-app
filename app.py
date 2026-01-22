@@ -317,7 +317,7 @@ def parse_csv_text(csv_text):
                 })
             continue
 
-        if "Total de Avisos" in linha ou "Total de Cirurgias" in linha:
+        if "Total de Avisos" in linha or "Total de Cirurgias" in linha:
             continue
 
         continue
