@@ -6,12 +6,13 @@
 #  - Dry-run antes de gravar
 #  - 1 procedimento AUTOMÁTICO por (internação, data)
 #  - Lançamento manual (permite >1 no mesmo dia)
-#  - Edição de procedimento (tipo/situação/observações)
+#  - Edição de procedimento (tipo/situação/observações/grau participação)
 #  - Filtros por hospital + Seeds
 #  - Relatórios (PDF) — Cirurgias por Status (paisagem, ordem: Atendimento, Aviso, Convênio, Paciente, Data, Profissional, Hospital)
 #  - Quitação de Cirurgias (com atualização automática para "Finalizado")
 #  - Ver quitação em cirurgias Finalizadas (botão)
 #  - ⚙️ Sistema: agrega Procedimentos, Resumo por Profissional e por Convênio
+#  - NOVO: Grau de participação + Excluir internação + Excluir cirurgia + Cadastrar internação manualmente
 # ============================================================
 
 import streamlit as st
@@ -43,6 +44,7 @@ STATUS_OPCOES = [
     "Finalizado",
 ]
 PROCEDIMENTO_OPCOES = ["Cirurgia / Procedimento", "Parecer"]
+GRAU_PARTICIPACAO_OPCOES = ["Cirurgião", "1 Auxiliar", "2 Auxiliar", "3 Auxiliar", "Clínico"]
 
 # ============================================================
 # BANCO
@@ -56,7 +58,7 @@ def get_conn():
 def create_tables():
     """
     Cria/migra tabelas sem apagar dados (sem DROP).
-    - Adiciona colunas faltantes em Procedimentos (situacao, observacao, is_manual, aviso).
+    - Adiciona colunas faltantes em Procedimentos (situacao, observacao, is_manual, aviso, grau_participacao).
     - Adiciona colunas de quitação (quitacao_*).
     - Cria índice único parcial ux_proc_auto para evitar duplicata AUTOMÁTICA por dia.
     """
@@ -97,6 +99,7 @@ def create_tables():
         observacao TEXT,
         is_manual INTEGER NOT NULL DEFAULT 0,  -- 0=automático(import), 1=manual
         aviso TEXT,
+        grau_participacao TEXT,                -- NOVO
         -- Campos de quitação
         quitacao_data TEXT,
         quitacao_guia_amhptiss TEXT,
@@ -113,6 +116,7 @@ def create_tables():
         "ALTER TABLE Procedimentos ADD COLUMN observacao TEXT;",
         "ALTER TABLE Procedimentos ADD COLUMN is_manual INTEGER NOT NULL DEFAULT 0;",
         "ALTER TABLE Procedimentos ADD COLUMN aviso TEXT;",
+        "ALTER TABLE Procedimentos ADD COLUMN grau_participacao TEXT;",
         "ALTER TABLE Procedimentos ADD COLUMN quitacao_data TEXT;",
         "ALTER TABLE Procedimentos ADD COLUMN quitacao_guia_amhptiss TEXT;",
         "ALTER TABLE Procedimentos ADD COLUMN quitacao_valor_amhptiss REAL;",
@@ -313,7 +317,7 @@ def parse_csv_text(csv_text):
                 })
             continue
 
-        if "Total de Avisos" in linha or "Total de Cirurgias" in linha:
+        if "Total de Avisos" in linha ou "Total de Cirurgias" in linha:
             continue
 
         continue
@@ -364,6 +368,21 @@ def apagar_internacoes(lista_at):
     conn.commit()
     conn.close()
 
+def deletar_internacao(internacao_id: int):
+    """Exclui procedimentos da internação e depois a própria internação."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM Procedimentos WHERE internacao_id = ?", (internacao_id,))
+    cur.execute("DELETE FROM Internacoes WHERE id = ?", (internacao_id,))
+    conn.commit()
+    conn.close()
+
+def deletar_procedimento(proc_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM Procedimentos WHERE id = ?", (proc_id,))
+    conn.commit()
+    conn.close()
 
 def criar_internacao(hospital, atendimento, paciente, data, convenio):
     conn = get_conn()
@@ -377,16 +396,16 @@ def criar_internacao(hospital, atendimento, paciente, data, convenio):
     conn.close()
     return nid
 
-# Aceita situacao/observacao/is_manual/aviso; OR IGNORE por causa do UNIQUE parcial nos automáticos
+# Aceita situacao/observacao/is_manual/aviso/grau_participacao; OR IGNORE por causa do UNIQUE parcial nos automáticos
 def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
-                       situacao="Pendente", observacao=None, is_manual=0, aviso=None):
+                       situacao="Pendente", observacao=None, is_manual=0, aviso=None, grau_participacao=None):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         INSERT OR IGNORE INTO Procedimentos
-        (internacao_id, data_procedimento, profissional, procedimento, situacao, observacao, is_manual, aviso)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (internacao_id, data_proc, profissional, procedimento, situacao, observacao, is_manual, aviso))
+        (internacao_id, data_procedimento, profissional, procedimento, situacao, observacao, is_manual, aviso, grau_participacao)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (internacao_id, data_proc, profissional, procedimento, situacao, observacao, is_manual, aviso, grau_participacao))
     conn.commit()
     conn.close()
 
@@ -404,7 +423,7 @@ def existe_procedimento_no_dia(internacao_id, data_proc):
     return ok
 
 # Atualiza campos editáveis
-def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao=None):
+def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao=None, grau_participacao=None):
     sets, params = [], []
     if procedimento is not None:
         sets.append("procedimento = ?"); params.append(procedimento)
@@ -412,6 +431,8 @@ def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao
         sets.append("situacao = ?"); params.append(situacao)
     if observacao is not None:
         sets.append("observacao = ?"); params.append(observacao)
+    if grau_participacao is not None:
+        sets.append("grau_participacao = ?"); params.append(grau_participacao)
     if not sets:
         return
     params.append(proc_id)
@@ -457,7 +478,7 @@ def get_quitacao_by_proc_id(proc_id: int):
     conn = get_conn()
     sql = """
         SELECT
-            P.id, P.data_procedimento, P.profissional, P.situacao, P.aviso, P.observacao,
+            P.id, P.data_procedimento, P.profissional, P.situacao, P.aviso, P.observacao, P.grau_participacao,
             P.quitacao_data, P.quitacao_guia_amhptiss, P.quitacao_valor_amhptiss,
             P.quitacao_guia_complemento, P.quitacao_valor_complemento,
             I.hospital, I.atendimento, I.paciente, I.convenio
@@ -482,8 +503,6 @@ st.title("🏥 Sistema de Internações — Versão Final")
 
 # ============================================================
 # INTERFACE EM ABAS
-# (Removidas: 📋 Procedimentos, 🧾 Profissionais, 💸 Convênios)
-# Nova aba ⚙️ Sistema agrega essas três funcionalidades
 # ============================================================
 
 tabs = st.tabs([
@@ -491,7 +510,7 @@ tabs = st.tabs([
     "🔍 Consultar Internação",
     "📑 Relatórios",
     "💼 Quitação",
-    "⚙️ Sistema",  # <-- NOVA ABA agregadora
+    "⚙️ Sistema",
 ])
 
 
@@ -568,7 +587,7 @@ with tabs[0]:
                     total_ignorados += 1
                     continue
 
-                # Criar 1 (um) procedimento-do-dia AUTOMÁTICO
+                # Criar 1 (um) procedimento-do-dia AUTOMÁTICO (grau_participacao vazio)
                 criar_procedimento(
                     internacao_id,
                     data_proc,
@@ -577,7 +596,8 @@ with tabs[0]:
                     situacao="Pendente",
                     observacao=None,
                     is_manual=0,
-                    aviso=aviso_dia or None
+                    aviso=aviso_dia or None,
+                    grau_participacao=None
                 )
                 total_criados += 1
 
@@ -586,16 +606,44 @@ with tabs[0]:
 
 
 # ============================================================
-# 🔍 ABA 2 — CONSULTAR (editar + lançar manual múltiplo por dia) + Ver quitação
+# 🔍 ABA 2 — CONSULTAR (editar + lançar manual + ver/excluir + cadastrar internação manual)
 # ============================================================
 
 with tabs[1]:
     st.header("🔍 Consultar Internação")
 
-    hlist = ["Todos"] + get_hospitais()
-    filtro_hosp = st.selectbox("Filtrar hospital:", hlist)
+    # ========== Cadastrar internação manualmente ==========
+    st.subheader("➕ Cadastrar internação manualmente")
+    colm1, colm2, colm3, colm4, colm5 = st.columns(5)
+    with colm1:
+        hosp_new = st.selectbox("Hospital", get_hospitais(), key="new_int_hosp")
+    with colm2:
+        att_new = st.text_input("Atendimento (único)", key="new_int_att")
+    with colm3:
+        pac_new = st.text_input("Paciente", key="new_int_pac")
+    with colm4:
+        data_new = st.date_input("Data de internação", value=date.today(), key="new_int_data")
+    with colm5:
+        conv_new = st.text_input("Convênio", key="new_int_conv")
 
-    codigo = st.text_input("Digite o atendimento:")
+    if st.button("Criar internação", key="btn_criar_int"):
+        if not att_new:
+            st.warning("Informe o atendimento.")
+        else:
+            if not get_internacao_by_atendimento(att_new).empty:
+                st.error("Já existe uma internação com este atendimento.")
+            else:
+                nid = criar_internacao(hosp_new, att_new, pac_new, data_new.strftime("%d/%m/%Y"), conv_new)
+                st.success(f"Internação criada (ID {nid}).")
+                st.rerun()
+
+    st.divider()
+    # =======================================================
+
+    hlist = ["Todos"] + get_hospitais()
+    filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)
+
+    codigo = st.text_input("Digite o atendimento para consultar:")
 
     if codigo:
         df_int = get_internacao_by_atendimento(codigo)
@@ -610,9 +658,22 @@ with tabs[1]:
 
             internacao_id = int(df_int["id"].iloc[0])
 
+            # --------- Ações de exclusão da internação ---------
+            with st.expander("🗑️ Excluir esta internação"):
+                st.warning("Esta ação apagará a internação e TODOS os procedimentos vinculados.")
+                confirm_txt = st.text_input("Digite APAGAR para confirmar", key="confirm_del_int")
+                if st.button("Excluir internação", key="btn_del_int"):
+                    if confirm_txt.strip().upper() == "APAGAR":
+                        deletar_internacao(internacao_id)
+                        st.success("Internação excluída com sucesso.")
+                        st.rerun()
+                    else:
+                        st.info("Confirmação inválida. Digite APAGAR.")
+
+            # --------- Procedimentos da internação ---------
             conn = get_conn()
             df_proc = pd.read_sql_query(
-                "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao, aviso "
+                "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao, aviso, grau_participacao "
                 "FROM Procedimentos WHERE internacao_id = ? ORDER BY data_procedimento, id",
                 conn, params=(internacao_id,)
             )
@@ -625,6 +686,7 @@ with tabs[1]:
             df_proc["situacao"] = df_proc.get("situacao", pd.Series(dtype=str)).fillna("Pendente")
             df_proc["observacao"] = df_proc.get("observacao", pd.Series(dtype=str)).fillna("")
             df_proc["aviso"] = df_proc.get("aviso", pd.Series(dtype=str)).fillna("")
+            df_proc["grau_participacao"] = df_proc.get("grau_participacao", pd.Series(dtype=str)).fillna("")
 
             st.subheader("Procedimentos — Editáveis")
             edited = st.data_editor(
@@ -637,6 +699,9 @@ with tabs[1]:
                     "data_procedimento": st.column_config.Column("Data", disabled=True),
                     "profissional": st.column_config.Column("Profissional", disabled=True),
                     "aviso": st.column_config.Column("Aviso", disabled=True),
+                    "grau_participacao": st.column_config.SelectboxColumn(
+                        "Grau de Participação", options=[""] + GRAU_PARTICIPACAO_OPCOES, required=False
+                    ),
                     "procedimento": st.column_config.SelectboxColumn(
                         "Tipo de Procedimento", options=PROCEDIMENTO_OPCOES, required=True
                     ),
@@ -649,8 +714,8 @@ with tabs[1]:
                 },
             )
 
-            if st.button("💾 Salvar alterações"):
-                cols_chk = ["procedimento", "situacao", "observacao"]
+            if st.button("💾 Salvar alterações", key="btn_save_proc"):
+                cols_chk = ["procedimento", "situacao", "observacao", "grau_participacao"]
                 df_compare = df_proc[["id"] + cols_chk].merge(
                     edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new")
                 )
@@ -666,6 +731,7 @@ with tabs[1]:
                             "procedimento": row["procedimento_new"],
                             "situacao": row["situacao_new"],
                             "observacao": row["observacao_new"],
+                            "grau_participacao": row["grau_participacao_new"] if row["grau_participacao_new"] != "" else None,
                         })
                 if not alterados:
                     st.info("Nenhuma alteração detectada.")
@@ -676,8 +742,29 @@ with tabs[1]:
                             procedimento=item["procedimento"],
                             situacao=item["situacao"],
                             observacao=item["observacao"],
+                            grau_participacao=item["grau_participacao"],
                         )
                     st.success(f"{len(alterados)} procedimento(s) atualizado(s).")
+                    st.rerun()
+
+            # ----- Excluir cirurgia (procedimento) individual -----
+            with st.expander("🗑️ Excluir cirurgia (procedimento)"):
+                if df_proc.empty:
+                    st.info("Não há procedimentos para excluir.")
+                else:
+                    for _, r in df_proc.iterrows():
+                        c1, c2, c3, c4 = st.columns([3, 3, 3, 2])
+                        with c1:
+                            st.markdown(f"**ID:** {int(r['id'])}  —  **Data:** {r['data_procedimento']}")
+                        with c2:
+                            st.markdown(f"**Profissional:** {r['profissional'] or '-'}")
+                        with c3:
+                            st.markdown(f"**Tipo:** {r['procedimento']}")
+                        with c4:
+                            if st.button("Excluir", key=f"del_proc_{int(r['id'])}"):
+                                deletar_procedimento(int(r["id"]))
+                                st.success(f"Procedimento {int(r['id'])} excluído.")
+                                st.rerun()
 
             st.divider()
             st.subheader("➕ Lançar procedimento manual (permite vários no mesmo dia)")
@@ -690,18 +777,16 @@ with tabs[1]:
             with c3:
                 situacao = st.selectbox("Situação", STATUS_OPCOES, index=0)
 
-            colp1, colp2 = st.columns(2)
+            colp1, colp2, colp3 = st.columns(3)
             with colp1:
                 procedimento_tipo = st.selectbox("Tipo de Procedimento", PROCEDIMENTO_OPCOES, index=0)
             with colp2:
                 observacao = st.text_input("Observações (opcional)")
+            with colp3:
+                grau_part = st.selectbox("Grau de Participação", [""] + GRAU_PARTICIPACAO_OPCOES, index=0)
 
-            # Campo adicional para AVISO (opcional)
-            aviso_manual = st.text_input("Aviso (opcional)")
-
-            if st.button("Adicionar procedimento"):
+            if st.button("Adicionar procedimento", key="btn_add_manual"):
                 data_str = data_proc.strftime("%d/%m/%Y")
-                # Manual pode ter vários no mesmo dia (não checamos existência)
                 criar_procedimento(
                     internacao_id,
                     data_str,
@@ -710,7 +795,8 @@ with tabs[1]:
                     situacao=situacao,
                     observacao=(observacao or None),
                     is_manual=1,
-                    aviso=(aviso_manual or None)
+                    aviso=None,
+                    grau_participacao=(grau_part if grau_part != "" else None),
                 )
                 st.success("Procedimento (manual) adicionado.")
                 st.rerun()  # recarrega a página para exibir o novo item imediatamente
@@ -759,7 +845,7 @@ with tabs[1]:
                         with c3:
                             st.markdown(f"**Status:** {q['situacao']}")
                             st.markdown(f"**Aviso:** {q['aviso'] or '-'}")
-                            st.markdown(f"**Observações:** {q['observacao'] or '-'}")
+                            st.markdown(f"**Grau participação:** {q['grau_participacao'] or '-'}")
 
                         st.markdown("#### 💳 Quitação")
                         c4, c5, c6 = st.columns(3)
@@ -1119,7 +1205,7 @@ with tabs[4]:
         conn = get_conn()
         base = """
             SELECT P.id, I.hospital, I.atendimento, I.paciente,
-                   P.data_procedimento, P.aviso, P.profissional, P.procedimento,
+                   P.data_procedimento, P.aviso, P.profissional, P.grau_participacao, P.procedimento,
                    P.situacao, P.observacao
             FROM Procedimentos P
             INNER JOIN Internacoes I ON I.id = P.internacao_id
