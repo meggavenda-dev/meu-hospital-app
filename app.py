@@ -8,13 +8,21 @@
 #  - Lançamento manual (permite >1 no mesmo dia)
 #  - Edição de procedimento (tipo/situação/observações)
 #  - Filtros por hospital + Seeds
+#  - Relatórios (PDF) — Cirurgias por Status
 # ============================================================
 
 import streamlit as st
 import sqlite3
 import pandas as pd
 import re
-from datetime import date
+from datetime import date, datetime
+import io
+
+# PDF (ReportLab)
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 
 # >>> Parser robusto do seu módulo parser.py
 from parser import parse_tiss_original
@@ -150,6 +158,12 @@ def tail(cols, n):
 def clean(s):
     return s.strip().strip('"').strip()
 
+def _pt_date_to_dt(s):
+    """Converte 'dd/mm/AAAA' -> datetime.date; retorna None se inválido."""
+    try:
+        return datetime.strptime(s, "%d/%m/%Y").date()
+    except Exception:
+        return None
 
 # ============================================================
 # (LEGADO) PARSER AUXILIAR — mantido para referência (NÃO USADO)
@@ -382,7 +396,8 @@ tabs = st.tabs([
     "🔍 Consultar Internação",
     "📋 Procedimentos",
     "🧾 Profissionais",
-    "💸 Convênios"
+    "💸 Convênios",
+    "📑 Relatórios"
 ])
 
 
@@ -442,7 +457,7 @@ with tabs[0]:
                 else:
                     internacao_id = int(df_int["id"].iloc[0])
 
-                # Profissional do dia = primeiro que surgir para (att, data)
+                # Profissional e Aviso do dia = primeiros que surgirem para (att, data)
                 prof_dia = ""
                 aviso_dia = ""
                 for it in registros:
@@ -694,3 +709,177 @@ with tabs[4]:
     conn.close()
 
     st.dataframe(df, use_container_width=True)
+
+
+# ============================================================
+# 📑 ABA 6 — RELATÓRIOS (PDF)
+# ============================================================
+
+def _pdf_cirurgias_por_status(df, filtros):
+    """
+    Gera PDF (bytes) do relatório 'Cirurgias por Status'.
+    df: DataFrame já filtrado.
+    filtros: dict com texto dos filtros (hospital, status, período).
+    """
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=22, rightMargin=22, topMargin=28, bottomMargin=22
+    )
+    styles = getSampleStyleSheet()
+    H1 = styles["Heading1"]
+    H2 = styles["Heading2"]
+    N = styles["BodyText"]
+
+    elems = []
+
+    # Título
+    elems.append(Paragraph("Relatório — Cirurgias por Status", H1))
+    elems.append(Spacer(1, 6))
+
+    # Filtros
+    filtros_txt = (
+        f"Período: {filtros['ini']} a {filtros['fim']} &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"Hospital: {filtros['hospital']} &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"Status: {filtros['status']}"
+    )
+    elems.append(Paragraph(filtros_txt, N))
+    elems.append(Spacer(1, 8))
+
+    # Resumo
+    total = len(df)
+    elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
+    if total > 0 and filtros["status"] == "Todos":
+        resumo = (
+            df.groupby("situacao")["situacao"]
+            .count()
+            .sort_values(ascending=False)
+            .reset_index(name="qtd")
+        )
+        data_resumo = [["Situação", "Quantidade"]] + resumo.values.tolist()
+        t_res = Table(data_resumo, hAlign="LEFT")
+        t_res.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#F0F0F0")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.black),
+            ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+            ("ALIGN", (1,1), (-1,-1), "RIGHT"),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("BOTTOMPADDING", (0,0), (-1,0), 6),
+        ]))
+        elems.append(t_res)
+        elems.append(Spacer(1, 10))
+
+    # Tabela detalhada
+    header = ["Data", "Hospital", "Atendimento", "Paciente", "Profissional", "Status", "Aviso"]
+    data_rows = []
+    for _, r in df.iterrows():
+        data_rows.append([
+            r.get("data_procedimento") or "",
+            r.get("hospital") or "",
+            r.get("atendimento") or "",
+            r.get("paciente") or "",
+            r.get("profissional") or "",
+            r.get("situacao") or "",
+            r.get("aviso") or "",
+        ])
+
+    table = Table([header] + data_rows, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.black),
+        ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("FONTSIZE", (0,0), (-1,0), 10),
+        ("ALIGN", (0,0), (-1,0), "CENTER"),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
+    ]))
+    elems.append(table)
+
+    doc.build(elems)
+    pdf_bytes = buf.getvalue()
+    buf.close()
+    return pdf_bytes
+
+
+with tabs[5]:
+    st.header("📑 Relatórios — Central")
+
+    st.subheader("1) Cirurgias por Status (PDF)")
+
+    # Filtros
+    hosp_opts = ["Todos"] + get_hospitais()
+    colf1, colf2, colf3 = st.columns(3)
+    with colf1:
+        hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="rel_hosp")
+    with colf2:
+        status_opts = ["Todos"] + STATUS_OPCOES
+        status_sel = st.selectbox("Status", status_opts, index=0, key="rel_status")
+    with colf3:
+        # Período do procedimento: data inicial/final
+        hoje = date.today()
+        ini_default = hoje.replace(day=1)
+        dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
+        dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
+
+    # Carregar e filtrar base
+    if st.button("Gerar PDF"):
+        conn = get_conn()
+        sql = """
+            SELECT 
+                I.hospital, I.atendimento, I.paciente,
+                P.data_procedimento, P.aviso, P.profissional,
+                P.procedimento, P.situacao
+            FROM Procedimentos P
+            INNER JOIN Internacoes I ON I.id = P.internacao_id
+            WHERE P.procedimento = 'Cirurgia / Procedimento'
+        """
+        df = pd.read_sql_query(sql, conn)
+        conn.close()
+
+        if df.empty:
+            st.warning("Não há cirurgias registradas.")
+        else:
+            # Normaliza datas ('dd/mm/AAAA' -> date) para filtrar
+            df["_data_dt"] = df["data_procedimento"].apply(_pt_date_to_dt)
+            mask = (df["_data_dt"].notna()) & (df["_data_dt"] >= dt_ini) & (df["_data_dt"] <= dt_fim)
+            df = df[mask].copy()
+
+            if hosp_sel != "Todos":
+                df = df[df["hospital"] == hosp_sel]
+
+            if status_sel != "Todos":
+                df = df[df["situacao"] == status_sel]
+
+            # Ordenação
+            df = df.sort_values(by=["_data_dt", "hospital", "paciente", "atendimento"])
+            # Remove coluna auxiliar e garante string de data formatada
+            df["data_procedimento"] = df["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
+            df = df.drop(columns=["_data_dt"])
+
+            if df.empty:
+                st.info("Nenhum registro encontrado para os filtros informados.")
+            else:
+                # Monta PDF
+                filtros = {
+                    "ini": dt_ini.strftime("%d/%m/%Y"),
+                    "fim": dt_fim.strftime("%d/%m/%Y"),
+                    "hospital": hosp_sel,
+                    "status": status_sel,
+                }
+                pdf_bytes = _pdf_cirurgias_por_status(df, filtros)
+
+                # Nome do arquivo
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                fname = f"relatorio_cirurgias_por_status_{ts}.pdf"
+
+                st.success(f"Relatório gerado com {len(df)} registro(s).")
+                st.download_button(
+                    label="⬇️ Baixar PDF",
+                    data=pdf_bytes,
+                    file_name=fname,
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+
