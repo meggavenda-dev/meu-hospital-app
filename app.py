@@ -4,7 +4,8 @@
 #  Inclui:
 #  - Parser robusto
 #  - Dry-run antes de gravar
-#  - Reprocessamento de atendimentos existentes
+#  - 1 procedimento-do-dia por (internação, data)
+#  - Edição de situação/observação/tipo de procedimento
 #  - Filtros por hospital
 #  - Seeds de hospitais
 # ============================================================
@@ -13,10 +14,20 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import re
-from datetime import date  # NOVO: para lançamento manual
+from datetime import date
 
-# >>> NOVO: usar o parser robusto do módulo parser.py
+# >>> Parser robusto do seu módulo
 from parser import parse_tiss_original
+
+# Opções fixas de negócio
+STATUS_OPCOES = [
+    "Pendente",
+    "Não Cobrar",
+    "Enviado para pagamento",
+    "Aguardando Digitação - AMHP",
+    "Finalizado",
+]
+PROCEDIMENTO_OPCOES = ["Cirurgia / Procedimento", "Parecer"]
 
 # ============================================================
 # BANCO
@@ -53,7 +64,7 @@ def create_tables():
     );
     """)
 
-    # >>> NOVO: Procedimentos com situacao/observacao e UNIQUE (internacao_id, data_procedimento)
+    # Procedimentos (inclui situacao/observacao + unicidade por internação/data)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS Procedimentos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,8 +121,7 @@ def clean(s):
 
 
 # ============================================================
-# PARSER ROBUSTO — versão final com ancoragem pelas 5 últimas colunas
-# (MANTIDO no arquivo para referência; não é mais utilizado)
+# (LEGADO) PARSER AUXILIAR — mantido para referência (NÃO USADO)
 # ============================================================
 
 def parse_csv_text(csv_text):
@@ -274,7 +284,7 @@ def criar_internacao(hospital, atendimento, paciente, data, convenio):
     conn.close()
     return nid
 
-# >>> NOVO: agora aceita situacao/observacao (compatível com tabela nova)
+# Aceita situacao/observacao e usa OR IGNORE por causa do UNIQUE (internacao_id, data)
 def criar_procedimento(internacao_id, data_proc, profissional, procedimento, situacao="Pendente", observacao=None):
     conn = get_conn()
     cur = conn.cursor()
@@ -286,7 +296,6 @@ def criar_procedimento(internacao_id, data_proc, profissional, procedimento, sit
     conn.commit()
     conn.close()
 
-# >>> NOVO: checar existência do procedimento-do-dia
 def existe_procedimento_no_dia(internacao_id, data_proc):
     conn = get_conn()
     cur = conn.cursor()
@@ -298,6 +307,29 @@ def existe_procedimento_no_dia(internacao_id, data_proc):
     ok = cur.fetchone() is not None
     conn.close()
     return ok
+
+# >>> NOVO: atualizar campos editáveis do procedimento
+def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao=None):
+    sets = []
+    params = []
+    if procedimento is not None:
+        sets.append("procedimento = ?")
+        params.append(procedimento)
+    if situacao is not None:
+        sets.append("situacao = ?")
+        params.append(situacao)
+    if observacao is not None:
+        sets.append("observacao = ?")
+        params.append(observacao)
+    if not sets:
+        return
+    params.append(proc_id)
+    sql = f"UPDATE Procedimentos SET {', '.join(sets)} WHERE id = ?"
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    conn.commit()
+    conn.close()
 
 def get_internacao_by_atendimento(att):
     conn = get_conn()
@@ -356,7 +388,7 @@ with tabs[0]:
         except UnicodeDecodeError:
             csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
 
-        # >>> MUDANÇA: usar o parser melhorado do módulo parser.py
+        # Parser robusto do módulo
         registros = parse_tiss_original(csv_text)
 
         st.success(f"{len(registros)} registros interpretados!")
@@ -365,13 +397,12 @@ with tabs[0]:
         st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
         st.dataframe(df_preview, use_container_width=True)
 
-        # >>> NOVO: pares únicos (atendimento, data) a serem processados
+        # Pares únicos (atendimento, data)
         pares = sorted({(r["atendimento"], r["data"]) for r in registros if r.get("atendimento") and r.get("data")})
         st.info(f"O arquivo contém {len(pares)} par(es) (atendimento, data). A regra é 1 procedimento por internação/dia.")
 
         if st.button("Gravar no banco"):
             total_criados, total_ignorados, total_internacoes = 0, 0, 0
-            cache_internacao_id = {}
 
             for (att, data_proc) in pares:
                 if not att:
@@ -380,7 +411,6 @@ with tabs[0]:
                 # Internação: get or create
                 df_int = get_internacao_by_atendimento(att)
                 if df_int.empty:
-                    # descobrir paciente e convênio do primeiro registro do atendimento no arquivo
                     itens_att = [r for r in registros if r["atendimento"] == att]
                     paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
                     conv_total = next((x.get("convenio") for x in itens_att if x.get("convenio")), "") if itens_att else ""
@@ -397,8 +427,6 @@ with tabs[0]:
                 else:
                     internacao_id = int(df_int["id"].iloc[0])
 
-                cache_internacao_id[att] = internacao_id
-
                 # Profissional do dia = primeiro que surgir para (att, data)
                 prof_dia = ""
                 for it in registros:
@@ -411,12 +439,12 @@ with tabs[0]:
                     total_ignorados += 1
                     continue
 
-                # Criar 1 (um) procedimento-do-dia (status default Pendente, sem descrição obrigatória)
+                # Criar 1 (um) procedimento-do-dia
                 criar_procedimento(
                     internacao_id,
                     data_proc,
                     prof_dia,
-                    procedimento="",           # opcional: pode resumir algo se quiser
+                    procedimento="Cirurgia / Procedimento",  # padrão definido
                     situacao="Pendente",
                     observacao=None
                 )
@@ -426,7 +454,7 @@ with tabs[0]:
 
 
 # ============================================================
-# 🔍 ABA 2 — CONSULTAR
+# 🔍 ABA 2 — CONSULTAR (com edição dos procedimentos)
 # ============================================================
 
 with tabs[1]:
@@ -450,7 +478,6 @@ with tabs[1]:
 
             internacao_id = int(df_int["id"].iloc[0])
 
-            # >>> Mostrar procedimentos com situacao/observacao
             conn = get_conn()
             df_proc = pd.read_sql_query(
                 "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao "
@@ -459,29 +486,84 @@ with tabs[1]:
             )
             conn.close()
 
-            st.subheader("Procedimentos (1 por dia)")
-            st.dataframe(df_proc, use_container_width=True)
+            # Garantir colunas e defaults
+            if "procedimento" not in df_proc.columns:
+                df_proc["procedimento"] = "Cirurgia / Procedimento"
+            df_proc["procedimento"] = df_proc["procedimento"].fillna("Cirurgia / Procedimento")
+            df_proc["situacao"] = df_proc.get("situacao", pd.Series(dtype=str)).fillna("Pendente")
+            df_proc["observacao"] = df_proc.get("observacao", pd.Series(dtype=str)).fillna("")
 
-            # >>> NOVO: Lançar procedimento manual (respeitando 1 por dia)
+            st.subheader("Procedimentos (1 por dia) — Editáveis")
+            edited = st.data_editor(
+                df_proc,
+                key="editor_proc",
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "id": st.column_config.Column("ID", disabled=True),
+                    "data_procedimento": st.column_config.Column("Data", disabled=True),
+                    "profissional": st.column_config.Column("Profissional", disabled=True),
+                    "procedimento": st.column_config.SelectboxColumn(
+                        "Tipo de Procedimento", options=PROCEDIMENTO_OPCOES, required=True
+                    ),
+                    "situacao": st.column_config.SelectboxColumn(
+                        "Situação", options=STATUS_OPCOES, required=True
+                    ),
+                    "observacao": st.column_config.TextColumn(
+                        "Observações", help="Texto livre"
+                    ),
+                },
+            )
+
+            # Detectar alterações e salvar
+            if st.button("💾 Salvar alterações"):
+                # comparamos apenas colunas editáveis
+                cols_chk = ["procedimento", "situacao", "observacao"]
+                df_compare = df_proc[["id"] + cols_chk].merge(
+                    edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new")
+                )
+                alterados = []
+                for _, row in df_compare.iterrows():
+                    changed = any(
+                        (str(row[c + "_old"] or "") != str(row[c + "_new"] or ""))
+                        for c in cols_chk
+                    )
+                    if changed:
+                        alterados.append({
+                            "id": int(row["id"]),
+                            "procedimento": row["procedimento_new"],
+                            "situacao": row["situacao_new"],
+                            "observacao": row["observacao_new"],
+                        })
+
+                if not alterados:
+                    st.info("Nenhuma alteração detectada.")
+                else:
+                    for item in alterados:
+                        atualizar_procedimento(
+                            proc_id=item["id"],
+                            procedimento=item["procedimento"],
+                            situacao=item["situacao"],
+                            observacao=item["observacao"],
+                        )
+                    st.success(f"{len(alterados)} procedimento(s) atualizado(s). Recarregue a tela se desejar ver os dados novamente.")
+
+            # Lançar procedimento manual
             st.divider()
-            st.subheader("➕ Lançar procedimento manual")
-
+            st.subheader("➕ Lançar procedimento manual (respeita 1 por dia)")
             c1, c2, c3 = st.columns(3)
             with c1:
                 data_proc = st.date_input("Data do procedimento", value=date.today())
             with c2:
                 profissional = st.text_input("Profissional (opcional)")
             with c3:
-                situacao = st.selectbox("Situação", [
-                    "Pendente",
-                    "Não Cobrar",
-                    "Enviado para pagamento",
-                    "Aguardando Digitação - AMHP",
-                    "Finalizado"
-                ], index=0)
+                situacao = st.selectbox("Situação", STATUS_OPCOES, index=0)
 
-            procedimento_txt = st.text_input("Descrição (opcional)")
-            observacao = st.text_area("Observação (opcional)")
+            colp1, colp2 = st.columns(2)
+            with colp1:
+                procedimento_tipo = st.selectbox("Tipo de Procedimento", PROCEDIMENTO_OPCOES, index=0)
+            with colp2:
+                observacao = st.text_input("Observações (opcional)")
 
             if st.button("Adicionar procedimento"):
                 data_str = data_proc.strftime("%d/%m/%Y")
@@ -492,7 +574,7 @@ with tabs[1]:
                         internacao_id,
                         data_str,
                         profissional,
-                        procedimento_txt,
+                        procedimento_tipo,
                         situacao=situacao,
                         observacao=(observacao or None)
                     )
@@ -546,7 +628,7 @@ with tabs[3]:
         FROM Procedimentos P
         INNER JOIN Internacoes I ON I.id = P.internacao_id
         WHERE profissional IS NOT NULL AND profissional <> ''
-    """  # <<< corrigido (antes tinha &lt;&gt;)
+    """
 
     if chosen == "Todos":
         sql = base + " GROUP BY profissional ORDER BY total DESC"
@@ -575,7 +657,7 @@ with tabs[4]:
         FROM Internacoes I
         INNER JOIN Procedimentos P ON P.internacao_id = I.id
         WHERE I.convenio IS NOT NULL AND I.convenio <> ''
-    """  # <<< corrigido (antes tinha &lt;&gt;)
+    """
 
     if chosen == "Todos":
         sql = base + " GROUP BY I.convenio ORDER BY total DESC"
