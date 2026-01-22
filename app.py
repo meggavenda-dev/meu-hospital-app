@@ -547,25 +547,31 @@ def _to_ddmmyyyy(value):
         return str(value)
 
 
-ef _to_float_or_none(v):
+
+def _to_float_or_none(v):
     if v is None or v == "":
         return None
+
+    # Se já veio como número (caso do st.data_editor NumberColumn)
     if isinstance(v, (int, float)):
         return float(v)
 
-    # Caso raro: usuário digitou texto no CSV
+    # Se veio como string (caso de importação)
     s = str(v).strip()
+
+    # Caso: formato brasileiro 1.234,56
     if "," in s and "." in s:
-        # formato brasileiro tipo 1.234,56
         s = s.replace(".", "").replace(",", ".")
+
+    # Caso: formato 92,00
     elif "," in s and "." not in s:
-        # formato 92,00
         s = s.replace(",", ".")
 
     try:
         return float(s)
     except:
         return None
+
 
 
 def _format_currency_br(v) -> str:
