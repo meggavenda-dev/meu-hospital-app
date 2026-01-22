@@ -661,23 +661,46 @@ def existe_procedimento_no_dia(internacao_id, data_proc):
     ok = cur.fetchone() is not None
     conn.close(); return ok
 
-def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao=None, grau_participacao=None):
+
+def atualizar_procedimento(proc_id, procedimento=None, situacao=None,
+                           observacao=None, grau_participacao=None, aviso=None):
+
     sets, params = [], []
+
     if procedimento is not None:
-        sets.append("procedimento = ?"); params.append(procedimento)
+        sets.append("procedimento = ?")
+        params.append(procedimento)
+
     if situacao is not None:
-        sets.append("situacao = ?"); params.append(situacao)
+        sets.append("situacao = ?")
+        params.append(situacao)
+
     if observacao is not None:
-        sets.append("observacao = ?"); params.append(observacao)
+        sets.append("observacao = ?")
+        params.append(observacao)
+
     if grau_participacao is not None:
-        sets.append("grau_participacao = ?"); params.append(grau_participacao)
+        sets.append("grau_participacao = ?")
+        params.append(grau_participacao)
+
+    if aviso is not None:
+        sets.append("aviso = ?")
+        params.append(aviso)
+
     if not sets:
         return
+
     params.append(proc_id)
     sql = f"UPDATE Procedimentos SET {', '.join(sets)} WHERE id = ?"
-    conn = get_conn(); cur = conn.cursor()
-    cur.execute(sql, params); conn.commit(); conn.close()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    conn.commit()
+    conn.close()
+
     mark_db_dirty()
+
 
 def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_amhptiss=None,
                         guia_complemento=None, valor_complemento=None, quitacao_observacao=None):
@@ -1040,13 +1063,14 @@ with tabs[1]:
                     if not alterados:
                         st.info("Nenhuma alteração detectada.")
                     else:
-                        for item in alterados:
+                        for item in alterados:                            
                             atualizar_procedimento(
                                 proc_id=item["id"],
                                 procedimento=item["procedimento"],
                                 situacao=item["situacao"],
                                 observacao=item["observacao"],
                                 grau_participacao=item["grau_participacao"],
+                                aviso=item["aviso"],
                             )
                         st.toast(f"{len(alterados)} procedimento(s) atualizado(s).", icon="✅")
                         maybe_sync_up_db("chore(db): edição de procedimentos")
