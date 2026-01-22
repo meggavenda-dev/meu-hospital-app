@@ -18,11 +18,15 @@ import re
 from datetime import date, datetime
 import io
 
-# PDF (ReportLab)
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
+# ==== PDF (ReportLab) - import protegido ====
+REPORTLAB_OK = True
+try:
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet
+except ModuleNotFoundError:
+    REPORTLAB_OK = False
 
 # >>> Parser robusto do seu módulo parser.py
 from parser import parse_tiss_original
@@ -715,93 +719,98 @@ with tabs[4]:
 # 📑 ABA 6 — RELATÓRIOS (PDF)
 # ============================================================
 
-def _pdf_cirurgias_por_status(df, filtros):
-    """
-    Gera PDF (bytes) do relatório 'Cirurgias por Status'.
-    df: DataFrame já filtrado.
-    filtros: dict com texto dos filtros (hospital, status, período).
-    """
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=A4,
-        leftMargin=22, rightMargin=22, topMargin=28, bottomMargin=22
-    )
-    styles = getSampleStyleSheet()
-    H1 = styles["Heading1"]
-    H2 = styles["Heading2"]
-    N = styles["BodyText"]
-
-    elems = []
-
-    # Título
-    elems.append(Paragraph("Relatório — Cirurgias por Status", H1))
-    elems.append(Spacer(1, 6))
-
-    # Filtros
-    filtros_txt = (
-        f"Período: {filtros['ini']} a {filtros['fim']} &nbsp;&nbsp;|&nbsp;&nbsp; "
-        f"Hospital: {filtros['hospital']} &nbsp;&nbsp;|&nbsp;&nbsp; "
-        f"Status: {filtros['status']}"
-    )
-    elems.append(Paragraph(filtros_txt, N))
-    elems.append(Spacer(1, 8))
-
-    # Resumo
-    total = len(df)
-    elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
-    if total > 0 and filtros["status"] == "Todos":
-        resumo = (
-            df.groupby("situacao")["situacao"]
-            .count()
-            .sort_values(ascending=False)
-            .reset_index(name="qtd")
+# Define o gerador de PDF apenas se reportlab estiver disponível
+if REPORTLAB_OK:
+    def _pdf_cirurgias_por_status(df, filtros):
+        """
+        Gera PDF (bytes) do relatório 'Cirurgias por Status'.
+        df: DataFrame já filtrado.
+        filtros: dict com texto dos filtros (hospital, status, período).
+        """
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buf,
+            pagesize=A4,
+            leftMargin=22, rightMargin=22, topMargin=28, bottomMargin=22
         )
-        data_resumo = [["Situação", "Quantidade"]] + resumo.values.tolist()
-        t_res = Table(data_resumo, hAlign="LEFT")
-        t_res.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#F0F0F0")),
+        styles = getSampleStyleSheet()
+        H1 = styles["Heading1"]
+        H2 = styles["Heading2"]
+        N = styles["BodyText"]
+
+        elems = []
+
+        # Título
+        elems.append(Paragraph("Relatório — Cirurgias por Status", H1))
+        elems.append(Spacer(1, 6))
+
+        # Filtros
+        filtros_txt = (
+            f"Período: {filtros['ini']} a {filtros['fim']} &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"Hospital: {filtros['hospital']} &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"Status: {filtros['status']}"
+        )
+        elems.append(Paragraph(filtros_txt, N))
+        elems.append(Spacer(1, 8))
+
+        # Resumo
+        total = len(df)
+        elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
+        if total > 0 and filtros["status"] == "Todos":
+            resumo = (
+                df.groupby("situacao")["situacao"]
+                .count()
+                .sort_values(ascending=False)
+                .reset_index(name="qtd")
+            )
+            data_resumo = [["Situação", "Quantidade"]] + resumo.values.tolist()
+            t_res = Table(data_resumo, hAlign="LEFT")
+            t_res.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#F0F0F0")),
+                ("TEXTCOLOR", (0,0), (-1,0), colors.black),
+                ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+                ("ALIGN", (1,1), (-1,-1), "RIGHT"),
+                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                ("BOTTOMPADDING", (0,0), (-1,0), 6),
+            ]))
+            elems.append(t_res)
+            elems.append(Spacer(1, 10))
+
+        # Tabela detalhada
+        header = ["Data", "Hospital", "Atendimento", "Paciente", "Profissional", "Status", "Aviso"]
+        data_rows = []
+        for _, r in df.iterrows():
+            data_rows.append([
+                r.get("data_procedimento") or "",
+                r.get("hospital") or "",
+                r.get("atendimento") or "",
+                r.get("paciente") or "",
+                r.get("profissional") or "",
+                r.get("situacao") or "",
+                r.get("aviso") or "",
+            ])
+
+        table = Table([header] + data_rows, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
             ("TEXTCOLOR", (0,0), (-1,0), colors.black),
             ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
-            ("ALIGN", (1,1), (-1,-1), "RIGHT"),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ("BOTTOMPADDING", (0,0), (-1,0), 6),
+            ("FONTSIZE", (0,0), (-1,0), 10),
+            ("ALIGN", (0,0), (-1,0), "CENTER"),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
         ]))
-        elems.append(t_res)
-        elems.append(Spacer(1, 10))
+        elems.append(table)
 
-    # Tabela detalhada
-    header = ["Data", "Hospital", "Atendimento", "Paciente", "Profissional", "Status", "Aviso"]
-    data_rows = []
-    for _, r in df.iterrows():
-        data_rows.append([
-            r.get("data_procedimento") or "",
-            r.get("hospital") or "",
-            r.get("atendimento") or "",
-            r.get("paciente") or "",
-            r.get("profissional") or "",
-            r.get("situacao") or "",
-            r.get("aviso") or "",
-        ])
-
-    table = Table([header] + data_rows, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.black),
-        ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE", (0,0), (-1,0), 10),
-        ("ALIGN", (0,0), (-1,0), "CENTER"),
-        ("VALIGN", (0,0), (-1,-1), "TOP"),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
-    ]))
-    elems.append(table)
-
-    doc.build(elems)
-    pdf_bytes = buf.getvalue()
-    buf.close()
-    return pdf_bytes
-
+        doc.build(elems)
+        pdf_bytes = buf.getvalue()
+        buf.close()
+        return pdf_bytes
+else:
+    # Stub para sinalizar ausência do reportlab
+    def _pdf_cirurgias_por_status(*args, **kwargs):
+        raise RuntimeError("ReportLab não está instalado. Adicione 'reportlab' ao requirements.txt.")
 
 with tabs[5]:
     st.header("📑 Relatórios — Central")
@@ -823,58 +832,71 @@ with tabs[5]:
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
-    # Carregar e filtrar base
-    if st.button("Gerar PDF"):
-        conn = get_conn()
-        sql = """
-            SELECT 
-                I.hospital, I.atendimento, I.paciente,
-                P.data_procedimento, P.aviso, P.profissional,
-                P.procedimento, P.situacao
-            FROM Procedimentos P
-            INNER JOIN Internacoes I ON I.id = P.internacao_id
-            WHERE P.procedimento = 'Cirurgia / Procedimento'
-        """
-        df = pd.read_sql_query(sql, conn)
-        conn.close()
+    # Carregar base
+    conn = get_conn()
+    sql_rel = """
+        SELECT 
+            I.hospital, I.atendimento, I.paciente,
+            P.data_procedimento, P.aviso, P.profissional,
+            P.procedimento, P.situacao
+        FROM Procedimentos P
+        INNER JOIN Internacoes I ON I.id = P.internacao_id
+        WHERE P.procedimento = 'Cirurgia / Procedimento'
+    """
+    df_rel = pd.read_sql_query(sql_rel, conn)
+    conn.close()
 
-        if df.empty:
-            st.warning("Não há cirurgias registradas.")
+    # Filtragem
+    if not df_rel.empty:
+        df_rel["_data_dt"] = df_rel["data_procedimento"].apply(_pt_date_to_dt)
+        mask = (df_rel["_data_dt"].notna()) & (df_rel["_data_dt"] >= dt_ini) & (df_rel["_data_dt"] <= dt_fim)
+        df_rel = df_rel[mask].copy()
+        if hosp_sel != "Todos":
+            df_rel = df_rel[df_rel["hospital"] == hosp_sel]
+        if status_sel != "Todos":
+            df_rel = df_rel[df_rel["situacao"] == status_sel]
+        df_rel = df_rel.sort_values(by=["_data_dt", "hospital", "paciente", "atendimento"])
+        df_rel["data_procedimento"] = df_rel["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
+        df_rel = df_rel.drop(columns=["_data_dt"])
+
+    # Ações
+    colb1, colb2 = st.columns(2)
+    with colb1:
+        gerar_pdf = st.button("Gerar PDF")
+
+    with colb2:
+        # Fallback imediato: exportar CSV se desejar
+        if not df_rel.empty:
+            csv_bytes = df_rel.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "⬇️ Baixar CSV (fallback)",
+                data=csv_bytes,
+                file_name=f"cirurgias_por_status_{date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                help="Use este CSV caso o PDF esteja indisponível por falta do reportlab."
+            )
+
+    if gerar_pdf:
+        if df_rel.empty:
+            st.warning("Nenhum registro encontrado para os filtros informados.")
         else:
-            # Normaliza datas ('dd/mm/AAAA' -> date) para filtrar
-            df["_data_dt"] = df["data_procedimento"].apply(_pt_date_to_dt)
-            mask = (df["_data_dt"].notna()) & (df["_data_dt"] >= dt_ini) & (df["_data_dt"] <= dt_fim)
-            df = df[mask].copy()
-
-            if hosp_sel != "Todos":
-                df = df[df["hospital"] == hosp_sel]
-
-            if status_sel != "Todos":
-                df = df[df["situacao"] == status_sel]
-
-            # Ordenação
-            df = df.sort_values(by=["_data_dt", "hospital", "paciente", "atendimento"])
-            # Remove coluna auxiliar e garante string de data formatada
-            df["data_procedimento"] = df["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
-            df = df.drop(columns=["_data_dt"])
-
-            if df.empty:
-                st.info("Nenhum registro encontrado para os filtros informados.")
+            if not REPORTLAB_OK:
+                st.error(
+                    "A biblioteca 'reportlab' não está instalada no ambiente.\n"
+                    "→ Solução: adicione `reportlab==3.6.13` ao seu requirements.txt e reimplante a app.\n"
+                    "Enquanto isso, use o botão 'Baixar CSV (fallback)'."
+                )
             else:
-                # Monta PDF
                 filtros = {
                     "ini": dt_ini.strftime("%d/%m/%Y"),
                     "fim": dt_fim.strftime("%d/%m/%Y"),
                     "hospital": hosp_sel,
                     "status": status_sel,
                 }
-                pdf_bytes = _pdf_cirurgias_por_status(df, filtros)
-
-                # Nome do arquivo
+                pdf_bytes = _pdf_cirurgias_por_status(df_rel, filtros)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 fname = f"relatorio_cirurgias_por_status_{ts}.pdf"
-
-                st.success(f"Relatório gerado com {len(df)} registro(s).")
+                st.success(f"Relatório gerado com {len(df_rel)} registro(s).")
                 st.download_button(
                     label="⬇️ Baixar PDF",
                     data=pdf_bytes,
@@ -882,4 +904,3 @@ with tabs[5]:
                     mime="application/pdf",
                     use_container_width=True
                 )
-
