@@ -1,18 +1,7 @@
 
 # ============================================================
 #  SISTEMA DE INTERNAÇÕES — VERSÃO FINAL (DB persistente no GitHub)
-# ============================================================
-#  - Parser robusto
-#  - Dry-run e importação com seleção de médicos (com 4 sempre incluídos)
-#  - 1 procedimento AUTOMÁTICO por (internação, data)
-#  - Lançamento manual (permite >1 no mesmo dia)
-#  - Edição (tipo/situação/observações/grau participação)
-#  - Quitação (com observações) -> muda para Finalizado
-#  - Ver quitação em Finalizados
-#  - Relatórios (PDF, paisagem): Cirurgias | Quitações (com Profissional, colWidths e totais)
-#  - ⚙️ Sistema: listas e resumos
-#  - Cadastro de internação SOMENTE na aba Importar (removido da aba Consultar)
-#  - Persistência SQLite (./dados.db) sincronizada via GitHub Contents API
+#  Aparência Profissional: CSS custom, header sticky, KPIs, toasts
 # ============================================================
 
 import streamlit as st
@@ -38,7 +27,9 @@ except ModuleNotFoundError:
 #  -> mantenha o arquivo parser.py no projeto com parse_tiss_original(csv_text) definido.
 from parser import parse_tiss_original
 
+# ---------------------------
 # Domínio
+# ---------------------------
 STATUS_OPCOES = [
     "Pendente",
     "Não Cobrar",
@@ -51,6 +42,137 @@ GRAU_PARTICIPACAO_OPCOES = ["Cirurgião", "1 Auxiliar", "2 Auxiliar", "3 Auxilia
 
 # Médicos sempre marcados na importação
 ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MATOS"}
+
+# ---------------------------
+# Aparência — CSS e componentes auxiliares
+# ---------------------------
+
+def inject_css():
+    st.markdown("""
+    <style>
+    :root {
+      /* As cores reais virão do tema do Streamlit; aqui ajustamos detalhes */
+      --primary: #2563eb;         /* fallback p/ primaryColor */
+      --success: #16a34a;
+      --warning: #f59e0b;
+      --danger:  #dc2626;
+      --muted:   #9ca3af;
+      --radius:  12px;
+      --card-bg: var(--secondary-bg, rgba(255,255,255,0.02));
+      --border:  rgba(127, 127, 127, .15);
+    }
+    /* Ajuste dinâmico conforme tema claro/escuro */
+    html[data-theme="dark"] :root {
+      --card-bg: #0f172a66;  /* slate-900 ~ com transparência */
+    }
+
+    .app-header {
+      position: sticky; top: -6px; z-index: 999;
+      padding: 12px 16px; margin: -1.5rem -1rem 8px -1rem;
+      background: linear-gradient(180deg, rgba(0,0,0,.25), rgba(0,0,0,0));
+      backdrop-filter: blur(6px);
+      border-bottom: 1px solid var(--border);
+    }
+    .app-header .title {
+      font-weight: 800; font-size: 1.2rem; letter-spacing: .2px;
+      display:flex; align-items:center; gap:10px;
+    }
+    .app-header .sub {
+      font-size: .88rem; opacity: .85;
+    }
+
+    .soft-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+    }
+
+    .kpi-wrap { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    @media (max-width: 1000px) { .kpi-wrap { grid-template-columns: 1fr; } }
+    .kpi {
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      padding: 14px 16px;
+      background: var(--card-bg);
+    }
+    .kpi .label { font-size:.85rem; color: var(--muted); }
+    .kpi .value { font-size:1.6rem; font-weight:800; line-height:1.1; }
+    .kpi .hint  { font-size:.80rem; opacity:.9; margin-top:4px; }
+
+    /* Pills de status */
+    .pill {
+      display:inline-block; padding: 3px 10px; border-radius: 999px;
+      font-weight: 700; font-size: .78rem; border: 1px solid transparent;
+      letter-spacing: .2px; white-space: nowrap;
+    }
+    .pill-pendente  { color:#b45309; background: rgba(245,158,11,.15); border-color: rgba(245,158,11,.35); }
+    .pill-nc        { color:#64748b; background: rgba(148,163,184,.20); border-color: rgba(148,163,184,.35); }
+    .pill-enviado   { color:#1e40af; background: rgba(37,99,235,.15);  border-color: rgba(37,99,235,.35); }
+    .pill-digitacao { color:#0f766e; background: rgba(45,212,191,.15); border-color: rgba(45,212,191,.35); }
+    .pill-ok        { color:#166534; background: rgba(22,163,74,.18);  border-color: rgba(22,163,74,.35); }
+
+    /* Botões */
+    .stButton>button {
+      border-radius: 10px !important; border: 1px solid var(--border) !important;
+    }
+    .primary-btn { background: var(--primary) !important; color: #fff !important; }
+    .danger-btn  { background: #dc2626 !important; color: #fff !important; }
+
+    /* Tabelas (contorno sutil) */
+    .element-container:has(.stDataFrame) .st-emotion-cache-1wmy9hl, /* wrapper df */
+    .element-container:has(.stDataEditor) .st-emotion-cache-1wmy9hl {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding-top: 6px;
+    }
+
+    /* Sidebar um pouco mais espaçosa */
+    section[data-testid="stSidebar"] .block-container {
+      padding: 16px 10px 24px 10px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+def pill(situacao: str) -> str:
+    """Retorna HTML de um pill colorido por status."""
+    s = (situacao or "").strip()
+    cls = "pill"
+    if s == "Pendente": cls += " pill-pendente"
+    elif s == "Não Cobrar": cls += " pill-nc"
+    elif s == "Enviado para pagamento": cls += " pill-enviado"
+    elif s == "Aguardando Digitação - AMHP": cls += " pill-digitacao"
+    elif s == "Finalizado": cls += " pill-ok"
+    return f"<span class='{cls}'>{s or '-'}</span>"
+
+def kpi_row(items):
+    """
+    items: lista de dicts [{label, value, hint (opcional)}]
+    """
+    st.markdown("<div class='kpi-wrap'>", unsafe_allow_html=True)
+    for it in items:
+        st.markdown(
+            f"""
+            <div class='kpi'>
+              <div class='label'>{it.get('label','')}</div>
+              <div class='value'>{it.get('value','')}</div>
+              {'<div class="hint">'+it.get('hint','')+'</div>' if it.get('hint') else ''}
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+def app_header(title: str, subtitle: str = ""):
+    st.markdown(
+        f"""
+        <div class="app-header">
+            <div class="title">🏥 {title}</div>
+            <div class="sub">{subtitle}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 # ============================================================
 #  SINCRONIZAÇÃO DO dados.db COM GITHUB (Contents API)
@@ -136,7 +258,6 @@ def _gh_put_db(content_bytes, message, sha):
     if r.status_code == 409:
         raise RuntimeError("Conflito: versão do banco mudou no GitHub (sha diferente). Faça sync‑down e tente novamente.")
 
-    # Mensagens de ajuda por código
     try:
         err_json = r.json()
     except Exception:
@@ -208,7 +329,7 @@ def maybe_sync_up_db(commit_msg="chore(db): update dados.db"):
 
     try:
         _gh_put_db(content_bytes, commit_msg, st.session_state.get("db_sha"))
-        st.success("📤 Banco enviado ao GitHub com sucesso.")
+        st.toast("📤 Banco enviado ao GitHub com sucesso.", icon="✅")
     except Exception as e:
         # Não derruba o app: mantém db_dirty=True para tentar novamente depois
         st.error(f"⚠️ Não foi possível enviar o DB ao GitHub: {e}")
@@ -498,12 +619,16 @@ def get_quitacao_by_proc_id(proc_id: int):
 # INICIALIZAÇÃO
 # ============================================================
 
+st.set_page_config(page_title="Gestão de Internações", page_icon="🏥", layout="wide")
+
+inject_css()  # <<< estilo global
+
 sync_down_db()      # baixa snapshot do GitHub (se existir)
 create_tables()     # garante schema/migrações
 seed_hospitais()    # seeds
 
-st.set_page_config(page_title="Gestão de Internações", layout="wide")
-st.title("🏥 Sistema de Internações — Versão Final")
+app_header("Sistema de Internações — Versão Final",
+           "Importação, edição, quitação e relatórios com persistência local/GitHub")
 
 # Indicador de status do modo de persistência
 if github_config_ok():
@@ -529,10 +654,11 @@ tabs = st.tabs([
 # ============================================================
 
 with tabs[0]:
-    st.header("📤 Importar arquivo")
+    st.subheader("📤 Importar arquivo")
 
     # Cadastro de internação manual (somente aqui)
-    st.subheader("➕ Cadastrar internação manualmente (na importação)")
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
+    st.markdown("**➕ Cadastrar internação manualmente (na importação)**")
     cmi1, cmi2, cmi3, cmi4, cmi5 = st.columns(5)
     with cmi1: hosp_new = st.selectbox("Hospital", get_hospitais(), key="imp_new_int_hosp")
     with cmi2: att_new = st.text_input("Atendimento (único)", key="imp_new_int_att")
@@ -540,18 +666,22 @@ with tabs[0]:
     with cmi4: data_new = st.date_input("Data de internação", value=date.today(), key="imp_new_int_data")
     with cmi5: conv_new = st.text_input("Convênio", key="imp_new_int_conv")
 
-    if st.button("Criar internação", key="imp_btn_criar_int"):
-        if not att_new:
-            st.warning("Informe o atendimento.")
-        elif not get_internacao_by_atendimento(att_new).empty:
-            st.error("Já existe uma internação com este atendimento.")
-        else:
-            nid = criar_internacao(hosp_new, att_new, pac_new, data_new.strftime("%d/%m/%Y"), conv_new)
-            st.success(f"Internação criada (ID {nid}).")
-            maybe_sync_up_db("chore(db): criação manual de internação (aba Importar)")
+    col_btn = st.columns(6)[-1]
+    with col_btn:
+        if st.button("Criar internação", key="imp_btn_criar_int", type="primary"):
+            if not att_new:
+                st.warning("Informe o atendimento.")
+            elif not get_internacao_by_atendimento(att_new).empty:
+                st.error("Já existe uma internação com este atendimento.")
+            else:
+                nid = criar_internacao(hosp_new, att_new, pac_new, data_new.strftime("%d/%m/%Y"), conv_new)
+                st.toast(f"Internação criada (ID {nid}).", icon="✅")
+                maybe_sync_up_db("chore(db): criação manual de internação (aba Importar)")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
 
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hospitais = get_hospitais()
     hospital = st.selectbox("Hospital para esta importação:", hospitais)
 
@@ -569,9 +699,16 @@ with tabs[0]:
         registros = parse_tiss_original(csv_text)
         st.success(f"{len(registros)} registros interpretados!")
 
-        # Seleção de médicos
+        # KPIs
         pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
-        st.subheader("👨‍⚕️ Selecione os médicos a importar")
+        pares = sorted({(r.get("atendimento"), r.get("data")) for r in registros if r.get("atendimento") and r.get("data")})
+        kpi_row([
+            {"label":"Registros no arquivo", "value": f"{len(registros):,}".replace(",", ".")},
+            {"label":"Médicos distintos",    "value": f"{len(pros):,}".replace(",", ".")},
+            {"label":"Pares (atendimento, data)", "value": f"{len(pares):,}".replace(",", ".")},
+        ])
+
+        st.subheader("👨‍⚕️ Seleção de médicos")
 
         colsel1, colsel2 = st.columns([1, 3])
         with colsel1:
@@ -595,69 +732,80 @@ with tabs[0]:
         always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
         final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
 
-        # Filtra registros
-        registros_filtrados = registros[:] if import_all else [r for r in registros if (r.get("profissional") or "") in final_pros]
-
         st.caption(f"Médicos fixos (sempre incluídos, quando presentes): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
+
+        # Filtra registros
+        registros_filtrados = registros[:] if import_all else [r for r in registros if (r.get("profissional") or "") in final_pros]
 
         # Prévia DRY RUN
         df_preview = pd.DataFrame(registros_filtrados)
         st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
-        st.dataframe(df_preview, use_container_width=True)
+        st.dataframe(df_preview, use_container_width=True, hide_index=True)
 
-        # Pares (att, data)
+        # Pares (att, data) após filtros
         pares = sorted({(r["atendimento"], r["data"]) for r in registros_filtrados if r.get("atendimento") and r.get("data")})
-        st.info(f"{len(pares)} par(es) (atendimento, data) após filtros. Regra: 1 auto por internação/dia (manuais podem ser vários).")
+        st.markdown(
+            f"<div>🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
+            f"{pill('1 auto por internação/dia')} (manuais podem ser vários).</div>",
+            unsafe_allow_html=True
+        )
 
-        if st.button("Gravar no banco"):
-            total_criados = total_ignorados = total_internacoes = 0
+        colg1, colg2 = st.columns([1, 4])
+        with colg1:
+            if st.button("Gravar no banco", type="primary"):
+                total_criados = total_ignorados = total_internacoes = 0
 
-            for (att, data_proc) in pares:
-                if not att: continue
-                df_int = get_internacao_by_atendimento(att)
-                if df_int.empty:
-                    itens_att = [r for r in registros_filtrados if r["atendimento"] == att]
-                    paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
-                    conv_total = next((x.get("convenio") for x in itens_att if x.get("convenio")), "") if itens_att else ""
-                    data_int = next((x.get("data") for x in itens_att if x.get("data")), data_proc)
-                    internacao_id = criar_internacao(hospital, att, paciente, data_int, conv_total)
-                    total_internacoes += 1
-                else:
-                    internacao_id = int(df_int["id"].iloc[0])
+                for (att, data_proc) in pares:
+                    if not att: continue
+                    df_int = get_internacao_by_atendimento(att)
+                    if df_int.empty:
+                        itens_att = [r for r in registros_filtrados if r["atendimento"] == att]
+                        paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
+                        conv_total = next((x.get("convenio") for x in itens_att if x.get("convenio")), "") if itens_att else ""
+                        data_int = next((x.get("data") for x in itens_att if x.get("data")), data_proc)
+                        internacao_id = criar_internacao(hospital, att, paciente, data_int, conv_total)
+                        total_internacoes += 1
+                    else:
+                        internacao_id = int(df_int["id"].iloc[0])
 
-                prof_dia = ""; aviso_dia = ""
-                for it in registros_filtrados:
-                    if it["atendimento"] == att and it["data"] == data_proc:
-                        if not prof_dia and it.get("profissional"): prof_dia = it["profissional"]
-                        if not aviso_dia and it.get("aviso"): aviso_dia = it["aviso"]
-                        if prof_dia and aviso_dia: break
+                    prof_dia = ""; aviso_dia = ""
+                    for it in registros_filtrados:
+                        if it["atendimento"] == att and it["data"] == data_proc:
+                            if not prof_dia and it.get("profissional"): prof_dia = it["profissional"]
+                            if not aviso_dia and it.get("aviso"): aviso_dia = it["aviso"]
+                            if prof_dia and aviso_dia: break
 
-                if not prof_dia:
-                    total_ignorados += 1; continue
-                if existe_procedimento_no_dia(internacao_id, data_proc):
-                    total_ignorados += 1; continue
+                    if not prof_dia:
+                        total_ignorados += 1; continue
+                    if existe_procedimento_no_dia(internacao_id, data_proc):
+                        total_ignorados += 1; continue
 
-                criar_procedimento(
-                    internacao_id, data_proc, prof_dia,
-                    procedimento="Cirurgia / Procedimento", situacao="Pendente",
-                    observacao=None, is_manual=0, aviso=aviso_dia or None, grau_participacao=None
-                )
-                total_criados += 1
+                    criar_procedimento(
+                        internacao_id, data_proc, prof_dia,
+                        procedimento="Cirurgia / Procedimento", situacao="Pendente",
+                        observacao=None, is_manual=0, aviso=aviso_dia or None, grau_participacao=None
+                    )
+                    total_criados += 1
 
-            st.success(f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}")
-            maybe_sync_up_db("chore(db): importação")
+                st.success(f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}")
+                st.toast("✅ Importação concluída.", icon="✅")
+                maybe_sync_up_db("chore(db): importação")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================================
 # 🔍 2) CONSULTAR (sem cadastro manual) + edição + exclusões + ver quitação
 # ============================================================
 
 with tabs[1]:
-    st.header("🔍 Consultar Internação")
+    st.subheader("🔍 Consultar Internação")
 
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hlist = ["Todos"] + get_hospitais()
     filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)
     codigo = st.text_input("Digite o atendimento para consultar:")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if codigo:
         df_int = get_internacao_by_atendimento(codigo)
@@ -668,21 +816,23 @@ with tabs[1]:
             st.warning("Nenhuma internação encontrada.")
         else:
             st.subheader("Dados da internação")
-            st.dataframe(df_int, use_container_width=True)
+            st.dataframe(df_int, use_container_width=True, hide_index=True)
             internacao_id = int(df_int["id"].iloc[0])
 
             # Excluir internação
             with st.expander("🗑️ Excluir esta internação"):
                 st.warning("Esta ação apagará a internação e TODOS os procedimentos vinculados.")
                 confirm_txt = st.text_input("Digite APAGAR para confirmar", key="confirm_del_int")
-                if st.button("Excluir internação", key="btn_del_int"):
-                    if confirm_txt.strip().upper() == "APAGAR":
-                        deletar_internacao(internacao_id)
-                        st.success("Internação excluída com sucesso.")
-                        maybe_sync_up_db("chore(db): exclusão de internação")
-                        st.rerun()
-                    else:
-                        st.info("Confirmação inválida. Digite APAGAR.")
+                col_del = st.columns(6)[-1]
+                with col_del:
+                    if st.button("Excluir internação", key="btn_del_int"):
+                        if confirm_txt.strip().upper() == "APAGAR":
+                            deletar_internacao(internacao_id)
+                            st.toast("🗑️ Internação excluída.", icon="✅")
+                            maybe_sync_up_db("chore(db): exclusão de internação")
+                            st.rerun()
+                        else:
+                            st.info("Confirmação inválida. Digite APAGAR.")
 
             # Procedimentos
             conn = get_conn()
@@ -719,34 +869,36 @@ with tabs[1]:
                 },
             )
 
-            if st.button("💾 Salvar alterações", key="btn_save_proc"):
-                cols_chk = ["procedimento", "situacao", "observacao", "grau_participacao"]
-                df_compare = df_proc[["id"] + cols_chk].merge(edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new"))
-                alterados = []
-                for _, row in df_compare.iterrows():
-                    changed = any((str(row[c + "_old"] or "") != str(row[c + "_new"] or "")) for c in cols_chk)
-                    if changed:
-                        alterados.append({
-                            "id": int(row["id"]),
-                            "procedimento": row["procedimento_new"],
-                            "situacao": row["situacao_new"],
-                            "observacao": row["observacao_new"],
-                            "grau_participacao": row["grau_participacao_new"] if row["grau_participacao_new"] != "" else None,
-                        })
-                if not alterados:
-                    st.info("Nenhuma alteração detectada.")
-                else:
-                    for item in alterados:
-                        atualizar_procedimento(
-                            proc_id=item["id"],
-                            procedimento=item["procedimento"],
-                            situacao=item["situacao"],
-                            observacao=item["observacao"],
-                            grau_participacao=item["grau_participacao"],
-                        )
-                    st.success(f"{len(alterados)} procedimento(s) atualizado(s).")
-                    maybe_sync_up_db("chore(db): edição de procedimentos")
-                    st.rerun()
+            col_save = st.columns(6)[-1]
+            with col_save:
+                if st.button("💾 Salvar alterações", key="btn_save_proc", type="primary"):
+                    cols_chk = ["procedimento", "situacao", "observacao", "grau_participacao"]
+                    df_compare = df_proc[["id"] + cols_chk].merge(edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new"))
+                    alterados = []
+                    for _, row in df_compare.iterrows():
+                        changed = any((str(row[c + "_old"] or "") != str(row[c + "_new"] or "")) for c in cols_chk)
+                        if changed:
+                            alterados.append({
+                                "id": int(row["id"]),
+                                "procedimento": row["procedimento_new"],
+                                "situacao": row["situacao_new"],
+                                "observacao": row["observacao_new"],
+                                "grau_participacao": row["grau_participacao_new"] if row["grau_participacao_new"] != "" else None,
+                            })
+                    if not alterados:
+                        st.info("Nenhuma alteração detectada.")
+                    else:
+                        for item in alterados:
+                            atualizar_procedimento(
+                                proc_id=item["id"],
+                                procedimento=item["procedimento"],
+                                situacao=item["situacao"],
+                                observacao=item["observacao"],
+                                grau_participacao=item["grau_participacao"],
+                            )
+                        st.toast(f"{len(alterados)} procedimento(s) atualizado(s).", icon="✅")
+                        maybe_sync_up_db("chore(db): edição de procedimentos")
+                        st.rerun()
 
             # Excluir cirurgia/procedimento
             with st.expander("🗑️ Excluir cirurgia (procedimento)"):
@@ -757,11 +909,11 @@ with tabs[1]:
                         c1, c2, c3, c4 = st.columns([3, 3, 3, 2])
                         with c1: st.markdown(f"**ID:** {int(r['id'])}  —  **Data:** {r['data_procedimento']}")
                         with c2: st.markdown(f"**Profissional:** {r['profissional'] or '-'}")
-                        with c3: st.markdown(f"**Tipo:** {r['procedimento']}")
+                        with c3: st.markdown(f"**Tipo:** {r['procedimento']}<br>{pill(r['situacao'])}", unsafe_allow_html=True)
                         with c4:
-                            if st.button("Excluir", key=f"del_proc_{int(r['id'])}"):
+                            if st.button("Excluir", key=f"del_proc_{int(r['id'])}", help="Apagar este procedimento"):
                                 deletar_procedimento(int(r["id"]))
-                                st.success(f"Procedimento {int(r['id'])} excluído.")
+                                st.toast(f"Procedimento {int(r['id'])} excluído.", icon="🗑️")
                                 maybe_sync_up_db("chore(db): exclusão de procedimento")
                                 st.rerun()
 
@@ -778,16 +930,18 @@ with tabs[1]:
             with colp2: observacao = st.text_input("Observações (opcional)")
             with colp3: grau_part = st.selectbox("Grau de Participação", [""] + GRAU_PARTICIPACAO_OPCOES, index=0)
 
-            if st.button("Adicionar procedimento", key="btn_add_manual"):
-                data_str = data_proc.strftime("%d/%m/%Y")
-                criar_procedimento(
-                    internacao_id, data_str, profissional, procedimento_tipo,
-                    situacao=situacao, observacao=(observacao or None), is_manual=1,
-                    aviso=None, grau_participacao=(grau_part if grau_part != "" else None),
-                )
-                st.success("Procedimento (manual) adicionado.")
-                maybe_sync_up_db("chore(db): novo procedimento manual")
-                st.rerun()
+            col_add = st.columns(6)[-1]
+            with col_add:
+                if st.button("Adicionar procedimento", key="btn_add_manual", type="primary"):
+                    data_str = data_proc.strftime("%d/%m/%Y")
+                    criar_procedimento(
+                        internacao_id, data_str, profissional, procedimento_tipo,
+                        situacao=situacao, observacao=(observacao or None), is_manual=1,
+                        aviso=None, grau_participacao=(grau_part if grau_part != "" else None),
+                    )
+                    st.toast("Procedimento (manual) adicionado.", icon="✅")
+                    maybe_sync_up_db("chore(db): novo procedimento manual")
+                    st.rerun()
 
             # Ver quitação (Finalizados)
             st.divider()
@@ -821,7 +975,7 @@ with tabs[1]:
                             st.markdown(f"**Data procedimento:** {q['data_procedimento'] or '-'}")
                             st.markdown(f"**Profissional:** {q['profissional'] or '-'}")
                         with c3:
-                            st.markdown(f"**Status:** {q['situacao']}")
+                            st.markdown(f"**Status:** {pill(q['situacao'])}", unsafe_allow_html=True)
                             st.markdown(f"**Aviso:** {q['aviso'] or '-'}")
                             st.markdown(f"**Grau participação:** {q['grau_participacao'] or '-'}")
 
@@ -990,10 +1144,10 @@ else:
         raise RuntimeError("ReportLab não está instalado no ambiente.")
 
 with tabs[2]:
-    st.header("📑 Relatórios — Central")
+    st.subheader("📑 Relatórios — Central")
 
     # 1) Cirurgias por Status
-    st.subheader("1) Cirurgias por Status (PDF)")
+    st.markdown("**1) Cirurgias por Status (PDF)**")
     hosp_opts = ["Todos"] + get_hospitais()
     colf1, colf2, colf3 = st.columns(3)
     with colf1: hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="rel_hosp")
@@ -1026,7 +1180,25 @@ with tabs[2]:
         df_rel = df_rel.drop(columns=["_data_dt"])
 
     colb1, colb2 = st.columns(2)
-    with colb1: gerar_pdf = st.button("Gerar PDF")
+    with colb1:
+        if st.button("Gerar PDF", type="primary"):
+            if df_rel.empty:
+                st.warning("Nenhum registro encontrado para os filtros informados.")
+            elif not REPORTLAB_OK:
+                st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
+            else:
+                filtros = {
+                    "ini": dt_ini.strftime("%d/%m/%Y"),
+                    "fim": dt_fim.strftime("%d/%m/%Y"),
+                    "hospital": hosp_sel,
+                    "status": status_sel,
+                }
+                pdf_bytes = _pdf_cirurgias_por_status(df_rel, filtros)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                fname = f"relatorio_cirurgias_por_status_{ts}.pdf"
+                st.success(f"Relatório gerado com {len(df_rel)} registro(s).")
+                st.download_button(label="⬇️ Baixar PDF", data=pdf_bytes, file_name=fname,
+                                   mime="application/pdf", use_container_width=True)
     with colb2:
         if not df_rel.empty:
             csv_bytes = df_rel.to_csv(index=False).encode("utf-8-sig")
@@ -1034,29 +1206,10 @@ with tabs[2]:
                                file_name=f"cirurgias_por_status_{date.today().strftime('%Y%m%d')}.csv",
                                mime="text/csv")
 
-    if gerar_pdf:
-        if df_rel.empty:
-            st.warning("Nenhum registro encontrado para os filtros informados.")
-        elif not REPORTLAB_OK:
-            st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
-        else:
-            filtros = {
-                "ini": dt_ini.strftime("%d/%m/%Y"),
-                "fim": dt_fim.strftime("%d/%m/%Y"),
-                "hospital": hosp_sel,
-                "status": status_sel,
-            }
-            pdf_bytes = _pdf_cirurgias_por_status(df_rel, filtros)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            fname = f"relatorio_cirurgias_por_status_{ts}.pdf"
-            st.success(f"Relatório gerado com {len(df_rel)} registro(s).")
-            st.download_button(label="⬇️ Baixar PDF", data=pdf_bytes, file_name=fname,
-                               mime="application/pdf", use_container_width=True)
-
     st.divider()
 
     # 2) Quitações
-    st.subheader("2) Quitações (PDF)")
+    st.markdown("**2) Quitações (PDF)**")
     hosp_opts_q = ["Todos"] + get_hospitais()
     colq1, colq2 = st.columns(2)
     with colq1:
@@ -1109,7 +1262,29 @@ with tabs[2]:
 
     colqb1, colqb2 = st.columns(2)
     with colqb1:
-        gerar_pdf_q = st.button("Gerar PDF (Quitações)")
+        if st.button("Gerar PDF (Quitações)", type="primary"):
+            if df_quit.empty:
+                st.warning("Nenhum registro de quitação encontrado para os filtros informados.")
+            else:
+                if not REPORTLAB_OK:
+                    st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
+                else:
+                    filtros_q = {
+                        "ini": dt_ini_q.strftime("%d/%m/%Y"),
+                        "fim": dt_fim_q.strftime("%d/%m/%Y"),
+                        "hospital": hosp_sel_q,
+                    }
+                    pdf_bytes_q = _pdf_quitacoes(df_quit, filtros_q)
+                    ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
+                    st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
+                    st.download_button(
+                        label="⬇️ Baixar PDF (Quitações)",
+                        data=pdf_bytes_q,
+                        file_name=fname_q,
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
     with colqb2:
         if not df_quit.empty:
             csv_quit = df_quit.to_csv(index=False).encode("utf-8-sig")
@@ -1120,39 +1295,17 @@ with tabs[2]:
                 mime="text/csv",
             )
 
-    if gerar_pdf_q:
-        if df_quit.empty:
-            st.warning("Nenhum registro de quitação encontrado para os filtros informados.")
-        else:
-            if not REPORTLAB_OK:
-                st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
-            else:
-                filtros_q = {
-                    "ini": dt_ini_q.strftime("%d/%m/%Y"),
-                    "fim": dt_fim_q.strftime("%d/%m/%Y"),
-                    "hospital": hosp_sel_q,
-                }
-                pdf_bytes_q = _pdf_quitacoes(df_quit, filtros_q)
-                ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
-                fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
-                st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
-                st.download_button(
-                    label="⬇️ Baixar PDF (Quitações)",
-                    data=pdf_bytes_q,
-                    file_name=fname_q,
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-
 # ============================================================
 # 💼 4) QUITAÇÃO (com observações)
 # ============================================================
 
 with tabs[3]:
-    st.header("💼 Quitação de Cirurgias")
+    st.subheader("💼 Quitação de Cirurgias")
 
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hosp_opts = ["Todos"] + get_hospitais()
     hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="quit_hosp")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     conn = get_conn()
     base = """
@@ -1205,56 +1358,57 @@ with tabs[3]:
             }
         )
 
-        if st.button("💾 Gravar quitação(ões)"):
-            cols_chk = [
-                "quitacao_data","quitacao_guia_amhptiss","quitacao_valor_amhptiss",
-                "quitacao_guia_complemento","quitacao_valor_complemento","quitacao_observacao",
-            ]
-            compare = df_quit[["id"] + cols_chk].merge(edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new"))
-            atualizados = faltando_data = 0
-            for _, row in compare.iterrows():
-                changed = any((str(row[c + "_old"] or "") != str(row[c + "_new"] or "")) for c in cols_chk)
-                if not changed: continue
-                data_q = _to_ddmmyyyy(row["quitacao_data_new"])
-                if not data_q:
-                    faltando_data += 1; continue
-                guia_amhp = row["quitacao_guia_amhptiss_new"] or None
-                v_amhp = _to_float_or_none(row["quitacao_valor_amhptiss_new"])
-                guia_comp = row["quitacao_guia_complemento_new"] or None
-                v_comp = _to_float_or_none(row["quitacao_valor_complemento_new"])
-                obs_q = (row["quitacao_observacao_new"] or None)
+        col_quit = st.columns(6)[-1]
+        with col_quit:
+            if st.button("💾 Gravar quitação(ões)", type="primary"):
+                cols_chk = [
+                    "quitacao_data","quitacao_guia_amhptiss","quitacao_valor_amhptiss",
+                    "quitacao_guia_complemento","quitacao_valor_complemento","quitacao_observacao",
+                ]
+                compare = df_quit[["id"] + cols_chk].merge(edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new"))
+                atualizados = faltando_data = 0
+                for _, row in compare.iterrows():
+                    changed = any((str(row[c + "_old"] or "") != str(row[c + "_new"] or "")) for c in cols_chk)
+                    if not changed: continue
+                    data_q = _to_ddmmyyyy(row["quitacao_data_new"])
+                    if not data_q:
+                        faltando_data += 1; continue
+                    guia_amhp = row["quitacao_guia_amhptiss_new"] or None
+                    v_amhp = _to_float_or_none(row["quitacao_valor_amhptiss_new"])
+                    guia_comp = row["quitacao_guia_complemento_new"] or None
+                    v_comp = _to_float_or_none(row["quitacao_valor_complemento_new"])
+                    obs_q = (row["quitacao_observacao_new"] or None)
 
-                quitar_procedimento(
-                    proc_id=int(row["id"]),
-                    data_quitacao=data_q, guia_amhptiss=guia_amhp, valor_amhptiss=v_amhp,
-                    guia_complemento=guia_comp, valor_complemento=v_comp, quitacao_observacao=obs_q
-                )
-                atualizados += 1
+                    quitar_procedimento(
+                        proc_id=int(row["id"]),
+                        data_quitacao=data_q, guia_amhptiss=guia_amhp, valor_amhptiss=v_amhp,
+                        guia_complemento=guia_comp, valor_complemento=v_comp, quitacao_observacao=obs_q
+                    )
+                    atualizados += 1
 
-            if faltando_data > 0 and atualizados == 0:
-                st.warning("Nenhuma quitação gravada. Preencha a **Data da quitação** para finalizar.")
-            elif faltando_data > 0 and atualizados > 0:
-                st.success(f"{atualizados} quitação(ões) gravada(s). "
-                           f"Atenção: {faltando_data} linha(s) ignoradas por falta de **Data da quitação**.")
-                maybe_sync_up_db("chore(db): quitação (lote)")
-                st.rerun()
-            else:
-                st.success(f"{atualizados} quitação(ões) gravada(s).")
-                maybe_sync_up_db("chore(db): quitação")
-                st.rerun()
+                if faltando_data > 0 and atualizados == 0:
+                    st.warning("Nenhuma quitação gravada. Preencha a **Data da quitação** para finalizar.")
+                elif faltando_data > 0 and atualizados > 0:
+                    st.toast(f"{atualizados} quitação(ões) gravada(s). {faltando_data} linha(s) ignoradas sem **Data da quitação**.", icon="✅")
+                    maybe_sync_up_db("chore(db): quitação (lote)")
+                    st.rerun()
+                else:
+                    st.toast(f"{atualizados} quitação(ões) gravada(s).", icon="✅")
+                    maybe_sync_up_db("chore(db): quitação")
+                    st.rerun()
 
 # ============================================================
 # ⚙️ 5) SISTEMA (listas e resumos)
 # ============================================================
 
 with tabs[4]:
-    st.header("⚙️ Sistema")
+    st.subheader("⚙️ Sistema")
 
-    st.subheader("📋 Procedimentos — Lista")
+    st.markdown("**📋 Procedimentos — Lista**")
     filtro = ["Todos"] + get_hospitais()
     chosen = st.selectbox("Hospital (lista de procedimentos):", filtro, key="sys_proc_hosp")
 
-    if st.button("Carregar procedimentos", key="btn_carregar_proc"):
+    if st.button("Carregar procedimentos", key="btn_carregar_proc", type="primary"):
         conn = get_conn()
         base = """
             SELECT P.id, I.hospital, I.atendimento, I.paciente,
@@ -1270,11 +1424,11 @@ with tabs[4]:
             sql = base + " WHERE I.hospital = ? ORDER BY P.data_procedimento DESC, P.id DESC"
             df = pd.read_sql_query(sql, conn, params=(chosen,))
         conn.close()
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
     st.divider()
 
-    st.subheader("🧾 Resumo por Profissional")
+    st.markdown("**🧾 Resumo por Profissional**")
     filtro_prof = ["Todos"] + get_hospitais()
     chosen_prof = st.selectbox("Hospital (resumo por profissional):", filtro_prof, key="sys_prof_hosp")
     conn = get_conn()
@@ -1291,11 +1445,11 @@ with tabs[4]:
         sql = base_prof + " AND I.hospital = ? GROUP BY profissional ORDER BY total DESC"
         df_prof = pd.read_sql_query(sql, conn, params=(chosen_prof,))
     conn.close()
-    st.dataframe(df_prof, use_container_width=True)
+    st.dataframe(df_prof, use_container_width=True, hide_index=True)
 
     st.divider()
 
-    st.subheader("💸 Resumo por Convênio")
+    st.markdown("**💸 Resumo por Convênio**")
     filtro_conv = ["Todos"] + get_hospitais()
     chosen_conv = st.selectbox("Hospital (resumo por convênio):", filtro_conv, key="sys_conv_hosp")
     conn = get_conn()
@@ -1312,4 +1466,4 @@ with tabs[4]:
         sql = base_conv + " AND I.hospital = ? GROUP BY I.convenio ORDER BY total DESC"
         df_conv = pd.read_sql_query(sql, conn, params=(chosen_conv,))
     conn.close()
-    st.dataframe(df_conv, use_container_width=True)
+    st.dataframe(df_conv, use_container_width=True, hide_index=True)
