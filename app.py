@@ -1,46 +1,43 @@
 
 # ============================================================
-#  SISTEMA DE INTERNAÇÕES — VERSÃO FINAL
+#  SISTEMA DE INTERNAÇÕES — VERSÃO FINAL (DB persistente no GitHub)
 # ============================================================
 #  - Parser robusto
-#  - Dry-run antes de gravar
+#  - Dry-run e importação com seleção de médicos (com 4 sempre incluídos)
 #  - 1 procedimento AUTOMÁTICO por (internação, data)
 #  - Lançamento manual (permite >1 no mesmo dia)
-#  - Edição de procedimento (tipo/situação/observações/grau participação)
-#  - Filtros por hospital + Seeds
-#  - Relatórios (PDF, paisagem)
-#    * Cirurgias por Status
-#    * Quitações (com profissional) — ordem:
-#      Convênio, Paciente, Profissional, Data, Atendimento, Guia AMHP,
-#      Guia Complemento, Valor AMHP, Valor Complemento, Data da quitação
-#  - Quitação de Cirurgias (com observações; move p/ Finalizado)
-#  - Ver quitação em cirurgias Finalizadas (botão)
-#  - ⚙️ Sistema: agrega listas e resumos
-#  - Importação: seleção de médicos (todos / multiseleção) + cadastro de internação manual
-#  - REMOVIDO: "Cadastrar internação" da aba 🔍 Consultar Internação
+#  - Edição (tipo/situação/observações/grau participação)
+#  - Quitação (com observações) -> muda para Finalizado
+#  - Ver quitação em Finalizados
+#  - Relatórios (PDF, paisagem): Cirurgias | Quitações (com Profissional, colWidths e totais)
+#  - ⚙️ Sistema: listas e resumos
+#  - Cadastro de internação SOMENTE na aba Importar (removido da aba Consultar)
+#  - Persistência SQLite (./dados.db) sincronizada via GitHub Contents API
 # ============================================================
 
 import streamlit as st
 import sqlite3
 import pandas as pd
-import re
 from datetime import date, datetime
 import io
+import base64, json
+import requests  # -> requirements: requests
 
-# ==== PDF (ReportLab) - import protegido ====
+# ==== PDF (ReportLab) - opcional ====
 REPORTLAB_OK = True
 try:
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib.pagesizes import A4, landscape  # paisagem
+    from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
 except ModuleNotFoundError:
     REPORTLAB_OK = False
 
-# Parser robusto (deve retornar 'aviso' em cada registro)
+# Parser (seu módulo)
 from parser import parse_tiss_original
 
-# Opções de domínio
+# Domínio
 STATUS_OPCOES = [
     "Pendente",
     "Não Cobrar",
@@ -55,21 +52,123 @@ GRAU_PARTICIPACAO_OPCOES = ["Cirurgião", "1 Auxiliar", "2 Auxiliar", "3 Auxilia
 ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MATOS"}
 
 # ============================================================
+#  SINCRONIZAÇÃO DO dados.db COM GITHUB (Contents API)
+# ============================================================
+
+GH_TOKEN   = st.secrets.get("GH_TOKEN", "")
+GH_REPO    = st.secrets.get("GH_REPO", "")
+GH_BRANCH  = st.secrets.get("GH_BRANCH", "main")
+GH_DB_PATH = st.secrets.get("GH_DB_PATH", "data/dados.db")
+
+_GH_API = "https://api.github.com"
+_GH_HEADERS = {
+    "Authorization": f"token {GH_TOKEN}",
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+}
+
+if "db_sha" not in st.session_state:
+    st.session_state["db_sha"] = None
+if "db_dirty" not in st.session_state:
+    st.session_state["db_dirty"] = False
+
+LOCAL_DB_FILE = "dados.db"  # mesmo diretório do app.py
+
+def _gh_contents_url(path: str) -> str:
+    return f"{_GH_API}/repos/{GH_REPO.strip()}/contents/{path}"
+
+def _gh_get_db():
+    """Retorna (bytes, sha) ou (None, None) se não existir no GitHub."""
+    if not (GH_TOKEN and GH_REPO and GH_DB_PATH):
+        return None, None
+    r = requests.get(
+        _gh_contents_url(GH_DB_PATH),
+        headers=_GH_HEADERS,
+        params={"ref": GH_BRANCH},
+        timeout=30,
+    )
+    if r.status_code == 200:
+        data = r.json()
+        content_b64 = data.get("content", "")
+        sha = data.get("sha")
+        try:
+            content = base64.b64decode(content_b64.encode("utf-8"))
+            return content, sha
+        except Exception:
+            return None, None
+    if r.status_code == 404:
+        return None, None
+    raise RuntimeError(f"GitHub GET {r.status_code}: {r.text}")
+
+def _gh_put_db(content_bytes, message, sha):
+    """PUT seguro (usa sha) — cria/atualiza dados.db no repositório."""
+    if not (GH_TOKEN and GH_REPO and GH_DB_PATH):
+        raise RuntimeError("Config GitHub ausente em secrets.")
+    payload = {
+        "message": message,
+        "content": base64.b64encode(content_bytes).decode("utf-8"),
+        "branch": GH_BRANCH,
+    }
+    if sha:
+        payload["sha"] = sha
+    r = requests.put(
+        _gh_contents_url(GH_DB_PATH),
+        headers=_GH_HEADERS,
+        data=json.dumps(payload),
+        timeout=60,
+    )
+    if r.status_code in (200, 201):
+        data = r.json()
+        st.session_state["db_sha"] = data["content"]["sha"]
+        st.session_state["db_dirty"] = False
+    elif r.status_code == 409:
+        raise RuntimeError("Conflito: versão do banco mudou no GitHub (sha diferente). Faça sync‑down e tente novamente.")
+    else:
+        raise RuntimeError(f"GitHub PUT {r.status_code}: {r.text}")
+
+def sync_down_db():
+    """Baixa o dados.db do GitHub (se existir) ANTES de abrir o SQLite local."""
+    try:
+        content, sha = _gh_get_db()
+        if content:
+            with open(LOCAL_DB_FILE, "wb") as f:
+                f.write(content)
+            st.session_state["db_sha"] = sha
+            st.session_state["db_dirty"] = False
+            st.info("📥 Banco sincronizado do GitHub.")
+        else:
+            st.warning("Não há banco no GitHub ainda (primeiro envio criará o arquivo).")
+    except Exception as e:
+        st.error(f"Falha ao baixar DB do GitHub: {e}")
+
+def mark_db_dirty():
+    """Marcar após QUALQUER escrita (insert/update/delete)."""
+    st.session_state["db_dirty"] = True
+
+def maybe_sync_up_db(commit_msg="chore(db): update dados.db"):
+    """Se houve escrita local e não há conexões abertas, envia o arquivo ao GitHub."""
+    if not st.session_state.get("db_dirty"):
+        return
+    # Compactar para reduzir tamanho (sem conexões abertas)
+    conn = sqlite3.connect(LOCAL_DB_FILE)
+    conn.execute("VACUUM")
+    conn.close()
+    with open(LOCAL_DB_FILE, "rb") as f:
+        content_bytes = f.read()
+    _gh_put_db(content_bytes, commit_msg, st.session_state.get("db_sha"))
+    st.success("📤 Banco enviado ao GitHub com sucesso.")
+
+# ============================================================
 # BANCO
 # ============================================================
 
 def get_conn():
-    conn = sqlite3.connect("dados.db")
+    conn = sqlite3.connect(LOCAL_DB_FILE)
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
 def create_tables():
-    """
-    Cria/migra tabelas sem apagar dados (sem DROP).
-    - Procedimentos: situacao, observacao, is_manual, aviso, grau_participacao
-    - Quitação: quitacao_* + quitacao_observacao
-    - Índice único parcial (auto 1 por dia)
-    """
+    """Cria/migra tabelas sem DROP; índice único parcial para auto 1/dia."""
     conn = get_conn()
     cur = conn.cursor()
 
@@ -105,10 +204,9 @@ def create_tables():
         procedimento TEXT,
         situacao TEXT NOT NULL DEFAULT 'Pendente',
         observacao TEXT,
-        is_manual INTEGER NOT NULL DEFAULT 0,  -- 0=automático(import), 1=manual
+        is_manual INTEGER NOT NULL DEFAULT 0,
         aviso TEXT,
         grau_participacao TEXT,
-        -- Quitação
         quitacao_data TEXT,
         quitacao_guia_amhptiss TEXT,
         quitacao_valor_amhptiss REAL,
@@ -119,7 +217,6 @@ def create_tables():
     );
     """)
 
-    # Migração incremental
     for alter in [
         "ALTER TABLE Procedimentos ADD COLUMN situacao TEXT NOT NULL DEFAULT 'Pendente';",
         "ALTER TABLE Procedimentos ADD COLUMN observacao TEXT;",
@@ -138,7 +235,6 @@ def create_tables():
         except sqlite3.OperationalError:
             pass
 
-    # Índice único parcial (evita duplicar auto no mesmo dia)
     cur.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS ux_proc_auto
       ON Procedimentos(internacao_id, data_procedimento)
@@ -160,22 +256,9 @@ def seed_hospitais():
     conn.commit()
     conn.close()
 
-def get_hospitais():
-    conn = get_conn()
-    df = pd.read_sql_query("SELECT name FROM Hospitals WHERE active = 1 ORDER BY name", conn)
-    conn.close()
-    return df["name"].tolist()
-
 # ============================================================
 # UTIL
 # ============================================================
-
-def tail(cols, n):
-    pad = [""] * max(0, n - len(cols))
-    return (pad + cols)[-n:]
-
-def clean(s):
-    return s.strip().strip('"').strip()
 
 def _pt_date_to_dt(s):
     try:
@@ -215,7 +298,7 @@ def _format_currency_br(v) -> str:
         return f"R$ {v}"
 
 # ============================================================
-# FUNÇÕES DE BANCO
+# CRUD
 # ============================================================
 
 def apagar_internacoes(lista_at):
@@ -231,17 +314,20 @@ def apagar_internacoes(lista_at):
     """, lista_at)
     cur.execute(f"DELETE FROM Internacoes WHERE atendimento IN ({qmarks})", lista_at)
     conn.commit(); conn.close()
+    mark_db_dirty()
 
 def deletar_internacao(internacao_id: int):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("DELETE FROM Procedimentos WHERE internacao_id = ?", (internacao_id,))
     cur.execute("DELETE FROM Internacoes WHERE id = ?", (internacao_id,))
     conn.commit(); conn.close()
+    mark_db_dirty()
 
 def deletar_procedimento(proc_id: int):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("DELETE FROM Procedimentos WHERE id = ?", (proc_id,))
     conn.commit(); conn.close()
+    mark_db_dirty()
 
 def criar_internacao(hospital, atendimento, paciente, data, convenio):
     conn = get_conn(); cur = conn.cursor()
@@ -250,6 +336,7 @@ def criar_internacao(hospital, atendimento, paciente, data, convenio):
         VALUES (?, ?, ?, ?, ?, ?)
     """, (float(atendimento), hospital, atendimento, paciente, data, convenio))
     conn.commit(); nid = cur.lastrowid; conn.close()
+    mark_db_dirty()
     return nid
 
 def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
@@ -262,6 +349,7 @@ def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (internacao_id, data_proc, profissional, procedimento, situacao, observacao, is_manual, aviso, grau_participacao))
     conn.commit(); conn.close()
+    mark_db_dirty()
 
 def existe_procedimento_no_dia(internacao_id, data_proc):
     conn = get_conn(); cur = conn.cursor()
@@ -275,15 +363,21 @@ def existe_procedimento_no_dia(internacao_id, data_proc):
 
 def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao=None, grau_participacao=None):
     sets, params = [], []
-    if procedimento is not None: sets.append("procedimento = ?"); params.append(procedimento)
-    if situacao is not None: sets.append("situacao = ?"); params.append(situacao)
-    if observacao is not None: sets.append("observacao = ?"); params.append(observacao)
-    if grau_participacao is not None: sets.append("grau_participacao = ?"); params.append(grau_participacao)
-    if not sets: return
+    if procedimento is not None:
+        sets.append("procedimento = ?"); params.append(procedimento)
+    if situacao is not None:
+        sets.append("situacao = ?"); params.append(situacao)
+    if observacao is not None:
+        sets.append("observacao = ?"); params.append(observacao)
+    if grau_participacao is not None:
+        sets.append("grau_participacao = ?"); params.append(grau_participacao)
+    if not sets:
+        return
     params.append(proc_id)
     sql = f"UPDATE Procedimentos SET {', '.join(sets)} WHERE id = ?"
     conn = get_conn(); cur = conn.cursor()
     cur.execute(sql, params); conn.commit(); conn.close()
+    mark_db_dirty()
 
 def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_amhptiss=None,
                         guia_complemento=None, valor_complemento=None, quitacao_observacao=None):
@@ -300,6 +394,7 @@ def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_a
          WHERE id = ?
     """, (data_quitacao, guia_amhptiss, valor_amhptiss, guia_complemento, valor_complemento, quitacao_observacao, proc_id))
     conn.commit(); conn.close()
+    mark_db_dirty()
 
 def get_internacao_by_atendimento(att):
     conn = get_conn()
@@ -330,8 +425,9 @@ def get_quitacao_by_proc_id(proc_id: int):
 # INICIALIZAÇÃO
 # ============================================================
 
-create_tables()
-seed_hospitais()
+sync_down_db()      # baixa snapshot do GitHub (se existir)
+create_tables()     # garante schema/migrações
+seed_hospitais()    # seeds
 
 st.set_page_config(page_title="Gestão de Internações", layout="wide")
 st.title("🏥 Sistema de Internações — Versão Final")
@@ -349,7 +445,7 @@ tabs = st.tabs([
 ])
 
 # ============================================================
-# 📤 ABA 1 — IMPORTAR (cadastro manual + seleção de médicos)
+# 📤 1) IMPORTAR (cadastro manual + seleção de médicos)
 # ============================================================
 
 with tabs[0]:
@@ -372,6 +468,7 @@ with tabs[0]:
         else:
             nid = criar_internacao(hosp_new, att_new, pac_new, data_new.strftime("%d/%m/%Y"), conv_new)
             st.success(f"Internação criada (ID {nid}).")
+            maybe_sync_up_db("chore(db): criação manual de internação (aba Importar)")
 
     st.divider()
 
@@ -380,7 +477,7 @@ with tabs[0]:
 
     arquivo = st.file_uploader("Selecione o arquivo CSV")
 
-    # Estado seleção médicos
+    # Estado de seleção de médicos
     if "import_all_docs" not in st.session_state: st.session_state["import_all_docs"] = True
     if "import_selected_docs" not in st.session_state: st.session_state["import_selected_docs"] = []
 
@@ -395,6 +492,7 @@ with tabs[0]:
         # Seleção de médicos
         pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
         st.subheader("👨‍⚕️ Selecione os médicos a importar")
+
         colsel1, colsel2 = st.columns([1, 3])
         with colsel1:
             import_all = st.checkbox("Importar todos os médicos", value=st.session_state["import_all_docs"])
@@ -409,28 +507,32 @@ with tabs[0]:
                     options=pros,
                     default=st.session_state["import_selected_docs"] or default_pre,
                 )
+
         st.session_state["import_all_docs"] = import_all
         st.session_state["import_selected_docs"] = selected_pros
 
+        # Lista final: seleção ∪ (sempre-incluídos presentes no arquivo)
         always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
         final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
 
-        # Filtra registros conforme médicos escolhidos
+        # Filtra registros
         registros_filtrados = registros[:] if import_all else [r for r in registros if (r.get("profissional") or "") in final_pros]
 
-        st.caption(f"Médicos fixos (sempre incluídos, quando presentes no arquivo): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
-        st.info(f"Médicos considerados na importação: {', '.join(final_pros) if final_pros else '(nenhum)'}")
+        st.caption(f"Médicos fixos (sempre incluídos, quando presentes): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
+        st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
 
+        # Prévia DRY RUN
         df_preview = pd.DataFrame(registros_filtrados)
         st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
         st.dataframe(df_preview, use_container_width=True)
 
+        # Pares (att, data)
         pares = sorted({(r["atendimento"], r["data"]) for r in registros_filtrados if r.get("atendimento") and r.get("data")})
-        st.info(f"O arquivo contém {len(pares)} par(es) (atendimento, data) considerando os filtros de médicos. "
-                "Regra: 1 procedimento AUTOMÁTICO por internação/dia (manuais podem ser vários).")
+        st.info(f"{len(pares)} par(es) (atendimento, data) após filtros. Regra: 1 auto por internação/dia (manuais podem ser vários).")
 
         if st.button("Gravar no banco"):
             total_criados = total_ignorados = total_internacoes = 0
+
             for (att, data_proc) in pares:
                 if not att: continue
                 df_int = get_internacao_by_atendimento(att)
@@ -450,6 +552,7 @@ with tabs[0]:
                         if not prof_dia and it.get("profissional"): prof_dia = it["profissional"]
                         if not aviso_dia and it.get("aviso"): aviso_dia = it["aviso"]
                         if prof_dia and aviso_dia: break
+
                 if not prof_dia:
                     total_ignorados += 1; continue
                 if existe_procedimento_no_dia(internacao_id, data_proc):
@@ -463,9 +566,10 @@ with tabs[0]:
                 total_criados += 1
 
             st.success(f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}")
+            maybe_sync_up_db("chore(db): importação")
 
 # ============================================================
-# 🔍 ABA 2 — CONSULTAR (SEM cadastro manual) + edição + exclusões + ver quitação
+# 🔍 2) CONSULTAR (sem cadastro manual) + edição + exclusões + ver quitação
 # ============================================================
 
 with tabs[1]:
@@ -477,7 +581,8 @@ with tabs[1]:
 
     if codigo:
         df_int = get_internacao_by_atendimento(codigo)
-        if filtro_hosp != "Todos": df_int = df_int[df_int["hospital"] == filtro_hosp]
+        if filtro_hosp != "Todos":
+            df_int = df_int[df_int["hospital"] == filtro_hosp]
 
         if df_int.empty:
             st.warning("Nenhuma internação encontrada.")
@@ -494,11 +599,12 @@ with tabs[1]:
                     if confirm_txt.strip().upper() == "APAGAR":
                         deletar_internacao(internacao_id)
                         st.success("Internação excluída com sucesso.")
+                        maybe_sync_up_db("chore(db): exclusão de internação")
                         st.rerun()
                     else:
                         st.info("Confirmação inválida. Digite APAGAR.")
 
-            # Carrega procedimentos
+            # Procedimentos
             conn = get_conn()
             df_proc = pd.read_sql_query(
                 "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao, aviso, grau_participacao "
@@ -507,7 +613,6 @@ with tabs[1]:
             )
             conn.close()
 
-            # Defaults
             if "procedimento" not in df_proc.columns: df_proc["procedimento"] = "Cirurgia / Procedimento"
             df_proc["procedimento"] = df_proc["procedimento"].fillna("Cirurgia / Procedimento")
             df_proc["situacao"] = df_proc.get("situacao", pd.Series(dtype=str)).fillna("Pendente")
@@ -560,6 +665,7 @@ with tabs[1]:
                             grau_participacao=item["grau_participacao"],
                         )
                     st.success(f"{len(alterados)} procedimento(s) atualizado(s).")
+                    maybe_sync_up_db("chore(db): edição de procedimentos")
                     st.rerun()
 
             # Excluir cirurgia/procedimento
@@ -576,6 +682,7 @@ with tabs[1]:
                             if st.button("Excluir", key=f"del_proc_{int(r['id'])}"):
                                 deletar_procedimento(int(r["id"]))
                                 st.success(f"Procedimento {int(r['id'])} excluído.")
+                                maybe_sync_up_db("chore(db): exclusão de procedimento")
                                 st.rerun()
 
             # Lançar manual
@@ -599,6 +706,7 @@ with tabs[1]:
                     aviso=None, grau_participacao=(grau_part if grau_part != "" else None),
                 )
                 st.success("Procedimento (manual) adicionado.")
+                maybe_sync_up_db("chore(db): novo procedimento manual")
                 st.rerun()
 
             # Ver quitação (Finalizados)
@@ -655,21 +763,18 @@ with tabs[1]:
                         if st.button("Fechar", key="fechar_quit"):
                             st.session_state["show_quit_id"] = None
                             st.rerun()
-                    else:
-                        st.warning("Não foi possível carregar os dados da quitação.")
-                        if st.button("Fechar", key="fechar_quit_err"):
-                            st.session_state["show_quit_id"] = None
-                            st.rerun()
 
 # ============================================================
-# 📑 ABA 3 — RELATÓRIOS (PDF)
+# 📑 3) RELATÓRIOS (PDF)
 # ============================================================
 
 # --- PDF: Cirurgias por Status (paisagem) ---
 if REPORTLAB_OK:
     def _pdf_cirurgias_por_status(df, filtros):
         buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18)
+        doc = SimpleDocTemplate(
+            buf, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
+        )
         styles = getSampleStyleSheet(); H1 = styles["Heading1"]; H2 = styles["Heading2"]; N = styles["BodyText"]
         elems = []
         elems.append(Paragraph("Relatório — Cirurgias por Status", H1)); elems.append(Spacer(1, 6))
@@ -711,20 +816,21 @@ if REPORTLAB_OK:
         pdf_bytes = buf.getvalue(); buf.close(); return pdf_bytes
 else:
     def _pdf_cirurgias_por_status(*args, **kwargs):
-        raise RuntimeError("ReportLab não está instalado. Adicione 'reportlab' ao requirements.txt.")
+        raise RuntimeError("ReportLab não está instalado no ambiente.")
 
-# --- PDF: Quitações (paisagem, com PROFISSIONAL) ---
+# --- PDF: Quitações (paisagem, com PROFISSIONAL, larguras e totais) ---
 if REPORTLAB_OK:
     def _pdf_quitacoes(df, filtros):
-        """
-        Colunas (ordem):
-        Convênio, Paciente, Profissional, Data, Atendimento,
-        Guia AMHP, Guia Complemento, Valor AMHP, Valor Complemento, Data da quitação
-        """
+        # Totais
+        v_amhp = pd.to_numeric(df.get("quitacao_valor_amhptiss", 0), errors="coerce").fillna(0.0)
+        v_comp = pd.to_numeric(df.get("quitacao_valor_complemento", 0), errors="coerce").fillna(0.0)
+        total_amhp = float(v_amhp.sum())
+        total_comp = float(v_comp.sum())
+        total_geral = total_amhp + total_comp
+
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
-            buf, pagesize=landscape(A4),
-            leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
+            buf, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
         )
         styles = getSampleStyleSheet()
         H1 = styles["Heading1"]; N = styles["BodyText"]
@@ -740,6 +846,13 @@ if REPORTLAB_OK:
             "Guia AMHP", "Guia Complemento",
             "Valor AMHP", "Valor Complemento", "Data da quitação"
         ]
+        col_widths = [
+            3.2*cm, 6.0*cm, 6.0*cm, 2.4*cm, 2.8*cm,
+            3.2*cm, 3.6*cm, 3.2*cm, 3.6*cm, 2.8*cm
+        ]
+        numeric_cols = [7, 8]
+        center_cols  = [3, 4, 9]
+
         data_rows = []
         for _, r in df.iterrows():
             data_rows.append([
@@ -755,29 +868,51 @@ if REPORTLAB_OK:
                 r.get("quitacao_data") or "",
             ])
 
-        table = Table([header] + data_rows, repeatRows=1)
-        table.setStyle(TableStyle([
+        table = Table([header] + data_rows, repeatRows=1, colWidths=col_widths)
+        style_cmds = [
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
             ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
             ("FONTSIZE", (0,0), (-1,0), 10),
-            ("ALIGN", (0,0), (-1,0), "CENTER"),
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
+            ("ALIGN", (0,0), (-1,0), "CENTER"),
+        ]
+        for c in numeric_cols:
+            style_cmds.append(("ALIGN", (c,1), (c,-1), "RIGHT"))
+        for c in center_cols:
+            style_cmds.append(("ALIGN", (c,1), (c,-1), "CENTER"))
+
+        table.setStyle(TableStyle(style_cmds))
+        elems.append(table); elems.append(Spacer(1, 8))
+
+        totals_data = [
+            ["Total AMHP:", _format_currency_br(total_amhp)],
+            ["Total Complemento:", _format_currency_br(total_comp)],
+            ["Total Geral:", _format_currency_br(total_geral)],
+        ]
+        totals_tbl = Table(totals_data, colWidths=[4.5*cm, 3.5*cm], hAlign="RIGHT")
+        totals_tbl.setStyle(TableStyle([
+            ("FONTNAME", (0,0), (-1,-1), "Helvetica"),
+            ("FONTSIZE", (0,0), (-1,-1), 10),
+            ("ALIGN", (0,0), (0,-1), "RIGHT"),
+            ("ALIGN", (1,0), (1,-1), "RIGHT"),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+            ("TOPPADDING", (0,0), (-1,-1), 2),
         ]))
-        elems.append(table)
+        elems.append(totals_tbl)
 
         doc.build(elems)
         pdf_bytes = buf.getvalue(); buf.close()
         return pdf_bytes
 else:
     def _pdf_quitacoes(*args, **kwargs):
-        raise RuntimeError("ReportLab não está instalado. Adicione 'reportlab' ao requirements.txt.")
+        raise RuntimeError("ReportLab não está instalado no ambiente.")
 
 with tabs[2]:
     st.header("📑 Relatórios — Central")
 
-    # --------- 1) Cirurgias por Status (PDF) ----------
+    # 1) Cirurgias por Status
     st.subheader("1) Cirurgias por Status (PDF)")
     hosp_opts = ["Todos"] + get_hospitais()
     colf1, colf2, colf3 = st.columns(3)
@@ -840,10 +975,8 @@ with tabs[2]:
 
     st.divider()
 
-    # --------- 2) Quitações (PDF, paisagem, com Profissional) ----------
+    # 2) Quitações
     st.subheader("2) Quitações (PDF)")
-
-    # Filtros
     hosp_opts_q = ["Todos"] + get_hospitais()
     colq1, colq2 = st.columns(2)
     with colq1:
@@ -854,7 +987,6 @@ with tabs[2]:
         dt_ini_q = st.date_input("Data inicial da quitação", value=ini_default_q, key="rel_q_ini")
         dt_fim_q = st.date_input("Data final da quitação", value=hoje, key="rel_q_fim")
 
-    # Base de quitações (com PROFISSIONAL)
     conn = get_conn()
     sql_quit = """
         SELECT 
@@ -871,26 +1003,20 @@ with tabs[2]:
     df_quit = pd.read_sql_query(sql_quit, conn)
     conn.close()
 
-    # Filtragem por Data da quitação + hospital
     if not df_quit.empty:
         df_quit["_quit_dt"] = df_quit["quitacao_data"].apply(_pt_date_to_dt)
         mask_q = (df_quit["_quit_dt"].notna()) & (df_quit["_quit_dt"] >= dt_ini_q) & (df_quit["_quit_dt"] <= dt_fim_q)
         df_quit = df_quit[mask_q].copy()
-
         if hosp_sel_q != "Todos":
             df_quit = df_quit[df_quit["hospital"] == hosp_sel_q]
 
-        # Ordena por data da quitação, convênio, paciente
         df_quit = df_quit.sort_values(by=["_quit_dt", "convenio", "paciente"])
-
-        # Normaliza datas para exibição
         df_quit["data_procedimento"] = df_quit["data_procedimento"].apply(
             lambda s: _pt_date_to_dt(s).strftime("%d/%m/%Y") if pd.notna(_pt_date_to_dt(s)) else (s or "")
         )
         df_quit["quitacao_data"] = df_quit["_quit_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
         df_quit = df_quit.drop(columns=["_quit_dt"])
 
-        # Reordena colunas conforme pedido (inclui PROFISSIONAL)
         cols_pdf = [
             "convenio", "paciente", "profissional", "data_procedimento", "atendimento",
             "quitacao_guia_amhptiss", "quitacao_guia_complemento",
@@ -898,11 +1024,9 @@ with tabs[2]:
             "quitacao_data"
         ]
         for c in cols_pdf:
-            if c not in df_quit.columns:
-                df_quit[c] = ""
+            if c not in df_quit.columns: df_quit[c] = ""
         df_quit = df_quit[cols_pdf]
 
-    # Ações (PDF + CSV)
     colqb1, colqb2 = st.columns(2)
     with colqb1:
         gerar_pdf_q = st.button("Gerar PDF (Quitações)")
@@ -941,7 +1065,7 @@ with tabs[2]:
                 )
 
 # ============================================================
-# 💼 ABA 4 — QUITAÇÃO (com observações)
+# 💼 4) QUITAÇÃO (com observações)
 # ============================================================
 
 with tabs[3]:
@@ -1032,13 +1156,15 @@ with tabs[3]:
             elif faltando_data > 0 and atualizados > 0:
                 st.success(f"{atualizados} quitação(ões) gravada(s). "
                            f"Atenção: {faltando_data} linha(s) ignoradas por falta de **Data da quitação**.")
+                maybe_sync_up_db("chore(db): quitação (lote)")
                 st.rerun()
             else:
                 st.success(f"{atualizados} quitação(ões) gravada(s).")
+                maybe_sync_up_db("chore(db): quitação")
                 st.rerun()
 
 # ============================================================
-# ⚙️ ABA 5 — SISTEMA
+# ⚙️ 5) SISTEMA (listas e resumos)
 # ============================================================
 
 with tabs[4]:
