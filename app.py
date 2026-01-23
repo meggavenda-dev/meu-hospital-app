@@ -1294,7 +1294,8 @@ with tabs[1]:
 # ============================================================
 
 # --- PDF: Cirurgias por Status (paisagem) ---
-if REPORTLAB_OK:     
+if REPORTLAB_OK:   
+    
     def _pdf_cirurgias_por_status(df, filtros):
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
@@ -1306,7 +1307,7 @@ if REPORTLAB_OK:
         styles = getSampleStyleSheet()
         H1 = styles["Heading1"]; H2 = styles["Heading2"]; N = styles["BodyText"]
     
-        # Estilos específicos para a tabela
+        # Estilos de célula com quebra de linha
         from reportlab.lib.styles import ParagraphStyle
         from reportlab.platypus import Paragraph
     
@@ -1326,7 +1327,7 @@ if REPORTLAB_OK:
             fontName="Helvetica",
             fontSize=8,
             leading=10,
-            wordWrap="LTR",       # permite quebra de linha
+            wordWrap="LTR",       # permite quebra de linha dentro da célula
         )
         TD_CENTER = ParagraphStyle(**{**TD.__dict__, "alignment":1})
         TD_RIGHT  = ParagraphStyle(**{**TD.__dict__, "alignment":2})
@@ -1344,7 +1345,7 @@ if REPORTLAB_OK:
         total = len(df)
         elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
     
-        # (Opcional) Resumo por situação
+        # Resumo por situação (opcional)
         if total > 0 and filtros["status"] == "Todos":
             resumo = (df.groupby("situacao")["situacao"]
                         .count()
@@ -1362,33 +1363,30 @@ if REPORTLAB_OK:
             elems.append(t_res)
             elems.append(Spacer(1, 10))
     
-        # ======= TABELA PRINCIPAL (todas as linhas) =======
+        # ======= TABELA PRINCIPAL =======
+        # Nova ordem no final: ... "Hospital", "Situação"
         header_labels = [
             "Atendimento", "Aviso", "Convênio", "Paciente",
-            "Data", "Tipo", "Profissional", "Grau de Participação", "Hospital"
+            "Data", "Tipo", "Profissional", "Grau de Participação", "Hospital", "Situação"
         ]
         header = [Paragraph(h, TH) for h in header_labels]
     
-        # Larguras pensadas p/ A4 paisagem com suas margens:
-        # (29.7cm - 1.8cm - 1.8cm) ~ 26.1 cm úteis
-        # Distribuição:
-        # Atendimento 3.0, Aviso 2.5, Convênio 3.2, Paciente 6.2,
-        # Data 2.6, Tipo 3.0, Profissional 3.0, Grau 3.2, Hospital 3.0  => ~29.7? Ajuste p/ caber 26.1
-        # Vamos compactar: reduzir Convênio/Paciente/Hospital sem perder legibilidade
+        # Larguras balanceadas p/ A4 paisagem (26,1 cm úteis aprox. com suas margens):
         col_widths = [
-            2.7*cm,  # Atendimento
-            2.2*cm,  # Aviso
+            2.6*cm,  # Atendimento
+            2.0*cm,  # Aviso
             2.8*cm,  # Convênio
             5.0*cm,  # Paciente
-            2.4*cm,  # Data
-            2.6*cm,  # Tipo
-            3.0*cm,  # Profissional
-            3.2*cm,  # Grau de Participação
-            2.8*cm,  # Hospital
+            2.2*cm,  # Data
+            2.4*cm,  # Tipo
+            2.8*cm,  # Profissional
+            3.0*cm,  # Grau de Participação
+            2.6*cm,  # Hospital
+            2.1*cm,  # Situação (curto, cabe nomes definidos)
         ]
     
         def _p(v, style=TD):
-            txt = ("" if v is None else str(v))
+            txt = "" if v is None else str(v)
             return Paragraph(txt, style)
     
         data_rows = []
@@ -1403,6 +1401,7 @@ if REPORTLAB_OK:
                 _p(r.get("profissional")),
                 _p(r.get("grau_participacao"), TD_CENTER),
                 _p(r.get("hospital")),
+                _p(r.get("situacao"), TD_CENTER),
             ])
     
         table = Table([header] + data_rows, repeatRows=1, colWidths=col_widths)
@@ -1413,8 +1412,7 @@ if REPORTLAB_OK:
             ("FONTSIZE", (0,0), (-1,0), 9),
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
-            # Ajustes finos de alinhamento por coluna (além do ParagraphStyle)
-            ("ALIGN", (0,0), (-1,0), "CENTER"),  # header
+            ("ALIGN", (0,0), (-1,0), "CENTER"),  # cabeçalho centralizado
         ]))
         elems.append(table)
     
