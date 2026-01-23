@@ -14,7 +14,6 @@ from datetime import date, datetime
 import streamlit as st
 import pandas as pd
 import streamlit.components.v1 as components
-import urllib.parse as up
 
 # DB: psycopg2 (PostgreSQL)
 import psycopg2
@@ -155,7 +154,7 @@ def app_header(title: str, subtitle: str = ""):
 
 # Conexão: secrets -> SUPABASE_DB_URI
 
-ef _safe_mask(s: str, keep_left: int = 12, keep_right: int = 8) -> str:
+def _safe_mask(s: str, keep_left: int = 12, keep_right: int = 8) -> str:
     if not s: return ""
     n = len(s)
     if n <= keep_left + keep_right: return "*" * n
