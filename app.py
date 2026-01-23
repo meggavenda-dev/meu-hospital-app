@@ -1059,7 +1059,8 @@ with tabs[0]:
         st.markdown("</div>", unsafe_allow_html=True)
 
     
-    # -------------------------
+    
+    #-------------------------
     # Listagem de internações (toggle ON) + fechar lista + abrir na consulta
     # -------------------------
     status_sel_home = st.session_state.get("home_status")
@@ -1083,7 +1084,7 @@ with tabs[0]:
             if df_status.empty:
                 st.info("Nenhuma internação encontrada para este status com os filtros atuais.")
             else:
-                # === ORDENAR POR DATA DA INTERNAÇÃO (mais recentes primeiro) ===
+                # === ORDENAR POR DATA DA INTERNAÇÃO (mais antigas primeiro) ===
                 def _safe_pt_date_int(s):
                     try:
                         return datetime.strptime(str(s).strip(), "%d/%m/%Y").date()
@@ -1102,12 +1103,12 @@ with tabs[0]:
                     .copy()
                 )
     
-                # Converte data da internação e ordena (desc)
+                # Converte data da internação e ordena (asc: mais antigas no topo)
                 df_ints["_int_dt"] = df_ints["data_internacao"].apply(_safe_pt_date_int)
                 # Empate estável por hospital/paciente
                 df_ints = (
                     df_ints
-                    .sort_values(by=["_int_dt", "hospital", "paciente"], ascending=[False, True, True])
+                    .sort_values(by=["_int_dt", "hospital", "paciente"], ascending=[True, True, True])
                     .drop(columns=["_int_dt"])
                 )
     
@@ -1124,6 +1125,7 @@ with tabs[0]:
                         if st.button("🔎 Abrir na Consulta", key=f"open_cons_{int(r['internacao_id'])}", use_container_width=True):
                             st.session_state["consulta_codigo"] = str(r["atendimento"])
                             st.session_state["goto_tab_label"] = "🔍 Consultar Internação"
+
 
 
     # Lembrete visual
