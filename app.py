@@ -1088,9 +1088,12 @@ with tabs[0]:
                         st.markdown(f"**Data internação:** {r.get('data_internacao') or '-'}")
                     with i4:                      
                         
+                       
                         if st.button("🔎 Abrir na Consulta", key=f"open_cons_{int(r['internacao_id'])}", use_container_width=True):
                             st.session_state["consulta_codigo"] = str(r["atendimento"])
                             st.session_state["goto_tab_label"] = "🔍 Consultar Internação"
+                            st.session_state["home_status"] = None  # fecha a lista (opcional)
+
 
 
 
@@ -1257,8 +1260,13 @@ with tabs[2]:
 
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hlist = ["Todos"] + get_hospitais()
-    filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)
-    codigo = st.text_input("Digite o atendimento para consultar:", key="consulta_codigo")
+    filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)            
+    codigo = st.text_input(
+        "Digite o atendimento para consultar:",
+        key="consulta_codigo",
+        placeholder="Ex.: 123456",
+        label_visibility="visible",
+    )
     st.markdown("</div>", unsafe_allow_html=True)
 
     if codigo:
