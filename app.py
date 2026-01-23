@@ -1317,15 +1317,26 @@ if REPORTLAB_OK:
                 ("ALIGN", (1,1), (-1,-1), "RIGHT"),
                 ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
             ]))
-            elems.append(t_res); elems.append(Spacer(1, 10))
-        header = ["Atendimento", "Aviso", "Convênio", "Paciente", "Data", "Profissional", "Hospital"]
-        data_rows = []
-        for _, r in df.iterrows():
-            data_rows.append([
-                r.get("atendimento") or "", r.get("aviso") or "", r.get("convenio") or "",
-                r.get("paciente") or "", r.get("data_procedimento") or "",
-                r.get("profissional") or "", r.get("hospital") or "",
-            ])
+            elems.append(t_res); elems.append(Spacer(1, 10))        
+            header = [
+                "Atendimento", "Aviso", "Convênio", "Paciente",
+                "Data", "Tipo", "Profissional", "Grau de Participação", "Hospital"
+            ]
+            
+            data_rows = []
+            for _, r in df.iterrows():
+                data_rows.append([
+                    r.get("atendimento") or "",
+                    r.get("aviso") or "",
+                    r.get("convenio") or "",
+                    r.get("paciente") or "",
+                    r.get("data_procedimento") or "",
+                    r.get("procedimento") or "",
+                    r.get("profissional") or "",
+                    r.get("grau_participacao") or "",
+                    r.get("hospital") or "",
+                ])
+                
         table = Table([header] + data_rows, repeatRows=1)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
@@ -1447,16 +1458,17 @@ with tabs[2]:
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
-    conn = get_conn()
+    conn = get_conn()    
     sql_rel = """
         SELECT 
             I.hospital, I.atendimento, I.paciente, I.convenio,
             P.data_procedimento, P.aviso, P.profissional,
-            P.procedimento, P.situacao
+            P.procedimento, P.grau_participacao, P.situacao
         FROM Procedimentos P
         INNER JOIN Internacoes I ON I.id = P.internacao_id
         WHERE P.procedimento = 'Cirurgia / Procedimento'
     """
+
     df_rel = pd.read_sql_query(sql_rel, conn); conn.close()
 
     if not df_rel.empty:
