@@ -11,6 +11,7 @@ from datetime import date, datetime
 import io
 import base64, json
 import requests  # -> requirements: requests
+import re
 
 # ==== PDF (ReportLab) - opcional ====
 REPORTLAB_OK = True
@@ -1318,12 +1319,14 @@ if REPORTLAB_OK:
                 ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
             ]))
             elems.append(t_res); elems.append(Spacer(1, 10))        
-            header = [
-                "Atendimento", "Aviso", "Convênio", "Paciente",
-                "Data", "Tipo", "Profissional", "Grau de Participação", "Hospital"
-            ]
-            
-            data_rows = []
+
+        # ======= TABELA PRINCIPAL (com as novas colunas) =======
+        header = [
+            "Atendimento", "Aviso", "Convênio", "Paciente",
+            "Data", "Tipo", "Profissional", "Grau de Participação", "Hospital"
+        ]           
+
+        data_rows = []
             for _, r in df.iterrows():
                 data_rows.append([
                     r.get("atendimento") or "",
@@ -1336,6 +1339,7 @@ if REPORTLAB_OK:
                     r.get("grau_participacao") or "",
                     r.get("hospital") or "",
                 ])
+
                 
         table = Table([header] + data_rows, repeatRows=1)
         table.setStyle(TableStyle([
