@@ -1,22 +1,18 @@
-
 # ============================================================
-#  SISTEMA DE INTERNAÇÕES — VERSÃO FINAL (DB persistente no GitHub)
-#  Aparência Profissional: CSS custom, header sticky, KPIs, toasts
+#  SISTEMA DE INTERNAÇÕES — VERSÃO SUPABASE
 # ============================================================
 
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import date, datetime
 import io
 import base64, json
-import requests  # -> requirements: requests
+import requests
 import re
 import streamlit.components.v1 as components
-from datetime import date, datetime
-from supabase import create_client, Client # pip install supabase
+from supabase import create_client, Client # Requer 'supabase' no requirements.txt
 
-# ==== PDF (ReportLab) - opcional ====
+# ==== PDF (ReportLab) ====
 REPORTLAB_OK = True
 try:
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -27,8 +23,6 @@ try:
 except ModuleNotFoundError:
     REPORTLAB_OK = False
 
-# Parser (seu módulo)
-#  -> mantenha o arquivo parser.py no projeto com parse_tiss_original(csv_text) definido.
 from parser import parse_tiss_original
 
 # Credenciais (coloque no .streamlit/secrets.toml)
@@ -287,124 +281,6 @@ def app_header(title: str, subtitle: str = ""):
         """,
         unsafe_allow_html=True
     )
-
-# ============================================================
-#  SINCRONIZAÇÃO DO dados.db COM GITHUB (Contents API)
-# ============================================================
-
-GH_TOKEN   = st.secrets.get("GH_TOKEN", "")
-GH_REPO    = st.secrets.get("GH_REPO", "")
-GH_BRANCH  = st.secrets.get("GH_BRANCH", "main")
-GH_DB_PATH = st.secrets.get("GH_DB_PATH", "data/dados.db")
-
-_GH_API = "https://api.github.com"
-_GH_HEADERS = {
-    "Authorization": f"token {GH_TOKEN}",
-    "Accept": "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-}
-
-if "db_sha" not in st.session_state:
-    st.session_state["db_sha"] = None
-if "db_dirty" not in st.session_state:
-    st.session_state["db_dirty"] = False
-
-
-if "gh_sync_status" not in st.session_state:
-    st.session_state["gh_sync_status"] = None  # última mensagem de sincronização
-if "gh_sync_time" not in st.session_state:
-    st.session_state["gh_sync_time"] = None    # timestamp opcional
-
-
-LOCAL_DB_FILE = "dados.db"  # mesmo diretório do app.py
-
-def github_config_ok() -> bool:
-    """Retorna True se todos os secrets mínimos do GitHub estão configurados."""
-    return bool(GH_TOKEN and GH_REPO and GH_DB_PATH)
-
-def _gh_contents_url(path: str) -> str:
-    return f"{_GH_API}/repos/{GH_REPO.strip()}/contents/{path}"
-
-def _gh_get_db():
-    """Retorna (bytes, sha) ou (None, None) se não existir no GitHub."""
-    if not github_config_ok():
-        return None, None
-    r = requests.get(
-        _gh_contents_url(GH_DB_PATH),
-        headers=_GH_HEADERS,
-        params={"ref": GH_BRANCH},
-        timeout=30,
-    )
-    if r.status_code == 200:
-        data = r.json()
-        content_b64 = data.get("content", "")
-        sha = data.get("sha")
-        try:
-            content = base64.b64decode(content_b64.encode("utf-8"))
-            return content, sha
-        except Exception:
-            return None, None
-    if r.status_code == 404:
-        return None, None
-    raise RuntimeError(f"GitHub GET {r.status_code}: {r.text}")
-
-def _gh_put_db(content_bytes, message, sha):
-    """PUT seguro (usa sha) — cria/atualiza dados.db no repositório, com diagnóstico amigável."""
-    if not github_config_ok():
-        raise RuntimeError("Config GitHub ausente em secrets (GH_TOKEN, GH_REPO, GH_DB_PATH).")
-
-    payload = {
-        "message": message,
-        "content": base64.b64encode(content_bytes).decode("utf-8"),
-        "branch": GH_BRANCH,
-    }
-    if sha:
-        payload["sha"] = sha
-
-    r = requests.put(
-        _gh_contents_url(GH_DB_PATH),
-        headers=_GH_HEADERS,
-        data=json.dumps(payload),
-        timeout=60,
-    )
-
-    # Sucesso: 200 (update) ou 201 (create)
-    if r.status_code in (200, 201):
-        data = r.json()
-        st.session_state["db_sha"] = data["content"]["sha"]
-        st.session_state["db_dirty"] = False
-        return
-
-    # Conflito de versionamento (sha mudou no remoto)
-    if r.status_code == 409:
-        raise RuntimeError("Conflito: versão do banco mudou no GitHub (sha diferente). Faça sync‑down e tente novamente.")
-
-    try:
-        err_json = r.json()
-    except Exception:
-        err_json = None
-
-    msg_api = (err_json.get("message") if isinstance(err_json, dict) else r.text).strip()
-
-    if r.status_code == 403:
-        hint = (
-            "403 Forbidden. Verifique se o token tem escopo **repo** (Contents API) "
-            "e se não há proteção de branch bloqueando commits."
-        )
-    elif r.status_code == 404:
-        hint = (
-            "404 Not Found. Verifique `GH_REPO` (ex.: usuario/repo), `GH_BRANCH` e `GH_DB_PATH`. "
-            "Repositório privado requer token com acesso."
-        )
-    elif r.status_code == 422:
-        hint = (
-            "422 Unprocessable Entity. Geralmente é caminho inválido, base64 inválido ou `sha` ausente/errado para atualização. "
-            "Faça um **sync_down_db()** antes para atualizar o `sha` local."
-        )
-    else:
-        hint = f"Erro {r.status_code}. Resposta da API: {msg_api[:500]}"
-
-    raise RuntimeError(f"GitHub PUT falhou: {hint}")
 
 # ============================================================
 # BANCO
