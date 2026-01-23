@@ -1040,20 +1040,51 @@ with tabs[1]:
             # Procedimentos
             conn = get_conn()
             df_proc = pd.read_sql_query(
-                "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao, aviso, grau_participacao "
-                "FROM Procedimentos WHERE internacao_id = ? ORDER BY data_procedimento, id",
+                """
+                SELECT id, data_procedimento, profissional, procedimento, situacao, observacao, aviso, grau_participacao
+                FROM Procedimentos
+                WHERE internacao_id = ?
+                """,
                 conn, params=(internacao_id,)
             )
             conn.close()
-
-            if "procedimento" not in df_proc.columns: df_proc["procedimento"] = "Cirurgia / Procedimento"
-            df_proc["procedimento"] = df_proc["procedimento"].fillna("Cirurgia / Procedimento")
-            df_proc["situacao"] = df_proc.get("situacao", pd.Series(dtype=str)).fillna("Pendente")
-            df_proc["observacao"] = df_proc.get("observacao", pd.Series(dtype=str)).fillna("")
-            df_proc["aviso"] = df_proc.get("aviso", pd.Series(dtype=str)).fillna("")
-            df_proc["grau_participacao"] = df_proc.get("grau_participacao", pd.Series(dtype=str)).fillna("")
-
-            st.subheader("Procedimentos — Editáveis")            
+            
+            # Garantias de colunas e preenchimentos
+            if "procedimento" not in df_proc.columns:
+                df_proc["procedimento"] = "Cirurgia / Procedimento"
+            
+            df_proc["procedimento"]       = df_proc["procedimento"].fillna("Cirurgia / Procedimento")
+            df_proc["situacao"]           = df_proc.get("situacao", pd.Series(dtype=str)).fillna("Pendente")
+            df_proc["observacao"]         = df_proc.get("observacao", pd.Series(dtype=str)).fillna("")
+            df_proc["aviso"]              = df_proc.get("aviso", pd.Series(dtype=str)).fillna("")
+            df_proc["grau_participacao"]  = df_proc.get("grau_participacao", pd.Series(dtype=str)).fillna("")
+            
+            # === ORDENAR POR DATA DO ATENDIMENTO (data_procedimento) ===
+            # 1) Converte a data em datetime.date (formato pt-BR)
+            def _safe_pt_date(s):
+                try:
+                    return datetime.strptime(str(s).strip(), "%d/%m/%Y").date()
+                except Exception:
+                    try:
+                        # fallback caso venha em ISO
+                        return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
+                    except Exception:
+                        return None
+            
+            df_proc["_data_dt"] = df_proc["data_procedimento"].apply(_safe_pt_date)
+            
+            # 2) Ordena por data (e por id para estabilizar)
+            #    -> ascending=True para mais antigos primeiro (mude para False se quiser mais recentes no topo)
+            df_proc = df_proc.sort_values(by=["_data_dt", "id"], ascending=[True, True]).reset_index(drop=True)
+            
+            # 3) Reformatar de volta para dd/mm/yyyy (somente para exibição)
+            df_proc["data_procedimento"] = df_proc["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
+            
+            # 4) Remove auxiliar
+            df_proc = df_proc.drop(columns=["_data_dt"])
+            
+            # (daqui pra baixo, mantenha o que você já tem:)
+            st.subheader("Procedimentos — Editáveis")
             edited = st.data_editor(
                 df_proc,
                 key="editor_proc",
@@ -1063,9 +1094,7 @@ with tabs[1]:
                     "data_procedimento": st.column_config.Column("Data", disabled=True),
                     "profissional": st.column_config.Column("Profissional", disabled=True),
             
-                    # 🔥 IMPORTANTE: TEM QUE SER TextColumn
                     "aviso": st.column_config.TextColumn("Aviso"),
-            
                     "grau_participacao": st.column_config.SelectboxColumn(
                         "Grau de Participação",
                         options=[""] + GRAU_PARTICIPACAO_OPCOES,
@@ -1084,6 +1113,7 @@ with tabs[1]:
                     "observacao": st.column_config.TextColumn("Observações"),
                 },
             )
+
 
 
             col_save = st.columns(6)[-1]
