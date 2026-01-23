@@ -1121,17 +1121,47 @@ with tabs[0]:
                     with i2:
                         st.markdown(f"**Hospital:** {r.get('hospital') or '-'}  \n**Convênio:** {r.get('convenio') or '-'}")
                     with i3:
-                        st.markdown(f"**Data internação:** {r.get('data_internacao') or '-'}")
+                        st.markdown(f"**Data internação:** {r.get('data_internacao') or '-'}")                    
                     with i4:
-                        # 🔑 Torna a key do botão 100% única (evita qualquer colisão entre telas/estados)
+                        # 🔑 Key 100% única evita colisão ao alternar status/listas
                         btn_key = f"open_cons_{status_sel_home}_{int(r['internacao_id'])}"
                         if st.button("🔎 Abrir na Consulta", key=btn_key, use_container_width=True):
+                            # 1) Seta o atendimento no estado
                             st.session_state["consulta_codigo"] = str(r["atendimento"])
+                            # 2) Seta também o label da aba como fallback
                             st.session_state["goto_tab_label"] = "🔍 Consultar Internação"
-                            # (Opcional) Fechar a lista ao navegar
-                            # st.session_state["home_status"] = None
-                            # 🔁 Força um novo ciclo para o switch programático acontecer
-                            st.rerun()
+                    
+                            # 3) Dispara o clique na aba **IMEDIATAMENTE** via JS (sem esperar o final)
+                            js = """
+                            <script>
+                            (function(){
+                              // Aguarda o DOM da página "pai" (iframe Streamlit)
+                              const target = "🔍 Consultar Internação";
+                              const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+                              let tries = 0;
+                              const maxTries = 30; // ~3s
+                    
+                              const tick = setInterval(() => {
+                                tries += 1;
+                                const tabs = window.parent.document.querySelectorAll('button[role="tab"]');
+                                for (const t of tabs) {
+                                  const txt = norm(t.textContent || t.innerText);
+                                  if (txt.includes(norm(target))) {
+                                    t.click();
+                                    clearInterval(tick);
+                                    return;
+                                  }
+                                }
+                                if (tries >= maxTries) clearInterval(tick);
+                              }, 100);
+                            })();
+                            </script>
+                            """
+                            components.html(js, height=0, width=0)
+                            # ⚠️ Não chamamos st.rerun() aqui — a troca de aba faz o Streamlit rerodar automaticamente
+                            # Se quiser garantir re-render em ambientes específicos, descomente a linha abaixo:
+                            # st.rerun()
+
 
 
 
