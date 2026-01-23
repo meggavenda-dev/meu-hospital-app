@@ -12,6 +12,7 @@ import io
 import base64, json
 import requests  # -> requirements: requests
 import re
+import streamlit.components.v1 as components
 
 # ==== PDF (ReportLab) - opcional ====
 REPORTLAB_OK = True
@@ -51,6 +52,43 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 
 def inject_css():
     st.markdown("""
+    
+    <style>
+    /* ===== KPIs maiores e centralizados ===== */
+    .kpi-wrap.center .kpi{
+      text-align:center;
+    }
+    
+    .kpi.big .label{
+      font-size: 1.05rem;        /* título maior */
+      font-weight: 700;
+    }
+    
+    .kpi.big .value{
+      font-size: 2.4rem;         /* número bem visível */
+      line-height: 2.6rem;
+      font-weight: 800;
+      color: var(--text);
+    }
+    
+    .kpi.big .hint{
+      font-size: .95rem;         /* subtítulo um pouco maior */
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    
+    /* opcional: mais destaque ao passar o mouse no card inteiro */
+    .kpi.big:hover{
+      box-shadow: 0 1px 0 rgba(0,0,0,.03);
+    }
+    
+    /* opcional: botões logo abaixo dos KPIs, com “peso” visual */
+    .kpi-action button{
+      font-size: 0.95rem !important;
+      font-weight: 700 !important;
+    }
+    </style>
+
     <style>
     /* ============================
        PALHETA NEUTRA TRADICIONAL
@@ -217,15 +255,17 @@ def pill(situacao: str) -> str:
     elif s == "Finalizado": cls += " pill-ok"
     return f"<span class='{cls}'>{s or '-'}</span>"
 
-def kpi_row(items):
+
+def kpi_row(items, extra_class: str = ""):
     """
     items: lista de dicts [{label, value, hint (opcional)}]
+    extra_class: classes extras na <div class='kpi-wrap ...'> (ex.: 'center')
     """
-    st.markdown("<div class='kpi-wrap'>", unsafe_allow_html=True)
+    st.markdown(f"<div class='kpi-wrap {extra_class}'>", unsafe_allow_html=True)
     for it in items:
         st.markdown(
             f"""
-            <div class='kpi'>
+            <div class='kpi big'>  <!-- adiciona 'big' aqui -->
               <div class='label'>{it.get('label','')}</div>
               <div class='value'>{it.get('value','')}</div>
               {'<div class="hint">'+it.get('hint','')+'</div>' if it.get('hint') else ''}
@@ -266,6 +306,13 @@ if "db_sha" not in st.session_state:
     st.session_state["db_sha"] = None
 if "db_dirty" not in st.session_state:
     st.session_state["db_dirty"] = False
+
+
+if "gh_sync_status" not in st.session_state:
+    st.session_state["gh_sync_status"] = None  # última mensagem de sincronização
+if "gh_sync_time" not in st.session_state:
+    st.session_state["gh_sync_time"] = None    # timestamp opcional
+
 
 LOCAL_DB_FILE = "dados.db"  # mesmo diretório do app.py
 
@@ -357,10 +404,13 @@ def _gh_put_db(content_bytes, message, sha):
 
     raise RuntimeError(f"GitHub PUT falhou: {hint}")
 
+
 def sync_down_db():
     """Baixa o dados.db do GitHub (se existir) ANTES de abrir o SQLite local."""
     if not github_config_ok():
-        st.info("⏭️ Modo local: sincronização do GitHub desativada (secrets ausentes).")
+        # Não mais exibir banner fora da aba. Apenas armazena a informação, se quiser.
+        st.session_state["gh_sync_status"] = "⏭️ Modo local: sincronização do GitHub desativada (secrets ausentes)."
+        st.session_state["gh_sync_time"] = datetime.now().strftime("%d/%m/%Y %H:%M")
         return
     try:
         content, sha = _gh_get_db()
@@ -369,11 +419,19 @@ def sync_down_db():
                 f.write(content)
             st.session_state["db_sha"] = sha
             st.session_state["db_dirty"] = False
-            st.info("📥 Banco sincronizado do GitHub.")
+
+            # <<< registra a mensagem para mostrar depois na aba Sistema
+            st.session_state["gh_sync_status"] = "📥 Banco sincronizado do GitHub."
+            st.session_state["gh_sync_time"] = datetime.now().strftime("%d/%m/%Y %H:%M")
         else:
-            st.warning("Não há banco no GitHub ainda (primeiro envio criará o arquivo).")
+            # Não há DB remoto ainda
+            st.session_state["gh_sync_status"] = "⚠️ Não há banco no GitHub ainda (primeiro envio criará o arquivo)."
+            st.session_state["gh_sync_time"] = datetime.now().strftime("%d/%m/%Y %H:%M")
     except Exception as e:
-        st.error(f"Falha ao baixar DB do GitHub: {e}")
+        # Registra erro como status (e mostra no Sistema)
+        st.session_state["gh_sync_status"] = f"❌ Falha ao baixar DB do GitHub: {e}"
+        st.session_state["gh_sync_time"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+
 
 def mark_db_dirty():
     """Marcar após QUALQUER escrita (insert/update/delete)."""
@@ -788,30 +846,276 @@ seed_hospitais()    # seeds
 app_header("Sistema de Internações — Versão Final",
            "Importação, edição, quitação e relatórios com persistência local/GitHub")
 
-# Indicador de status do modo de persistência
-if github_config_ok():
-    st.caption("🔗 Persistência **GitHub** ativa — "
-               f"branch: `{GH_BRANCH}` • path: `{GH_DB_PATH}` • repo: `{GH_REPO}`")
-else:
-    st.caption("💾 Persistência **local** — configure `GH_TOKEN`, `GH_REPO` e `GH_DB_PATH` em *Secrets* para sincronizar com o GitHub.")
+
+def _switch_to_tab_by_label(tab_label: str):
+    """
+    Clica na aba cujo rótulo visível contém `tab_label` (match por substring
+    com normalização de espaços). Faz polling por até 2s.
+    """
+    js = f"""
+    <script>
+    (function() {{
+      const target = "{tab_label}".trim();
+      const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+
+      let attempts = 0;
+      const maxAttempts = 20;  // 20 * 100ms = 2s
+      const timer = setInterval(() => {{
+        attempts += 1;
+        const tabs = window.parent.document.querySelectorAll('button[role="tab"]');
+        for (const t of tabs) {{
+          const txt = norm(t.textContent || t.innerText);
+          // casa por substring (ex.: emoji + título) com normalização
+          if (txt.includes(norm(target))) {{
+            t.click();
+            clearInterval(timer);
+            return;
+          }}
+        }}
+        if (attempts >= maxAttempts) {{
+          clearInterval(timer);
+          console.warn("Tab não encontrada para:", target);
+        }}
+      }}, 100);
+    }})();
+    </script>
+    """
+    components.html(js, height=0, width=0)
+
 
 # ============================================================
 # ABAS
 # ============================================================
 
 tabs = st.tabs([
-    "📤 Importar Arquivo",
-    "🔍 Consultar Internação",
-    "📑 Relatórios",
-    "💼 Quitação",
-    "⚙️ Sistema",
+    "🏠 Início",               # tabs[0]
+    "📤 Importar Arquivo",     # tabs[1]
+    "🔍 Consultar Internação", # tabs[2]
+    "📑 Relatórios",           # tabs[3]
+    "💼 Quitação",             # tabs[4]
+    "⚙️ Sistema",              # tabs[5]
 ])
+
+
+# ============================================================
+# 🏠 0) INÍCIO — KPIs (todos os procedimentos) + Filtros opcionais + Listagem
+# ============================================================
+with tabs[0]:
+    st.subheader("🏠 Tela Inicial")
+
+    # Estado
+    if "home_status" not in st.session_state:
+        st.session_state["home_status"] = None  # status aberto/fechado na lista
+
+    hoje = date.today()
+    ini_mes = hoje.replace(day=1)
+
+    # -------------------------
+    # Filtros
+    # -------------------------
+    colf1, colf2 = st.columns([2, 3])
+    with colf1:
+        filtro_hosp_home = st.selectbox(
+            "Hospital",
+            ["Todos"] + get_hospitais(),
+            index=0,
+            key="home_f_hosp"
+        )
+    with colf2:
+        st.write(" ")
+        st.caption("Períodos (opcionais)")
+
+    cbox1, cbox2 = st.columns(2)
+    with cbox1:
+        use_int_range = st.checkbox("Filtrar por data da internação", key="home_use_int_range", value=False)
+    with cbox2:
+        use_proc_range = st.checkbox("Filtrar por data do procedimento", key="home_use_proc_range", value=False)
+
+    if use_int_range or use_proc_range:
+        cold1, cold2, cold3, cold4 = st.columns(4)
+        with cold1:
+            int_ini = st.date_input("Internação — início", value=st.session_state.get("home_f_int_ini", ini_mes), key="home_f_int_ini")
+        with cold2:
+            int_fim = st.date_input("Internação — fim", value=st.session_state.get("home_f_int_fim", hoje), key="home_f_int_fim")
+        with cold3:
+            proc_ini = st.date_input("Procedimento — início", value=st.session_state.get("home_f_proc_ini", ini_mes), key="home_f_proc_ini")
+        with cold4:
+            proc_fim = st.date_input("Procedimento — fim", value=st.session_state.get("home_f_proc_fim", hoje), key="home_f_proc_fim")
+
+    # -------------------------
+    # Base de dados: TODOS os procedimentos
+    # -------------------------
+    conn = get_conn()
+    sql_all = """
+        SELECT
+            I.id                      AS internacao_id,
+            I.atendimento,
+            I.paciente,
+            I.hospital,
+            I.convenio,
+            I.data_internacao,
+            P.id                      AS procedimento_id,
+            P.data_procedimento,
+            P.procedimento,
+            P.profissional,
+            P.situacao,
+            P.aviso,
+            P.grau_participacao
+        FROM Procedimentos P
+        INNER JOIN Internacoes I ON I.id = P.internacao_id
+    """
+    df_all = pd.read_sql_query(sql_all, conn)
+    conn.close()
+
+    def _safe_pt_date(s):
+        try:
+            return datetime.strptime(str(s).strip(), "%d/%m/%Y").date()
+        except Exception:
+            try:
+                return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
+            except Exception:
+                return None
+
+    # -------------------------
+    # Aplicação de filtros (apenas quando ativados)
+    # -------------------------
+    if df_all.empty:
+        df_f = df_all.copy()
+    else:
+        df_all["_int_dt"]  = df_all["data_internacao"].apply(_safe_pt_date)
+        df_all["_proc_dt"] = df_all["data_procedimento"].apply(_safe_pt_date)
+
+        mask = pd.Series([True]*len(df_all), index=df_all.index)
+
+        # Hospital
+        if filtro_hosp_home != "Todos":
+            mask &= (df_all["hospital"] == filtro_hosp_home)
+
+        # Período de internação (somente se marcado)
+        if use_int_range:
+            mask &= df_all["_int_dt"].notna()
+            mask &= (df_all["_int_dt"] >= st.session_state["home_f_int_ini"])
+            mask &= (df_all["_int_dt"] <= st.session_state["home_f_int_fim"])
+
+        # Período de procedimento (somente se marcado)
+        if use_proc_range:
+            mask &= df_all["_proc_dt"].notna()
+            mask &= (df_all["_proc_dt"] >= st.session_state["home_f_proc_ini"])
+            mask &= (df_all["_proc_dt"] <= st.session_state["home_f_proc_fim"])
+
+        df_f = df_all[mask].copy()
+
+    # -------------------------
+    # KPIs (todos os procedimentos) — com TOGGLE
+    # -------------------------
+    tot_pendente   = int((df_f["situacao"] == "Pendente").sum()) if not df_f.empty else 0
+    tot_finalizado = int((df_f["situacao"] == "Finalizado").sum()) if not df_f.empty else 0
+    tot_nao_cobrar = int((df_f["situacao"] == "Não Cobrar").sum()) if not df_f.empty else 0
+
+    def _toggle_home_status(target: str):
+        curr = st.session_state.get("home_status")
+        st.session_state["home_status"] = None if curr == target else target
+        st.rerun()
+
+    
+    active = st.session_state.get("home_status")
+    
+    c1, c2, c3 = st.columns(3)
+    
+    with c1:
+        # KPI grande e centralizado
+        kpi_row(
+            [{"label":"Pendentes", "value": f"{tot_pendente}", "hint": "Todos os procedimentos (geral/filtrado)"}],
+            extra_class="center"
+        )
+        # Botão logo abaixo (ocupando a coluna toda)
+        lbl = "🔽 Esconder Pendentes" if active == "Pendente" else "👁️ Ver Pendentes"
+        with st.container():  # wrapper para permitir classe opcional
+            st.markdown("<div class='kpi-action'>", unsafe_allow_html=True)
+            if st.button(lbl, key="kpi_btn_pend", use_container_width=True):
+                _toggle_home_status("Pendente")
+            st.markdown("</div>", unsafe_allow_html=True)
+    
+    with c2:
+        kpi_row(
+            [{"label":"Finalizadas", "value": f"{tot_finalizado}", "hint": "Todos os procedimentos (geral/filtrado)"}],
+            extra_class="center"
+        )
+        lbl = "🔽 Esconder Finalizadas" if active == "Finalizado" else "👁️ Ver Finalizadas"
+        st.markdown("<div class='kpi-action'>", unsafe_allow_html=True)
+        if st.button(lbl, key="kpi_btn_fin", use_container_width=True):
+            _toggle_home_status("Finalizado")
+        st.markdown("</div>", unsafe_allow_html=True)
+    
+    with c3:
+        kpi_row(
+            [{"label":"Não Cobrar", "value": f"{tot_nao_cobrar}", "hint": "Todos os procedimentos (geral/filtrado)"}],
+            extra_class="center"
+        )
+        lbl = "🔽 Esconder Não Cobrar" if active == "Não Cobrar" else "👁️ Ver Não Cobrar"
+        st.markdown("<div class='kpi-action'>", unsafe_allow_html=True)
+        if st.button(lbl, key="kpi_btn_nc", use_container_width=True):
+            _toggle_home_status("Não Cobrar")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+    # -------------------------
+    # Listagem de internações (toggle ON) + fechar lista + abrir na consulta
+    # -------------------------
+    status_sel_home = st.session_state.get("home_status")
+
+    if status_sel_home:
+        st.divider()
+        st.subheader(f"📋 Internações com ao menos 1 procedimento em: **{status_sel_home}**")
+
+        # Botão fechar lista
+        cc1, _ = st.columns([1, 6])
+        with cc1:
+            if st.button("Fechar lista", key="btn_close_list", type="secondary", use_container_width=True):
+                st.session_state["home_status"] = None
+                st.rerun()
+
+        if df_f.empty:
+            st.info("Nenhuma internação encontrada com os filtros aplicados.")
+        else:
+            df_status = df_f[df_f["situacao"] == status_sel_home].copy()
+
+            if df_status.empty:
+                st.info("Nenhuma internação encontrada para este status com os filtros atuais.")
+            else:
+                cols_show = ["internacao_id","atendimento","paciente","hospital","convenio","data_internacao"]
+                df_ints = (df_status[cols_show]
+                           .drop_duplicates(subset=["internacao_id"])
+                           .sort_values(by=["data_internacao","hospital","paciente"], ascending=[False, True, True]))
+
+                for _, r in df_ints.iterrows():
+                    i1, i2, i3, i4 = st.columns([3, 3, 3, 2])
+                    with i1:
+                        st.markdown(f"**Atendimento:** {r['atendimento']}  \n**Paciente:** {r.get('paciente') or '-'}")
+                    with i2:
+                        st.markdown(f"**Hospital:** {r.get('hospital') or '-'}  \n**Convênio:** {r.get('convenio') or '-'}")
+                    with i3:
+                        st.markdown(f"**Data internação:** {r.get('data_internacao') or '-'}")
+                    with i4:                    
+                        
+                       
+                        if st.button("🔎 Abrir na Consulta", key=f"open_cons_{int(r['internacao_id'])}", use_container_width=True):
+                            st.session_state["consulta_codigo"] = str(r["atendimento"])
+                            st.session_state["goto_tab_label"] = "🔍 Consultar Internação"
+
+    # Lembrete visual
+    if st.session_state.get("consulta_codigo"):
+        st.caption(f"🔎 Atendimento **{st.session_state['consulta_codigo']}** pronto para consulta na aba **'🔍 Consultar Internação'**.")
+
+
+    
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================================
 # 📤 1) IMPORTAR (cadastro manual + seleção de médicos)
 # ============================================================
 
-with tabs[0]:
+with tabs[1]:
     st.subheader("📤 Importar arquivo")
 
     # Cadastro de internação manual (somente aqui)
@@ -956,13 +1260,18 @@ with tabs[0]:
 # 🔍 2) CONSULTAR (sem cadastro manual) + edição + exclusões + ver quitação
 # ============================================================
 
-with tabs[1]:
+with tabs[2]:
     st.subheader("🔍 Consultar Internação")
 
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hlist = ["Todos"] + get_hospitais()
-    filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)
-    codigo = st.text_input("Digite o atendimento para consultar:")
+    filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)            
+    codigo = st.text_input(
+        "Digite o atendimento para consultar:",
+        key="consulta_codigo",
+        placeholder="Ex.: 123456",
+        label_visibility="visible",
+    )
     st.markdown("</div>", unsafe_allow_html=True)
 
     if codigo:
@@ -1516,7 +1825,7 @@ else:
     def _pdf_quitacoes(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado no ambiente.")
 
-with tabs[2]:
+with tabs[3]:
     st.subheader("📑 Relatórios — Central")
 
     # 1) Cirurgias por Status
@@ -1673,7 +1982,7 @@ with tabs[2]:
 # 💼 4) QUITAÇÃO (com observações)
 # ============================================================
 
-with tabs[3]:
+with tabs[4]:
     st.subheader("💼 Quitação de Cirurgias")
 
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
@@ -1775,8 +2084,32 @@ with tabs[3]:
 # ⚙️ 5) SISTEMA (listas e resumos)
 # ============================================================
 
-with tabs[4]:
+with tabs[5]:
     st.subheader("⚙️ Sistema")
+    
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
+    st.markdown("**🔒 Persistência de Dados**")
+    
+    if github_config_ok():
+        # Linha com branch/path/repo — exatamente como você quer
+        st.caption(
+            f"🔗 Persistência **GitHub** ativa — "
+            f"branch: `{GH_BRANCH}` • path: `{GH_DB_PATH}` • repo: `{GH_REPO}`"
+        )
+    else:
+        st.caption("💾 Persistência **local** — configure `GH_TOKEN`, `GH_REPO` e `GH_DB_PATH` em *Secrets* para sincronizar com o GitHub.")
+    
+    # Último status de sync_down_db()
+    msg = st.session_state.get("gh_sync_status")
+    ts  = st.session_state.get("gh_sync_time")
+    if msg:
+        st.info(f"{msg}" + (f" (última verificação: {ts})" if ts else ""))
+    else:
+        # fallback amigável
+        st.caption("ℹ️ Ainda não há registro de sincronização nesta sessão.")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
 
     st.markdown("**📋 Procedimentos — Lista**")
     filtro = ["Todos"] + get_hospitais()
@@ -1841,3 +2174,9 @@ with tabs[4]:
         df_conv = pd.read_sql_query(sql, conn, params=(chosen_conv,))
     conn.close()
     st.dataframe(df_conv, use_container_width=True, hide_index=True)
+
+    
+# ---- Troca de aba programática (DELAYED — EXECUTA POR ÚLTIMO) ----
+if st.session_state.get("goto_tab_label"):
+    _switch_to_tab_by_label(st.session_state["goto_tab_label"])
+    st.session_state["goto_tab_label"] = None
