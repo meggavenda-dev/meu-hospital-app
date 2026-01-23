@@ -836,26 +836,38 @@ else:
     st.caption("💾 Persistência **local** — configure `GH_TOKEN`, `GH_REPO` e `GH_DB_PATH` em *Secrets* para sincronizar com o GitHub.")
 
 
+
 def _switch_to_tab_by_label(tab_label: str):
     """
-    Faz o browser 'clicar' na aba cujo rótulo visível corresponde a `tab_label`.
-    Observação: sensível ao texto exato que aparece no botão da aba.
+    Clica na aba cujo rótulo visível contém `tab_label` (match por substring
+    com normalização de espaços). Faz polling por até 2s.
     """
     js = f"""
     <script>
-    const tryClick = () => {{
-      const tabs = window.parent.document.querySelectorAll('button[role="tab"]');
-      for (const t of tabs) {{
-        const txt = (t.innerText || "").trim();
-        if (txt === "{tab_label}") {{
-          t.click();
-          return true;
+    (function() {{
+      const target = "{tab_label}".trim();
+      const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+
+      let attempts = 0;
+      const maxAttempts = 20;  // 20 * 100ms = 2s
+      const timer = setInterval(() => {{
+        attempts += 1;
+        const tabs = window.parent.document.querySelectorAll('button[role="tab"]');
+        for (const t of tabs) {{
+          const txt = norm(t.textContent || t.innerText);
+          // casa por substring (ex.: emoji + título) com normalização
+          if (txt.includes(norm(target))) {{
+            t.click();
+            clearInterval(timer);
+            return;
+          }}
         }}
-      }}
-      return false;
-    }};
-    // tenta já; se a árvore ainda não estiver pronta, tenta um pouco depois
-    if (!tryClick()) setTimeout(tryClick, 100);
+        if (attempts >= maxAttempts) {{
+          clearInterval(timer);
+          console.warn("Tab não encontrada para:", target);
+        }}
+      }}, 100);
+    }})();
     </script>
     """
     components.html(js, height=0, width=0)
@@ -878,7 +890,6 @@ tabs = st.tabs([
 # ---- Troca de aba programática (deferred) ----
 if st.session_state.get("goto_tab_label"):
     _switch_to_tab_by_label(st.session_state["goto_tab_label"])
-    # limpa para não ficar pulando a cada render
     st.session_state["goto_tab_label"] = None
 
 
@@ -1082,11 +1093,12 @@ with tabs[0]:
                         st.markdown(f"**Hospital:** {r.get('hospital') or '-'}  \n**Convênio:** {r.get('convenio') or '-'}")
                     with i3:
                         st.markdown(f"**Data internação:** {r.get('data_internacao') or '-'}")
-                    with i4:                        
+                    with i4:                      
+                        
                         if st.button("🔎 Abrir na Consulta", key=f"open_cons_{int(r['internacao_id'])}", use_container_width=True):
                             st.session_state["consulta_codigo"] = str(r["atendimento"])
                             st.session_state["goto_tab_label"] = "🔍 Consultar Internação"
-                            # NÃO chamar st.rerun aqui; deixe o render terminar
+
 
 
 
