@@ -307,6 +307,13 @@ if "db_sha" not in st.session_state:
 if "db_dirty" not in st.session_state:
     st.session_state["db_dirty"] = False
 
+
+if "gh_sync_status" not in st.session_state:
+    st.session_state["gh_sync_status"] = None  # última mensagem de sincronização
+if "gh_sync_time" not in st.session_state:
+    st.session_state["gh_sync_time"] = None    # timestamp opcional
+
+
 LOCAL_DB_FILE = "dados.db"  # mesmo diretório do app.py
 
 def github_config_ok() -> bool:
@@ -397,10 +404,13 @@ def _gh_put_db(content_bytes, message, sha):
 
     raise RuntimeError(f"GitHub PUT falhou: {hint}")
 
+
 def sync_down_db():
     """Baixa o dados.db do GitHub (se existir) ANTES de abrir o SQLite local."""
     if not github_config_ok():
-        st.info("⏭️ Modo local: sincronização do GitHub desativada (secrets ausentes).")
+        # Não mais exibir banner fora da aba. Apenas armazena a informação, se quiser.
+        st.session_state["gh_sync_status"] = "⏭️ Modo local: sincronização do GitHub desativada (secrets ausentes)."
+        st.session_state["gh_sync_time"] = datetime.now().strftime("%d/%m/%Y %H:%M")
         return
     try:
         content, sha = _gh_get_db()
@@ -409,11 +419,19 @@ def sync_down_db():
                 f.write(content)
             st.session_state["db_sha"] = sha
             st.session_state["db_dirty"] = False
-            st.info("📥 Banco sincronizado do GitHub.")
+
+            # <<< registra a mensagem para mostrar depois na aba Sistema
+            st.session_state["gh_sync_status"] = "📥 Banco sincronizado do GitHub."
+            st.session_state["gh_sync_time"] = datetime.now().strftime("%d/%m/%Y %H:%M")
         else:
-            st.warning("Não há banco no GitHub ainda (primeiro envio criará o arquivo).")
+            # Não há DB remoto ainda
+            st.session_state["gh_sync_status"] = "⚠️ Não há banco no GitHub ainda (primeiro envio criará o arquivo)."
+            st.session_state["gh_sync_time"] = datetime.now().strftime("%d/%m/%Y %H:%M")
     except Exception as e:
-        st.error(f"Falha ao baixar DB do GitHub: {e}")
+        # Registra erro como status (e mostra no Sistema)
+        st.session_state["gh_sync_status"] = f"❌ Falha ao baixar DB do GitHub: {e}"
+        st.session_state["gh_sync_time"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+
 
 def mark_db_dirty():
     """Marcar após QUALQUER escrita (insert/update/delete)."""
@@ -827,14 +845,6 @@ seed_hospitais()    # seeds
 
 app_header("Sistema de Internações — Versão Final",
            "Importação, edição, quitação e relatórios com persistência local/GitHub")
-
-# Indicador de status do modo de persistência
-if github_config_ok():
-    st.caption("🔗 Persistência **GitHub** ativa — "
-               f"branch: `{GH_BRANCH}` • path: `{GH_DB_PATH}` • repo: `{GH_REPO}`")
-else:
-    st.caption("💾 Persistência **local** — configure `GH_TOKEN`, `GH_REPO` e `GH_DB_PATH` em *Secrets* para sincronizar com o GitHub.")
-
 
 
 def _switch_to_tab_by_label(tab_label: str):
