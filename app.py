@@ -1112,7 +1112,8 @@ with tabs[0]:
                     .drop(columns=["_int_dt"])
                 )
     
-                # Renderização dos cards
+                
+                #Renderização dos cards
                 for _, r in df_ints.iterrows():
                     i1, i2, i3, i4 = st.columns([3, 3, 3, 2])
                     with i1:
@@ -1122,9 +1123,16 @@ with tabs[0]:
                     with i3:
                         st.markdown(f"**Data internação:** {r.get('data_internacao') or '-'}")
                     with i4:
-                        if st.button("🔎 Abrir na Consulta", key=f"open_cons_{int(r['internacao_id'])}", use_container_width=True):
+                        # 🔑 Torna a key do botão 100% única (evita qualquer colisão entre telas/estados)
+                        btn_key = f"open_cons_{status_sel_home}_{int(r['internacao_id'])}"
+                        if st.button("🔎 Abrir na Consulta", key=btn_key, use_container_width=True):
                             st.session_state["consulta_codigo"] = str(r["atendimento"])
                             st.session_state["goto_tab_label"] = "🔍 Consultar Internação"
+                            # (Opcional) Fechar a lista ao navegar
+                            # st.session_state["home_status"] = None
+                            # 🔁 Força um novo ciclo para o switch programático acontecer
+                            st.rerun()
+
 
 
 
