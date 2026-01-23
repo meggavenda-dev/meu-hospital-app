@@ -52,6 +52,43 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 
 def inject_css():
     st.markdown("""
+    
+    <style>
+    /* ===== KPIs maiores e centralizados ===== */
+    .kpi-wrap.center .kpi{
+      text-align:center;
+    }
+    
+    .kpi.big .label{
+      font-size: 1.05rem;        /* título maior */
+      font-weight: 700;
+    }
+    
+    .kpi.big .value{
+      font-size: 2.4rem;         /* número bem visível */
+      line-height: 2.6rem;
+      font-weight: 800;
+      color: var(--text);
+    }
+    
+    .kpi.big .hint{
+      font-size: .95rem;         /* subtítulo um pouco maior */
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    
+    /* opcional: mais destaque ao passar o mouse no card inteiro */
+    .kpi.big:hover{
+      box-shadow: 0 1px 0 rgba(0,0,0,.03);
+    }
+    
+    /* opcional: botões logo abaixo dos KPIs, com “peso” visual */
+    .kpi-action button{
+      font-size: 0.95rem !important;
+      font-weight: 700 !important;
+    }
+    </style>
+
     <style>
     /* ============================
        PALHETA NEUTRA TRADICIONAL
@@ -218,15 +255,17 @@ def pill(situacao: str) -> str:
     elif s == "Finalizado": cls += " pill-ok"
     return f"<span class='{cls}'>{s or '-'}</span>"
 
-def kpi_row(items):
+
+def kpi_row(items, extra_class: str = ""):
     """
     items: lista de dicts [{label, value, hint (opcional)}]
+    extra_class: classes extras na <div class='kpi-wrap ...'> (ex.: 'center')
     """
-    st.markdown("<div class='kpi-wrap'>", unsafe_allow_html=True)
+    st.markdown(f"<div class='kpi-wrap {extra_class}'>", unsafe_allow_html=True)
     for it in items:
         st.markdown(
             f"""
-            <div class='kpi'>
+            <div class='kpi big'>  <!-- adiciona 'big' aqui -->
               <div class='label'>{it.get('label','')}</div>
               <div class='value'>{it.get('value','')}</div>
               {'<div class="hint">'+it.get('hint','')+'</div>' if it.get('hint') else ''}
@@ -956,26 +995,47 @@ with tabs[0]:
         st.session_state["home_status"] = None if curr == target else target
         st.rerun()
 
+    
     active = st.session_state.get("home_status")
-
+    
     c1, c2, c3 = st.columns(3)
+    
     with c1:
-        kpi_row([{"label":"Pendentes", "value": f"{tot_pendente}", "hint": "Todos os procedimentos (geral/filtrado)"}])
+        # KPI grande e centralizado
+        kpi_row(
+            [{"label":"Pendentes", "value": f"{tot_pendente}", "hint": "Todos os procedimentos (geral/filtrado)"}],
+            extra_class="center"
+        )
+        # Botão logo abaixo (ocupando a coluna toda)
         lbl = "🔽 Esconder Pendentes" if active == "Pendente" else "👁️ Ver Pendentes"
-        if st.button(lbl, key="kpi_btn_pend", use_container_width=True):
-            _toggle_home_status("Pendente")
-
+        with st.container():  # wrapper para permitir classe opcional
+            st.markdown("<div class='kpi-action'>", unsafe_allow_html=True)
+            if st.button(lbl, key="kpi_btn_pend", use_container_width=True):
+                _toggle_home_status("Pendente")
+            st.markdown("</div>", unsafe_allow_html=True)
+    
     with c2:
-        kpi_row([{"label":"Finalizadas", "value": f"{tot_finalizado}", "hint": "Todos os procedimentos (geral/filtrado)"}])
+        kpi_row(
+            [{"label":"Finalizadas", "value": f"{tot_finalizado}", "hint": "Todos os procedimentos (geral/filtrado)"}],
+            extra_class="center"
+        )
         lbl = "🔽 Esconder Finalizadas" if active == "Finalizado" else "👁️ Ver Finalizadas"
+        st.markdown("<div class='kpi-action'>", unsafe_allow_html=True)
         if st.button(lbl, key="kpi_btn_fin", use_container_width=True):
             _toggle_home_status("Finalizado")
-
+        st.markdown("</div>", unsafe_allow_html=True)
+    
     with c3:
-        kpi_row([{"label":"Não Cobrar", "value": f"{tot_nao_cobrar}", "hint": "Todos os procedimentos (geral/filtrado)"}])
+        kpi_row(
+            [{"label":"Não Cobrar", "value": f"{tot_nao_cobrar}", "hint": "Todos os procedimentos (geral/filtrado)"}],
+            extra_class="center"
+        )
         lbl = "🔽 Esconder Não Cobrar" if active == "Não Cobrar" else "👁️ Ver Não Cobrar"
+        st.markdown("<div class='kpi-action'>", unsafe_allow_html=True)
         if st.button(lbl, key="kpi_btn_nc", use_container_width=True):
             _toggle_home_status("Não Cobrar")
+        st.markdown("</div>", unsafe_allow_html=True)
+
 
     # -------------------------
     # Listagem de internações (toggle ON) + fechar lista + abrir na consulta
