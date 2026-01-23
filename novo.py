@@ -11,6 +11,7 @@ from datetime import date, datetime
 import io
 import base64, json
 import requests  # -> requirements: requests
+import re
 
 # ==== PDF (ReportLab) - opcional ====
 REPORTLAB_OK = True
@@ -546,13 +547,21 @@ def _to_ddmmyyyy(value):
     except Exception:
         return str(value)
 
+
+
+
 def _to_float_or_none(v):
     if v is None or v == "": return None
-    try:
-        return float(str(v).replace(".", "").replace(",", "."))
-    except Exception:
-        try: return float(v)
-        except Exception: return None
+    if isinstance(v, (int,float)): return float(v)
+    s = str(v)
+    s = re.sub(r"[^\d,.\-]", "", s)  # remove "R$", espaços, etc.
+    if "," in s and "." in s: s = s.replace(".", "").replace(",", ".")
+    elif "," in s:            s = s.replace(",", ".")
+    try: return float(s)
+    except: return None
+
+
+
 
 def _format_currency_br(v) -> str:
     if v is None or (isinstance(v, float) and pd.isna(v)): return "R$ 0,00"
@@ -580,6 +589,41 @@ def apagar_internacoes(lista_at):
     cur.execute(f"DELETE FROM Internacoes WHERE atendimento IN ({qmarks})", lista_at)
     conn.commit(); conn.close()
     mark_db_dirty()
+
+
+def atualizar_internacao(internacao_id, paciente=None, convenio=None, data_internacao=None, hospital=None):
+    sets, params = [], []
+
+    if paciente is not None:
+        sets.append("paciente = ?")
+        params.append(paciente)
+
+    if convenio is not None:
+        sets.append("convenio = ?")
+        params.append(convenio)
+
+    if data_internacao is not None:
+        sets.append("data_internacao = ?")
+        params.append(data_internacao)
+
+    if hospital is not None:
+        sets.append("hospital = ?")
+        params.append(hospital)
+
+    if not sets:
+        return
+
+    params.append(internacao_id)
+
+    sql = f"UPDATE Internacoes SET {', '.join(sets)} WHERE id = ?"
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    conn.commit()
+    conn.close()
+    mark_db_dirty()
+
 
 def deletar_internacao(internacao_id: int):
     conn = get_conn(); cur = conn.cursor()
@@ -626,23 +670,46 @@ def existe_procedimento_no_dia(internacao_id, data_proc):
     ok = cur.fetchone() is not None
     conn.close(); return ok
 
-def atualizar_procedimento(proc_id, procedimento=None, situacao=None, observacao=None, grau_participacao=None):
+
+def atualizar_procedimento(proc_id, procedimento=None, situacao=None,
+                           observacao=None, grau_participacao=None, aviso=None):
+
     sets, params = [], []
+
     if procedimento is not None:
-        sets.append("procedimento = ?"); params.append(procedimento)
+        sets.append("procedimento = ?")
+        params.append(procedimento)
+
     if situacao is not None:
-        sets.append("situacao = ?"); params.append(situacao)
+        sets.append("situacao = ?")
+        params.append(situacao)
+
     if observacao is not None:
-        sets.append("observacao = ?"); params.append(observacao)
+        sets.append("observacao = ?")
+        params.append(observacao)
+
     if grau_participacao is not None:
-        sets.append("grau_participacao = ?"); params.append(grau_participacao)
+        sets.append("grau_participacao = ?")
+        params.append(grau_participacao)
+
+    if aviso is not None:
+        sets.append("aviso = ?")
+        params.append(aviso)
+
     if not sets:
         return
+
     params.append(proc_id)
     sql = f"UPDATE Procedimentos SET {', '.join(sets)} WHERE id = ?"
-    conn = get_conn(); cur = conn.cursor()
-    cur.execute(sql, params); conn.commit(); conn.close()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    conn.commit()
+    conn.close()
+
     mark_db_dirty()
+
 
 def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_amhptiss=None,
                         guia_complemento=None, valor_complemento=None, quitacao_observacao=None):
@@ -660,6 +727,26 @@ def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_a
     """, (data_quitacao, guia_amhptiss, valor_amhptiss, guia_complemento, valor_complemento, quitacao_observacao, proc_id))
     conn.commit(); conn.close()
     mark_db_dirty()
+
+
+def reverter_quitacao(proc_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE Procedimentos
+           SET quitacao_data = NULL,
+               quitacao_guia_amhptiss = NULL,
+               quitacao_valor_amhptiss = NULL,
+               quitacao_guia_complemento = NULL,
+               quitacao_valor_complemento = NULL,
+               quitacao_observacao = NULL,
+               situacao = 'Enviado para pagamento'
+         WHERE id = ?
+    """, (proc_id,))
+    conn.commit()
+    conn.close()
+    mark_db_dirty()
+
 
 def get_internacao_by_atendimento(att):
     conn = get_conn()
@@ -890,6 +977,52 @@ with tabs[1]:
             st.dataframe(df_int, use_container_width=True, hide_index=True)
             internacao_id = int(df_int["id"].iloc[0])
 
+            
+            # ============================
+            # ✏️ Edição dos dados da internação
+            # ============================
+            
+            st.subheader("✏️ Editar dados da internação")
+            
+            with st.container():
+                c1, c2, c3, c4 = st.columns(4)
+            
+                with c1:
+                    novo_paciente = st.text_input("Paciente:", value=df_int["paciente"].iloc[0])
+            
+                with c2:
+                    novo_convenio = st.text_input("Convênio:", value=df_int["convenio"].iloc[0])
+            
+                with c3:
+                    data_atual = df_int["data_internacao"].iloc[0]
+                    try:
+                        dt_atual = datetime.strptime(data_atual, "%d/%m/%Y").date()
+                    except:
+                        dt_atual = date.today()
+            
+                    nova_data = st.date_input("Data da internação:", value=dt_atual)
+            
+                with c4:
+                    todos_hospitais = get_hospitais(include_inactive=True)
+                    novo_hospital = st.selectbox("Hospital:", todos_hospitais, index=todos_hospitais.index(df_int["hospital"].iloc[0]))
+            
+                col_save_int = st.columns(6)[-1]
+                with col_save_int:
+                    if st.button("💾 Salvar alterações da internação", type="primary"):
+                        atualizar_internacao(
+                            internacao_id,
+                            paciente=novo_paciente,
+                            convenio=novo_convenio,
+                            data_internacao=nova_data.strftime("%d/%m/%Y"),
+                            hospital=novo_hospital
+                        )
+            
+                        st.toast("Dados da internação atualizados!", icon="✅")
+                        maybe_sync_up_db("chore(db): edição de internação")
+                        st.rerun()
+
+            
+
             # Excluir internação
             with st.expander("🗑️ Excluir esta internação"):
                 st.warning("Esta ação apagará a internação e TODOS os procedimentos vinculados.")
@@ -908,19 +1041,50 @@ with tabs[1]:
             # Procedimentos
             conn = get_conn()
             df_proc = pd.read_sql_query(
-                "SELECT id, data_procedimento, profissional, procedimento, situacao, observacao, aviso, grau_participacao "
-                "FROM Procedimentos WHERE internacao_id = ? ORDER BY data_procedimento, id",
+                """
+                SELECT id, data_procedimento, profissional, procedimento, situacao, observacao, aviso, grau_participacao
+                FROM Procedimentos
+                WHERE internacao_id = ?
+                """,
                 conn, params=(internacao_id,)
             )
             conn.close()
-
-            if "procedimento" not in df_proc.columns: df_proc["procedimento"] = "Cirurgia / Procedimento"
-            df_proc["procedimento"] = df_proc["procedimento"].fillna("Cirurgia / Procedimento")
-            df_proc["situacao"] = df_proc.get("situacao", pd.Series(dtype=str)).fillna("Pendente")
-            df_proc["observacao"] = df_proc.get("observacao", pd.Series(dtype=str)).fillna("")
-            df_proc["aviso"] = df_proc.get("aviso", pd.Series(dtype=str)).fillna("")
-            df_proc["grau_participacao"] = df_proc.get("grau_participacao", pd.Series(dtype=str)).fillna("")
-
+            
+            # Garantias de colunas e preenchimentos
+            if "procedimento" not in df_proc.columns:
+                df_proc["procedimento"] = "Cirurgia / Procedimento"
+            
+            df_proc["procedimento"]       = df_proc["procedimento"].fillna("Cirurgia / Procedimento")
+            df_proc["situacao"]           = df_proc.get("situacao", pd.Series(dtype=str)).fillna("Pendente")
+            df_proc["observacao"]         = df_proc.get("observacao", pd.Series(dtype=str)).fillna("")
+            df_proc["aviso"]              = df_proc.get("aviso", pd.Series(dtype=str)).fillna("")
+            df_proc["grau_participacao"]  = df_proc.get("grau_participacao", pd.Series(dtype=str)).fillna("")
+            
+            # === ORDENAR POR DATA DO ATENDIMENTO (data_procedimento) ===
+            # 1) Converte a data em datetime.date (formato pt-BR)
+            def _safe_pt_date(s):
+                try:
+                    return datetime.strptime(str(s).strip(), "%d/%m/%Y").date()
+                except Exception:
+                    try:
+                        # fallback caso venha em ISO
+                        return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
+                    except Exception:
+                        return None
+            
+            df_proc["_data_dt"] = df_proc["data_procedimento"].apply(_safe_pt_date)
+            
+            # 2) Ordena por data (e por id para estabilizar)
+            #    -> ascending=True para mais antigos primeiro (mude para False se quiser mais recentes no topo)
+            df_proc = df_proc.sort_values(by=["_data_dt", "id"], ascending=[True, True]).reset_index(drop=True)
+            
+            # 3) Reformatar de volta para dd/mm/yyyy (somente para exibição)
+            df_proc["data_procedimento"] = df_proc["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
+            
+            # 4) Remove auxiliar
+            df_proc = df_proc.drop(columns=["_data_dt"])
+            
+            # (daqui pra baixo, mantenha o que você já tem:)
             st.subheader("Procedimentos — Editáveis")
             edited = st.data_editor(
                 df_proc,
@@ -930,43 +1094,62 @@ with tabs[1]:
                     "id": st.column_config.Column("ID", disabled=True),
                     "data_procedimento": st.column_config.Column("Data", disabled=True),
                     "profissional": st.column_config.Column("Profissional", disabled=True),
-                    "aviso": st.column_config.Column("Aviso", disabled=True),
+            
+                    "aviso": st.column_config.TextColumn("Aviso"),
                     "grau_participacao": st.column_config.SelectboxColumn(
-                        "Grau de Participação", options=[""] + GRAU_PARTICIPACAO_OPCOES, required=False
+                        "Grau de Participação",
+                        options=[""] + GRAU_PARTICIPACAO_OPCOES,
+                        required=False
                     ),
-                    "procedimento": st.column_config.SelectboxColumn("Tipo de Procedimento", options=PROCEDIMENTO_OPCOES, required=True),
-                    "situacao": st.column_config.SelectboxColumn("Situação", options=STATUS_OPCOES, required=True),
-                    "observacao": st.column_config.TextColumn("Observações", help="Texto livre"),
+                    "procedimento": st.column_config.SelectboxColumn(
+                        "Tipo de Procedimento",
+                        options=PROCEDIMENTO_OPCOES,
+                        required=True
+                    ),
+                    "situacao": st.column_config.SelectboxColumn(
+                        "Situação",
+                        options=STATUS_OPCOES,
+                        required=True
+                    ),
+                    "observacao": st.column_config.TextColumn("Observações"),
                 },
             )
+
+
 
             col_save = st.columns(6)[-1]
             with col_save:
                 if st.button("💾 Salvar alterações", key="btn_save_proc", type="primary"):
-                    cols_chk = ["procedimento", "situacao", "observacao", "grau_participacao"]
+                    cols_chk = ["procedimento", "situacao", "observacao", "grau_participacao", "aviso"]
                     df_compare = df_proc[["id"] + cols_chk].merge(edited[["id"] + cols_chk], on="id", suffixes=("_old", "_new"))
                     alterados = []
                     for _, row in df_compare.iterrows():
                         changed = any((str(row[c + "_old"] or "") != str(row[c + "_new"] or "")) for c in cols_chk)
-                        if changed:
+                        if changed:                            
                             alterados.append({
                                 "id": int(row["id"]),
                                 "procedimento": row["procedimento_new"],
                                 "situacao": row["situacao_new"],
                                 "observacao": row["observacao_new"],
-                                "grau_participacao": row["grau_participacao_new"] if row["grau_participacao_new"] != "" else None,
+                                "grau_participacao": (
+                                    row["grau_participacao_new"] if row["grau_participacao_new"] != "" else None
+                                ),
+                                "aviso": row["aviso_new"],   #  <<<<<< ADICIONADO
                             })
                     if not alterados:
                         st.info("Nenhuma alteração detectada.")
                     else:
-                        for item in alterados:
+                        for item in alterados:                         
+                            
                             atualizar_procedimento(
                                 proc_id=item["id"],
                                 procedimento=item["procedimento"],
                                 situacao=item["situacao"],
                                 observacao=item["observacao"],
                                 grau_participacao=item["grau_participacao"],
+                                aviso=item.get("aviso"),   #  <<<<<< USAR .get
                             )
+                            
                         st.toast(f"{len(alterados)} procedimento(s) atualizado(s).", icon="✅")
                         maybe_sync_up_db("chore(db): edição de procedimentos")
                         st.rerun()
@@ -1002,17 +1185,32 @@ with tabs[1]:
             with colp3: grau_part = st.selectbox("Grau de Participação", [""] + GRAU_PARTICIPACAO_OPCOES, index=0)
 
             col_add = st.columns(6)[-1]
-            with col_add:
+            with col_add:    
+                
+                # Data da internação já carregada do banco
+                data_internacao_str = df_int["data_internacao"].iloc[0]
+                try:
+                    dt_internacao = datetime.strptime(data_internacao_str, "%d/%m/%Y").date()
+                except:
+                    dt_internacao = date.today()   # fallback seguro
+                
                 if st.button("Adicionar procedimento", key="btn_add_manual", type="primary"):
-                    data_str = data_proc.strftime("%d/%m/%Y")
-                    criar_procedimento(
-                        internacao_id, data_str, profissional, procedimento_tipo,
-                        situacao=situacao, observacao=(observacao or None), is_manual=1,
-                        aviso=None, grau_participacao=(grau_part if grau_part != "" else None),
-                    )
-                    st.toast("Procedimento (manual) adicionado.", icon="✅")
-                    maybe_sync_up_db("chore(db): novo procedimento manual")
-                    st.rerun()
+                
+                    # ⚠️ VALIDAÇÃO (sem st.stop)
+                    if data_proc < dt_internacao:
+                        st.error("❌ A data do procedimento não pode ser anterior à data da internação.")
+                    else:
+                        data_str = data_proc.strftime("%d/%m/%Y")
+                
+                        criar_procedimento(
+                            internacao_id, data_str, profissional, procedimento_tipo,
+                            situacao=situacao, observacao=(observacao or None), is_manual=1,
+                            aviso=None, grau_participacao=(grau_part if grau_part != "" else None),
+                        )
+                
+                        st.toast("Procedimento (manual) adicionado.", icon="✅")
+                        maybe_sync_up_db("chore(db): novo procedimento manual")
+                        st.rerun()
 
             # Ver quitação (Finalizados)
             st.divider()
@@ -1065,31 +1263,94 @@ with tabs[1]:
                         st.markdown("**Observações da quitação:**")
                         st.write(q["quitacao_observacao"] or "-")
 
-                        if st.button("Fechar", key="fechar_quit"):
-                            st.session_state["show_quit_id"] = None
-                            st.rerun()
+                        
+                        # ============================================
+                        # BOTÕES — FECHAR e REVERTER QUITAÇÃO
+                        # ============================================
+                        
+                        cbot1, cbot2 = st.columns(2)
+                        
+                        with cbot1:
+                            if st.button("Fechar", key="fechar_quit"):
+                                st.session_state["show_quit_id"] = None
+                                st.rerun()
+                        
+                        with cbot2:
+                            if st.button("↩️ Reverter quitação", key=f"rev_{pid}", type="secondary"):
+                                reverter_quitacao(pid)
+                                st.toast(
+                                    "Quitação revertida. Status voltou para 'Enviado para pagamento'.",
+                                    icon="↩️"
+                                )
+                                maybe_sync_up_db("chore(db): revertido quitação")
+                                st.session_state["show_quit_id"] = None
+                                st.rerun()
+
+
+
 
 # ============================================================
 # 📑 3) RELATÓRIOS (PDF)
 # ============================================================
 
 # --- PDF: Cirurgias por Status (paisagem) ---
-if REPORTLAB_OK:
+if REPORTLAB_OK:   
+    
     def _pdf_cirurgias_por_status(df, filtros):
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
-            buf, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
+            buf,
+            pagesize=landscape(A4),
+            leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
         )
-        styles = getSampleStyleSheet(); H1 = styles["Heading1"]; H2 = styles["Heading2"]; N = styles["BodyText"]
+    
+        styles = getSampleStyleSheet()
+        H1 = styles["Heading1"]; H2 = styles["Heading2"]; N = styles["BodyText"]
+    
+        # Estilos de célula com quebra de linha
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import Paragraph
+    
+        TH = ParagraphStyle(
+            "TH",
+            parent=styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            leading=11,
+            alignment=1,          # CENTER
+            spaceBefore=0,
+            spaceAfter=0,
+        )
+        TD = ParagraphStyle(
+            "TD",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=8,
+            leading=10,
+            wordWrap="LTR",       # permite quebra de linha dentro da célula
+        )
+        TD_CENTER = ParagraphStyle(**{**TD.__dict__, "alignment":1})
+        TD_RIGHT  = ParagraphStyle(**{**TD.__dict__, "alignment":2})
+    
         elems = []
-        elems.append(Paragraph("Relatório — Cirurgias por Status", H1)); elems.append(Spacer(1, 6))
+        elems.append(Paragraph("Relatório — Cirurgias por Status", H1))
+        elems.append(Spacer(1, 6))
+    
         filtros_txt = (f"Período: {filtros['ini']} a {filtros['fim']}  |  "
                        f"Hospital: {filtros['hospital']}  |  "
                        f"Status: {filtros['status']}")
-        elems.append(Paragraph(filtros_txt, N)); elems.append(Spacer(1, 8))
-        total = len(df); elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
+        elems.append(Paragraph(filtros_txt, N))
+        elems.append(Spacer(1, 8))
+    
+        total = len(df)
+        elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
+    
+        # Resumo por situação (opcional)
         if total > 0 and filtros["status"] == "Todos":
-            resumo = (df.groupby("situacao")["situacao"].count().sort_values(ascending=False).reset_index(name="qtd"))
+            resumo = (df.groupby("situacao")["situacao"]
+                        .count()
+                        .sort_values(ascending=False)
+                        .reset_index(name="qtd"))
             data_resumo = [["Situação", "Quantidade"]] + resumo.values.tolist()
             t_res = Table(data_resumo, hAlign="LEFT")
             t_res.setStyle(TableStyle([
@@ -1097,28 +1358,69 @@ if REPORTLAB_OK:
                 ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
                 ("ALIGN", (1,1), (-1,-1), "RIGHT"),
                 ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTSIZE", (0,0), (-1,0), 9),
             ]))
-            elems.append(t_res); elems.append(Spacer(1, 10))
-        header = ["Atendimento", "Aviso", "Convênio", "Paciente", "Data", "Profissional", "Hospital"]
+            elems.append(t_res)
+            elems.append(Spacer(1, 10))
+    
+        # ======= TABELA PRINCIPAL =======
+        # Nova ordem no final: ... "Hospital", "Situação"
+        header_labels = [
+            "Atendimento", "Aviso", "Convênio", "Paciente",
+            "Data", "Tipo", "Profissional", "Grau de Participação", "Hospital", "Situação"
+        ]
+        header = [Paragraph(h, TH) for h in header_labels]
+    
+        # Larguras balanceadas p/ A4 paisagem (26,1 cm úteis aprox. com suas margens):
+        col_widths = [
+            2.6*cm,  # Atendimento
+            2.0*cm,  # Aviso
+            2.8*cm,  # Convênio
+            5.0*cm,  # Paciente
+            2.2*cm,  # Data
+            2.4*cm,  # Tipo
+            2.8*cm,  # Profissional
+            3.0*cm,  # Grau de Participação
+            2.6*cm,  # Hospital
+            2.1*cm,  # Situação (curto, cabe nomes definidos)
+        ]
+    
+        def _p(v, style=TD):
+            txt = "" if v is None else str(v)
+            return Paragraph(txt, style)
+    
         data_rows = []
         for _, r in df.iterrows():
             data_rows.append([
-                r.get("atendimento") or "", r.get("aviso") or "", r.get("convenio") or "",
-                r.get("paciente") or "", r.get("data_procedimento") or "",
-                r.get("profissional") or "", r.get("hospital") or "",
+                _p(r.get("atendimento"), TD_CENTER),
+                _p(r.get("aviso"), TD_CENTER),
+                _p(r.get("convenio")),
+                _p(r.get("paciente")),
+                _p(r.get("data_procedimento"), TD_CENTER),
+                _p(r.get("procedimento")),
+                _p(r.get("profissional")),
+                _p(r.get("grau_participacao"), TD_CENTER),
+                _p(r.get("hospital")),
+                _p(r.get("situacao"), TD_CENTER),
             ])
-        table = Table([header] + data_rows, repeatRows=1)
+    
+        table = Table([header] + data_rows, repeatRows=1, colWidths=col_widths)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
             ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ("FONTSIZE", (0,0), (-1,0), 10),
-            ("ALIGN", (0,0), (-1,0), "CENTER"),
+            ("FONTSIZE", (0,0), (-1,0), 9),
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
+            ("ALIGN", (0,0), (-1,0), "CENTER"),  # cabeçalho centralizado
         ]))
-        elems.append(table); doc.build(elems)
-        pdf_bytes = buf.getvalue(); buf.close(); return pdf_bytes
+        elems.append(table)
+    
+        doc.build(elems)
+        pdf_bytes = buf.getvalue()
+        buf.close()
+        return pdf_bytes
+
 else:
     def _pdf_cirurgias_por_status(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado no ambiente.")
@@ -1228,16 +1530,17 @@ with tabs[2]:
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
-    conn = get_conn()
+    conn = get_conn()    
     sql_rel = """
         SELECT 
             I.hospital, I.atendimento, I.paciente, I.convenio,
             P.data_procedimento, P.aviso, P.profissional,
-            P.procedimento, P.situacao
+            P.procedimento, P.grau_participacao, P.situacao
         FROM Procedimentos P
         INNER JOIN Internacoes I ON I.id = P.internacao_id
         WHERE P.procedimento = 'Cirurgia / Procedimento'
     """
+
     df_rel = pd.read_sql_query(sql_rel, conn); conn.close()
 
     if not df_rel.empty:
@@ -1406,7 +1709,7 @@ with tabs[3]:
             df_quit[col] = pd.to_numeric(df_quit[col], errors="coerce")
 
         st.markdown("Preencha os dados e clique em **Gravar quitação(ões)**. Ao gravar, o status muda para **Finalizado**.")
-
+        
         edited = st.data_editor(
             df_quit, key="editor_quit", use_container_width=True, hide_index=True,
             column_config={
