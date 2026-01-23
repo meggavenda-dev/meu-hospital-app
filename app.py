@@ -14,6 +14,7 @@ from datetime import date, datetime
 import streamlit as st
 import pandas as pd
 import streamlit.components.v1 as components
+import urllib.parse as up
 
 # DB: psycopg2 (PostgreSQL)
 import psycopg2
@@ -153,11 +154,51 @@ def app_header(title: str, subtitle: str = ""):
 # ============================================================
 
 # Conexão: secrets -> SUPABASE_DB_URI
+
+ef _safe_mask(s: str, keep_left: int = 12, keep_right: int = 8) -> str:
+    if not s: return ""
+    n = len(s)
+    if n <= keep_left + keep_right: return "*" * n
+    return s[:keep_left] + "*" * (n - keep_left - keep_right) + s[-keep_right:]
+
 def get_conn():
-    uri = st.secrets.get("SUPABASE_DB_URI") or os.environ.get("SUPABASE_DB_URI")
-    if not uri:
-        st.stop()  # segurança
-    return psycopg2.connect(uri)
+    """
+    Conecta no Postgres (Supabase):
+      - Lê SUPABASE_DB_URI de st.secrets (ou env);
+      - Força sslmode=require;
+      - Aplica connect_timeout;
+      - Exibe erro amigável sem vazar a senha.
+    """
+    raw_uri = st.secrets.get("SUPABASE_DB_URI") or os.environ.get("SUPABASE_DB_URI")
+    if not raw_uri:
+        st.error("❌ `SUPABASE_DB_URI` não encontrado em `st.secrets` nem em variáveis de ambiente.")
+        st.info("Adicione no Secrets: SUPABASE_DB_URI = \"postgresql://postgres:SENHA@HOST:5432/postgres?sslmode=require\"")
+        st.stop()
+
+    # Garante sslmode=require mesmo se faltar na URI
+    parsed = up.urlparse(raw_uri)
+    q = up.parse_qs(parsed.query or "")
+    q["sslmode"] = ["require"]
+    new_query = up.urlencode({k: v[0] for k, v in q.items()})
+    norm_uri = up.urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+
+    try:
+        conn = psycopg2.connect(norm_uri, connect_timeout=10)
+        return conn
+    except Exception:
+        host = parsed.hostname or ""
+        db   = (parsed.path or "").lstrip("/") or ""
+        st.error(
+            "❌ Falha ao conectar no PostgreSQL/Supabase.\n\n"
+            f"- Host: `{host}`\n"
+            f"- Banco: `{db}`\n"
+            f"- Porta: `{parsed.port or 5432}`\n"
+            f"- Usuário: `{parsed.username or ''}`\n"
+            f"- SSL: `require`\n\n"
+            "Verifique usuário/senha/host/porta/banco e se o projeto Supabase está ativo."
+        )
+        st.caption(f"URI (mascarada): { _safe_mask(raw_uri) }")
+        st.stop()
 
 def create_tables():
     """Cria/migra tabelas e índices no Postgres (compatível com o app atual)."""
