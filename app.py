@@ -1058,36 +1058,60 @@ with tabs[0]:
             _toggle_home_status("Não Cobrar")
         st.markdown("</div>", unsafe_allow_html=True)
 
-
+    
     # -------------------------
     # Listagem de internações (toggle ON) + fechar lista + abrir na consulta
     # -------------------------
     status_sel_home = st.session_state.get("home_status")
-
+    
     if status_sel_home:
         st.divider()
         st.subheader(f"📋 Internações com ao menos 1 procedimento em: **{status_sel_home}**")
-
+    
         # Botão fechar lista
         cc1, _ = st.columns([1, 6])
         with cc1:
             if st.button("Fechar lista", key="btn_close_list", type="secondary", use_container_width=True):
                 st.session_state["home_status"] = None
                 st.rerun()
-
+    
         if df_f.empty:
             st.info("Nenhuma internação encontrada com os filtros aplicados.")
         else:
             df_status = df_f[df_f["situacao"] == status_sel_home].copy()
-
+    
             if df_status.empty:
                 st.info("Nenhuma internação encontrada para este status com os filtros atuais.")
             else:
+                # === ORDENAR POR DATA DA INTERNAÇÃO (mais recentes primeiro) ===
+                def _safe_pt_date_int(s):
+                    try:
+                        return datetime.strptime(str(s).strip(), "%d/%m/%Y").date()
+                    except Exception:
+                        try:
+                            return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
+                        except Exception:
+                            return None
+    
                 cols_show = ["internacao_id","atendimento","paciente","hospital","convenio","data_internacao"]
-                df_ints = (df_status[cols_show]
-                           .drop_duplicates(subset=["internacao_id"])
-                           .sort_values(by=["data_internacao","hospital","paciente"], ascending=[False, True, True]))
-
+    
+                # Um card por internação
+                df_ints = (
+                    df_status[cols_show]
+                    .drop_duplicates(subset=["internacao_id"])
+                    .copy()
+                )
+    
+                # Converte data da internação e ordena (desc)
+                df_ints["_int_dt"] = df_ints["data_internacao"].apply(_safe_pt_date_int)
+                # Empate estável por hospital/paciente
+                df_ints = (
+                    df_ints
+                    .sort_values(by=["_int_dt", "hospital", "paciente"], ascending=[False, True, True])
+                    .drop(columns=["_int_dt"])
+                )
+    
+                # Renderização dos cards
                 for _, r in df_ints.iterrows():
                     i1, i2, i3, i4 = st.columns([3, 3, 3, 2])
                     with i1:
@@ -1096,12 +1120,11 @@ with tabs[0]:
                         st.markdown(f"**Hospital:** {r.get('hospital') or '-'}  \n**Convênio:** {r.get('convenio') or '-'}")
                     with i3:
                         st.markdown(f"**Data internação:** {r.get('data_internacao') or '-'}")
-                    with i4:                    
-                        
-                       
+                    with i4:
                         if st.button("🔎 Abrir na Consulta", key=f"open_cons_{int(r['internacao_id'])}", use_container_width=True):
                             st.session_state["consulta_codigo"] = str(r["atendimento"])
                             st.session_state["goto_tab_label"] = "🔍 Consultar Internação"
+
 
     # Lembrete visual
     if st.session_state.get("consulta_codigo"):
