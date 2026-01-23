@@ -5,3 +5,4 @@ pypdf2
 openpyxl
 requests
 psycopg2-binary
+supabase
