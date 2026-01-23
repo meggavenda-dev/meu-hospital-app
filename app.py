@@ -12,6 +12,7 @@ import io
 import base64, json
 import requests  # -> requirements: requests
 import re
+import streamlit.components.v1 as components
 
 # ==== PDF (ReportLab) - opcional ====
 REPORTLAB_OK = True
@@ -796,7 +797,29 @@ else:
     st.caption("💾 Persistência **local** — configure `GH_TOKEN`, `GH_REPO` e `GH_DB_PATH` em *Secrets* para sincronizar com o GitHub.")
 
 
-
+def _switch_to_tab_by_label(tab_label: str):
+    """
+    Faz o browser 'clicar' na aba cujo rótulo visível corresponde a `tab_label`.
+    Observação: sensível ao texto exato que aparece no botão da aba.
+    """
+    js = f"""
+    <script>
+    const tryClick = () => {{
+      const tabs = window.parent.document.querySelectorAll('button[role="tab"]');
+      for (const t of tabs) {{
+        const txt = (t.innerText || "").trim();
+        if (txt === "{tab_label}") {{
+          t.click();
+          return true;
+        }}
+      }}
+      return false;
+    }};
+    // tenta já; se a árvore ainda não estiver pronta, tenta um pouco depois
+    if (!tryClick()) setTimeout(tryClick, 100);
+    </script>
+    """
+    components.html(js, height=0, width=0)
 
 
 # ============================================================
@@ -970,11 +993,12 @@ with tabs[0]:
                         st.markdown(f"**Hospital:** {r.get('hospital') or '-'}  \n**Convênio:** {r.get('convenio') or '-'}")
                     with i3:
                         st.markdown(f"**Data internação:** {r.get('data_internacao') or '-'}")
-                    with i4:
+                    with i4:                        
                         if st.button("🔎 Abrir na Consulta", key=f"open_cons_{int(r['internacao_id'])}", use_container_width=True):
-                            st.session_state["consulta_codigo"] = str(r["atendimento"])
-                            st.toast(f"Aba 'Consultar Internação' já foi preenchida com o atendimento {r['atendimento']}.", icon="🔎")
+                            st.session_state["consulta_codigo"] = str(r["atendimento"])  # preenche o campo da aba Consultar
+                            _switch_to_tab_by_label("🔍 Consultar Internação")           # <<< muda para a aba automaticamente
                             st.rerun()
+
     
     st.markdown("</div>", unsafe_allow_html=True)
 
