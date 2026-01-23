@@ -548,29 +548,17 @@ def _to_ddmmyyyy(value):
 
 
 
+
 def _to_float_or_none(v):
-    if v is None or v == "":
-        return None
+    if v is None or v == "": return None
+    if isinstance(v, (int,float)): return float(v)
+    s = str(v)
+    s = re.sub(r"[^\d,.\-]", "", s)  # remove "R$", espaços, etc.
+    if "," in s and "." in s: s = s.replace(".", "").replace(",", ".")
+    elif "," in s:            s = s.replace(",", ".")
+    try: return float(s)
+    except: return None
 
-    # Se já veio como número (caso do st.data_editor NumberColumn)
-    if isinstance(v, (int, float)):
-        return float(v)
-
-    # Se veio como string (caso de importação)
-    s = str(v).strip()
-
-    # Caso: formato brasileiro 1.234,56
-    if "," in s and "." in s:
-        s = s.replace(".", "").replace(",", ".")
-
-    # Caso: formato 92,00
-    elif "," in s and "." not in s:
-        s = s.replace(",", ".")
-
-    try:
-        return float(s)
-    except:
-        return None
 
 
 
