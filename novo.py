@@ -1484,8 +1484,23 @@ with tabs[2]:
             st.divider()
             st.subheader("➕ Lançar procedimento manual (permite vários no mesmo dia)")
             c1, c2, c3 = st.columns(3)
-            with c1: data_proc = st.date_input("Data do procedimento", value=date.today())
-            with c2: profissional = st.text_input("Profissional (opcional)")
+            with c1: data_proc = st.date_input("Data do procedimento", value=date.today())            
+            with c2:
+                # Buscar lista de profissionais existentes no sistema
+                conn = get_conn()
+                df_pros = pd.read_sql_query(
+                    "SELECT DISTINCT profissional FROM Procedimentos WHERE profissional IS NOT NULL AND TRIM(profissional) <> '' ORDER BY profissional",
+                    conn
+                )
+                conn.close()
+                lista_profissionais = df_pros["profissional"].tolist()
+            
+                # Campo agora é um selectbox, não mais texto livre
+                profissional = st.selectbox(
+                    "Profissional",
+                    ["(selecione)"] + lista_profissionais,
+                    index=0
+                )
             with c3: situacao = st.selectbox("Situação", STATUS_OPCOES, index=0)
 
             colp1, colp2, colp3 = st.columns(3)
