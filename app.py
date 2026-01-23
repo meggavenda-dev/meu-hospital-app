@@ -1294,22 +1294,32 @@ with tabs[1]:
 # ============================================================
 
 # --- PDF: Cirurgias por Status (paisagem) ---
-if REPORTLAB_OK:
+if REPORTLAB_OK:    
     def _pdf_cirurgias_por_status(df, filtros):
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
             buf, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
         )
         styles = getSampleStyleSheet(); H1 = styles["Heading1"]; H2 = styles["Heading2"]; N = styles["BodyText"]
+    
         elems = []
-        elems.append(Paragraph("Relatório — Cirurgias por Status", H1)); elems.append(Spacer(1, 6))
+        elems.append(Paragraph("Relatório — Cirurgias por Status", H1))
+        elems.append(Spacer(1, 6))
+    
         filtros_txt = (f"Período: {filtros['ini']} a {filtros['fim']}  |  "
                        f"Hospital: {filtros['hospital']}  |  "
                        f"Status: {filtros['status']}")
-        elems.append(Paragraph(filtros_txt, N)); elems.append(Spacer(1, 8))
-        total = len(df); elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
+        elems.append(Paragraph(filtros_txt, N))
+        elems.append(Spacer(1, 8))
+    
+        total = len(df)
+        elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
+    
+        # (Opcional) Resumo por situação apenas quando status=Todos e há linhas
         if total > 0 and filtros["status"] == "Todos":
-            resumo = (df.groupby("situacao")["situacao"].count().sort_values(ascending=False).reset_index(name="qtd"))
+            resumo = (df.groupby("situacao")["situacao"].count()
+                        .sort_values(ascending=False)
+                        .reset_index(name="qtd"))
             data_resumo = [["Situação", "Quantidade"]] + resumo.values.tolist()
             t_res = Table(data_resumo, hAlign="LEFT")
             t_res.setStyle(TableStyle([
@@ -1318,29 +1328,29 @@ if REPORTLAB_OK:
                 ("ALIGN", (1,1), (-1,-1), "RIGHT"),
                 ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
             ]))
-            elems.append(t_res); elems.append(Spacer(1, 10))        
-
+            elems.append(t_res)
+            elems.append(Spacer(1, 10))
+    
         # ======= TABELA PRINCIPAL (com as novas colunas) =======
         header = [
             "Atendimento", "Aviso", "Convênio", "Paciente",
             "Data", "Tipo", "Profissional", "Grau de Participação", "Hospital"
-        ]           
-
+        ]
+    
         data_rows = []
-            for _, r in df.iterrows():
-                data_rows.append([
-                    r.get("atendimento") or "",
-                    r.get("aviso") or "",
-                    r.get("convenio") or "",
-                    r.get("paciente") or "",
-                    r.get("data_procedimento") or "",
-                    r.get("procedimento") or "",
-                    r.get("profissional") or "",
-                    r.get("grau_participacao") or "",
-                    r.get("hospital") or "",
-                ])
-
-                
+        for _, r in df.iterrows():
+            data_rows.append([
+                r.get("atendimento") or "",
+                r.get("aviso") or "",
+                r.get("convenio") or "",
+                r.get("paciente") or "",
+                r.get("data_procedimento") or "",
+                r.get("procedimento") or "",
+                r.get("profissional") or "",
+                r.get("grau_participacao") or "",
+                r.get("hospital") or "",
+            ])
+    
         table = Table([header] + data_rows, repeatRows=1)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
@@ -1351,8 +1361,12 @@ if REPORTLAB_OK:
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
         ]))
-        elems.append(table); doc.build(elems)
-        pdf_bytes = buf.getvalue(); buf.close(); return pdf_bytes
+        elems.append(table)
+    
+        doc.build(elems)
+        pdf_bytes = buf.getvalue(); buf.close()
+        return pdf_bytes
+
 else:
     def _pdf_cirurgias_por_status(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado no ambiente.")
