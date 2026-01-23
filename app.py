@@ -619,7 +619,6 @@ st.set_page_config(page_title="Gestão de Internações", page_icon="🏥", layo
 
 inject_css()  # <<< estilo global
 
-sync_down_db()      # baixa snapshot do GitHub (se existir)
 create_tables()     # garante schema/migrações
 seed_hospitais()    # seeds
 
