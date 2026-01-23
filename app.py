@@ -875,6 +875,13 @@ tabs = st.tabs([
 ])
 
 
+# ---- Troca de aba programática (deferred) ----
+if st.session_state.get("goto_tab_label"):
+    _switch_to_tab_by_label(st.session_state["goto_tab_label"])
+    # limpa para não ficar pulando de aba a cada rerun
+    st.session_state["goto_tab_label"] = None
+
+
 # ============================================================
 # 🏠 0) INÍCIO — KPIs (todos os procedimentos) + Filtros opcionais + Listagem
 # ============================================================
@@ -1077,9 +1084,9 @@ with tabs[0]:
                     with i4:
                         if st.button("🔎 Abrir na Consulta", key=f"open_cons_{int(r['internacao_id'])}", use_container_width=True):
                             st.session_state["consulta_codigo"] = str(r["atendimento"])
-                            # (opcional) se você incluiu a função de auto-troca de aba:
-                            # _switch_to_tab_by_label("🔍 Consultar Internação")
-                            st.rerun()
+                            st.session_state["goto_tab_label"] = "🔍 Consultar Internação"
+                            # NÃO chamar st.rerun aqui; deixar a página renderizar
+
 
     # Lembrete visual
     if st.session_state.get("consulta_codigo"):
