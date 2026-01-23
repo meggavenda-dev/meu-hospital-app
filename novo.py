@@ -1525,12 +1525,19 @@ with tabs[2]:
                         st.error("❌ A data do procedimento não pode ser anterior à data da internação.")
                     else:
                         data_str = data_proc.strftime("%d/%m/%Y")
-                
-                        criar_procedimento(
-                            internacao_id, data_str, profissional, procedimento_tipo,
-                            situacao=situacao, observacao=(observacao or None), is_manual=1,
-                            aviso=None, grau_participacao=(grau_part if grau_part != "" else None),
-                        )
+                                        
+                        if profissional == "(selecione)":
+                            st.error("Selecione um profissional.")
+                        else:
+                            criar_procedimento(
+                                internacao_id, data_str, profissional, procedimento_tipo,
+                                situacao=situacao,
+                                observacao=(observacao or None),
+                                is_manual=1,
+                                aviso=None,
+                                grau_participacao=(grau_part if grau_part != "" else None),
+                            )
+
                 
                         st.toast("Procedimento (manual) adicionado.", icon="✅")
                         maybe_sync_up_db("chore(db): novo procedimento manual")
