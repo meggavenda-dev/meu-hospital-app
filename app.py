@@ -2086,6 +2086,30 @@ with tabs[4]:
 
 with tabs[5]:
     st.subheader("⚙️ Sistema")
+    
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
+    st.markdown("**🔒 Persistência de Dados**")
+    
+    if github_config_ok():
+        # Linha com branch/path/repo — exatamente como você quer
+        st.caption(
+            f"🔗 Persistência **GitHub** ativa — "
+            f"branch: `{GH_BRANCH}` • path: `{GH_DB_PATH}` • repo: `{GH_REPO}`"
+        )
+    else:
+        st.caption("💾 Persistência **local** — configure `GH_TOKEN`, `GH_REPO` e `GH_DB_PATH` em *Secrets* para sincronizar com o GitHub.")
+    
+    # Último status de sync_down_db()
+    msg = st.session_state.get("gh_sync_status")
+    ts  = st.session_state.get("gh_sync_time")
+    if msg:
+        st.info(f"{msg}" + (f" (última verificação: {ts})" if ts else ""))
+    else:
+        # fallback amigável
+        st.caption("ℹ️ Ainda não há registro de sincronização nesta sessão.")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
 
     st.markdown("**📋 Procedimentos — Lista**")
     filtro = ["Todos"] + get_hospitais()
