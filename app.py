@@ -837,59 +837,52 @@ tabs = st.tabs([
 
 
 # ============================================================
-# 🏠 TELA INICIAL — KPIs (todos os procedimentos) + Filtros + Listagem
+# 🏠 0) INÍCIO — KPIs (todos os procedimentos) + Filtros opcionais + Listagem
 # ============================================================
 with tabs[0]:
-    # Estado da tela inicial
+    st.subheader("🏠 Tela Inicial")
+
+    # Estado
     if "home_status" not in st.session_state:
-        st.session_state["home_status"] = None  # status selecionado no KPI
-    
-    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
-    st.markdown("### 🏠 Tela Inicial")
-    
+        st.session_state["home_status"] = None  # status aberto/fechado na lista
+
+    hoje = date.today()
+    ini_mes = hoje.replace(day=1)
+
     # -------------------------
     # Filtros
     # -------------------------
-    hoje = date.today()
-    ini_mes = hoje.replace(day=1)
-    
-    colf1, colf2, colf3 = st.columns(3)
+    colf1, colf2 = st.columns([2, 3])
     with colf1:
         filtro_hosp_home = st.selectbox(
-            "Hospital (filtro)",
+            "Hospital",
             ["Todos"] + get_hospitais(),
             index=0,
             key="home_f_hosp"
         )
     with colf2:
-        filtro_int_ini = st.date_input(
-            "Data da internação — início",
-            value=st.session_state.get("home_f_int_ini", ini_mes),
-            key="home_f_int_ini"
-        )
-    with colf3:
-        filtro_int_fim = st.date_input(
-            "Data da internação — fim",
-            value=st.session_state.get("home_f_int_fim", hoje),
-            key="home_f_int_fim"
-        )
-    
-    colg1, colg2 = st.columns(2)
-    with colg1:
-        filtro_proc_ini = st.date_input(
-            "Data da cirurgia (procedimento) — início",
-            value=st.session_state.get("home_f_proc_ini", ini_mes),
-            key="home_f_proc_ini"
-        )
-    with colg2:
-        filtro_proc_fim = st.date_input(
-            "Data da cirurgia (procedimento) — fim",
-            value=st.session_state.get("home_f_proc_fim", hoje),
-            key="home_f_proc_fim"
-        )
-    
+        st.write(" ")
+        st.caption("Períodos (opcionais)")
+
+    cbox1, cbox2 = st.columns(2)
+    with cbox1:
+        use_int_range = st.checkbox("Filtrar por data da internação", key="home_use_int_range", value=False)
+    with cbox2:
+        use_proc_range = st.checkbox("Filtrar por data do procedimento", key="home_use_proc_range", value=False)
+
+    if use_int_range or use_proc_range:
+        cold1, cold2, cold3, cold4 = st.columns(4)
+        with cold1:
+            int_ini = st.date_input("Internação — início", value=st.session_state.get("home_f_int_ini", ini_mes), key="home_f_int_ini")
+        with cold2:
+            int_fim = st.date_input("Internação — fim", value=st.session_state.get("home_f_int_fim", hoje), key="home_f_int_fim")
+        with cold3:
+            proc_ini = st.date_input("Procedimento — início", value=st.session_state.get("home_f_proc_ini", ini_mes), key="home_f_proc_ini")
+        with cold4:
+            proc_fim = st.date_input("Procedimento — fim", value=st.session_state.get("home_f_proc_fim", hoje), key="home_f_proc_fim")
+
     # -------------------------
-    # Base de dados (TODOS os procedimentos) + filtros em pandas
+    # Base de dados: TODOS os procedimentos
     # -------------------------
     conn = get_conn()
     sql_all = """
@@ -912,8 +905,7 @@ with tabs[0]:
     """
     df_all = pd.read_sql_query(sql_all, conn)
     conn.close()
-    
-    # Converte datas texto -> date (pt-BR)
+
     def _safe_pt_date(s):
         try:
             return datetime.strptime(str(s).strip(), "%d/%m/%Y").date()
@@ -922,69 +914,98 @@ with tabs[0]:
                 return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
             except Exception:
                 return None
-    
-    if not df_all.empty:
+
+    # -------------------------
+    # Aplicação de filtros (apenas quando ativados)
+    # -------------------------
+    if df_all.empty:
+        df_f = df_all.copy()
+    else:
         df_all["_int_dt"]  = df_all["data_internacao"].apply(_safe_pt_date)
         df_all["_proc_dt"] = df_all["data_procedimento"].apply(_safe_pt_date)
-    
-        mask = (df_all["_int_dt"].notna()) & (df_all["_proc_dt"].notna())
-        # Período Internação
-        mask &= (df_all["_int_dt"] >= filtro_int_ini) & (df_all["_int_dt"] <= filtro_int_fim)
-        # Período Procedimento
-        mask &= (df_all["_proc_dt"] >= filtro_proc_ini) & (df_all["_proc_dt"] <= filtro_proc_fim)
+
+        mask = pd.Series([True]*len(df_all), index=df_all.index)
+
         # Hospital
         if filtro_hosp_home != "Todos":
             mask &= (df_all["hospital"] == filtro_hosp_home)
-    
+
+        # Período de internação (somente se marcado)
+        if use_int_range:
+            mask &= df_all["_int_dt"].notna()
+            mask &= (df_all["_int_dt"] >= st.session_state["home_f_int_ini"])
+            mask &= (df_all["_int_dt"] <= st.session_state["home_f_int_fim"])
+
+        # Período de procedimento (somente se marcado)
+        if use_proc_range:
+            mask &= df_all["_proc_dt"].notna()
+            mask &= (df_all["_proc_dt"] >= st.session_state["home_f_proc_ini"])
+            mask &= (df_all["_proc_dt"] <= st.session_state["home_f_proc_fim"])
+
         df_f = df_all[mask].copy()
-    else:
-        df_f = df_all.copy()
-    
+
     # -------------------------
-    # KPIs (todos os procedimentos) — Pendente / Finalizado / Não Cobrar
+    # KPIs (todos os procedimentos) — com TOGGLE
     # -------------------------
     tot_pendente   = int((df_f["situacao"] == "Pendente").sum()) if not df_f.empty else 0
     tot_finalizado = int((df_f["situacao"] == "Finalizado").sum()) if not df_f.empty else 0
     tot_nao_cobrar = int((df_f["situacao"] == "Não Cobrar").sum()) if not df_f.empty else 0
-    
+
+    def _toggle_home_status(target: str):
+        curr = st.session_state.get("home_status")
+        st.session_state["home_status"] = None if curr == target else target
+        st.rerun()
+
+    active = st.session_state.get("home_status")
+
     c1, c2, c3 = st.columns(3)
     with c1:
-        kpi_row([{"label":"Pendentes", "value": f"{tot_pendente}", "hint": "Todos os procedimentos"}])
-        if st.button("👁️ Ver Pendentes", use_container_width=True):
-            st.session_state["home_status"] = "Pendente"
+        kpi_row([{"label":"Pendentes", "value": f"{tot_pendente}", "hint": "Todos os procedimentos (geral/filtrado)"}])
+        lbl = "🔽 Esconder Pendentes" if active == "Pendente" else "👁️ Ver Pendentes"
+        if st.button(lbl, key="kpi_btn_pend", use_container_width=True):
+            _toggle_home_status("Pendente")
+
     with c2:
-        kpi_row([{"label":"Finalizadas", "value": f"{tot_finalizado}", "hint": "Todos os procedimentos"}])
-        if st.button("👁️ Ver Finalizadas", use_container_width=True):
-            st.session_state["home_status"] = "Finalizado"
+        kpi_row([{"label":"Finalizadas", "value": f"{tot_finalizado}", "hint": "Todos os procedimentos (geral/filtrado)"}])
+        lbl = "🔽 Esconder Finalizadas" if active == "Finalizado" else "👁️ Ver Finalizadas"
+        if st.button(lbl, key="kpi_btn_fin", use_container_width=True):
+            _toggle_home_status("Finalizado")
+
     with c3:
-        kpi_row([{"label":"Não Cobrar", "value": f"{tot_nao_cobrar}", "hint": "Todos os procedimentos"}])
-        if st.button("👁️ Ver Não Cobrar", use_container_width=True):
-            st.session_state["home_status"] = "Não Cobrar"
-    
+        kpi_row([{"label":"Não Cobrar", "value": f"{tot_nao_cobrar}", "hint": "Todos os procedimentos (geral/filtrado)"}])
+        lbl = "🔽 Esconder Não Cobrar" if active == "Não Cobrar" else "👁️ Ver Não Cobrar"
+        if st.button(lbl, key="kpi_btn_nc", use_container_width=True):
+            _toggle_home_status("Não Cobrar")
+
     # -------------------------
-    # Listagem de internações do status escolhido
-    # (pelo menos um procedimento com o status, dentro dos filtros)
+    # Listagem de internações (toggle ON) + fechar lista + abrir na consulta
     # -------------------------
     status_sel_home = st.session_state.get("home_status")
-    
+
     if status_sel_home:
         st.divider()
         st.subheader(f"📋 Internações com ao menos 1 procedimento em: **{status_sel_home}**")
-    
+
+        # Botão fechar lista
+        cc1, _ = st.columns([1, 6])
+        with cc1:
+            if st.button("Fechar lista", key="btn_close_list", type="secondary", use_container_width=True):
+                st.session_state["home_status"] = None
+                st.rerun()
+
         if df_f.empty:
             st.info("Nenhuma internação encontrada com os filtros aplicados.")
         else:
             df_status = df_f[df_f["situacao"] == status_sel_home].copy()
-    
+
             if df_status.empty:
                 st.info("Nenhuma internação encontrada para este status com os filtros atuais.")
             else:
-                # Uma linha por internação
                 cols_show = ["internacao_id","atendimento","paciente","hospital","convenio","data_internacao"]
-                df_ints = df_status[cols_show].drop_duplicates(subset=["internacao_id"]).sort_values(
-                    by=["data_internacao","hospital","paciente"], ascending=[False, True, True]
-                )
-    
+                df_ints = (df_status[cols_show]
+                           .drop_duplicates(subset=["internacao_id"])
+                           .sort_values(by=["data_internacao","hospital","paciente"], ascending=[False, True, True]))
+
                 for _, r in df_ints.iterrows():
                     i1, i2, i3, i4 = st.columns([3, 3, 3, 2])
                     with i1:
@@ -993,11 +1014,17 @@ with tabs[0]:
                         st.markdown(f"**Hospital:** {r.get('hospital') or '-'}  \n**Convênio:** {r.get('convenio') or '-'}")
                     with i3:
                         st.markdown(f"**Data internação:** {r.get('data_internacao') or '-'}")
-                    with i4:                        
+                    with i4:
                         if st.button("🔎 Abrir na Consulta", key=f"open_cons_{int(r['internacao_id'])}", use_container_width=True):
-                            st.session_state["consulta_codigo"] = str(r["atendimento"])  # preenche o campo da aba Consultar
-                            _switch_to_tab_by_label("🔍 Consultar Internação")           # <<< muda para a aba automaticamente
+                            st.session_state["consulta_codigo"] = str(r["atendimento"])
+                            # (opcional) se você incluiu a função de auto-troca de aba:
+                            # _switch_to_tab_by_label("🔍 Consultar Internação")
                             st.rerun()
+
+    # Lembrete visual
+    if st.session_state.get("consulta_codigo"):
+        st.caption(f"🔎 Atendimento **{st.session_state['consulta_codigo']}** pronto para consulta na aba **'🔍 Consultar Internação'**.")
+
 
     
     st.markdown("</div>", unsafe_allow_html=True)
