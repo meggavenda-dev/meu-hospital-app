@@ -887,13 +887,6 @@ tabs = st.tabs([
 ])
 
 
-# ---- Troca de aba programática (deferred) ----
-if st.session_state.get("goto_tab_label"):
-    _switch_to_tab_by_label(st.session_state["goto_tab_label"])
-    st.session_state["goto_tab_label"] = None
-
-
-
 # ============================================================
 # 🏠 0) INÍCIO — KPIs (todos os procedimentos) + Filtros opcionais + Listagem
 # ============================================================
@@ -2144,3 +2137,10 @@ with tabs[5]:
         df_conv = pd.read_sql_query(sql, conn, params=(chosen_conv,))
     conn.close()
     st.dataframe(df_conv, use_container_width=True, hide_index=True)
+
+    
+# ---- Troca de aba programática (DELAYED — EXECUTA POR ÚLTIMO) ----
+if st.session_state.get("goto_tab_label"):
+    _switch_to_tab_by_label(st.session_state["goto_tab_label"])
+    st.session_state["goto_tab_label"] = None
+
