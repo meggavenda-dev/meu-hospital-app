@@ -1294,13 +1294,42 @@ with tabs[1]:
 # ============================================================
 
 # --- PDF: Cirurgias por Status (paisagem) ---
-if REPORTLAB_OK:    
+if REPORTLAB_OK:     
     def _pdf_cirurgias_por_status(df, filtros):
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
-            buf, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
+            buf,
+            pagesize=landscape(A4),
+            leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
         )
-        styles = getSampleStyleSheet(); H1 = styles["Heading1"]; H2 = styles["Heading2"]; N = styles["BodyText"]
+    
+        styles = getSampleStyleSheet()
+        H1 = styles["Heading1"]; H2 = styles["Heading2"]; N = styles["BodyText"]
+    
+        # Estilos específicos para a tabela
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import Paragraph
+    
+        TH = ParagraphStyle(
+            "TH",
+            parent=styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            leading=11,
+            alignment=1,          # CENTER
+            spaceBefore=0,
+            spaceAfter=0,
+        )
+        TD = ParagraphStyle(
+            "TD",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=8,
+            leading=10,
+            wordWrap="LTR",       # permite quebra de linha
+        )
+        TD_CENTER = ParagraphStyle(**{**TD.__dict__, "alignment":1})
+        TD_RIGHT  = ParagraphStyle(**{**TD.__dict__, "alignment":2})
     
         elems = []
         elems.append(Paragraph("Relatório — Cirurgias por Status", H1))
@@ -1315,9 +1344,10 @@ if REPORTLAB_OK:
         total = len(df)
         elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
     
-        # (Opcional) Resumo por situação apenas quando status=Todos e há linhas
+        # (Opcional) Resumo por situação
         if total > 0 and filtros["status"] == "Todos":
-            resumo = (df.groupby("situacao")["situacao"].count()
+            resumo = (df.groupby("situacao")["situacao"]
+                        .count()
                         .sort_values(ascending=False)
                         .reset_index(name="qtd"))
             data_resumo = [["Situação", "Quantidade"]] + resumo.values.tolist()
@@ -1327,44 +1357,70 @@ if REPORTLAB_OK:
                 ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
                 ("ALIGN", (1,1), (-1,-1), "RIGHT"),
                 ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTSIZE", (0,0), (-1,0), 9),
             ]))
             elems.append(t_res)
             elems.append(Spacer(1, 10))
     
-        # ======= TABELA PRINCIPAL (com as novas colunas) =======
-        header = [
+        # ======= TABELA PRINCIPAL (todas as linhas) =======
+        header_labels = [
             "Atendimento", "Aviso", "Convênio", "Paciente",
             "Data", "Tipo", "Profissional", "Grau de Participação", "Hospital"
         ]
+        header = [Paragraph(h, TH) for h in header_labels]
+    
+        # Larguras pensadas p/ A4 paisagem com suas margens:
+        # (29.7cm - 1.8cm - 1.8cm) ~ 26.1 cm úteis
+        # Distribuição:
+        # Atendimento 3.0, Aviso 2.5, Convênio 3.2, Paciente 6.2,
+        # Data 2.6, Tipo 3.0, Profissional 3.0, Grau 3.2, Hospital 3.0  => ~29.7? Ajuste p/ caber 26.1
+        # Vamos compactar: reduzir Convênio/Paciente/Hospital sem perder legibilidade
+        col_widths = [
+            2.7*cm,  # Atendimento
+            2.2*cm,  # Aviso
+            2.8*cm,  # Convênio
+            5.0*cm,  # Paciente
+            2.4*cm,  # Data
+            2.6*cm,  # Tipo
+            3.0*cm,  # Profissional
+            3.2*cm,  # Grau de Participação
+            2.8*cm,  # Hospital
+        ]
+    
+        def _p(v, style=TD):
+            txt = ("" if v is None else str(v))
+            return Paragraph(txt, style)
     
         data_rows = []
         for _, r in df.iterrows():
             data_rows.append([
-                r.get("atendimento") or "",
-                r.get("aviso") or "",
-                r.get("convenio") or "",
-                r.get("paciente") or "",
-                r.get("data_procedimento") or "",
-                r.get("procedimento") or "",
-                r.get("profissional") or "",
-                r.get("grau_participacao") or "",
-                r.get("hospital") or "",
+                _p(r.get("atendimento"), TD_CENTER),
+                _p(r.get("aviso"), TD_CENTER),
+                _p(r.get("convenio")),
+                _p(r.get("paciente")),
+                _p(r.get("data_procedimento"), TD_CENTER),
+                _p(r.get("procedimento")),
+                _p(r.get("profissional")),
+                _p(r.get("grau_participacao"), TD_CENTER),
+                _p(r.get("hospital")),
             ])
     
-        table = Table([header] + data_rows, repeatRows=1)
+        table = Table([header] + data_rows, repeatRows=1, colWidths=col_widths)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
             ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ("FONTSIZE", (0,0), (-1,0), 10),
-            ("ALIGN", (0,0), (-1,0), "CENTER"),
+            ("FONTSIZE", (0,0), (-1,0), 9),
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
+            # Ajustes finos de alinhamento por coluna (além do ParagraphStyle)
+            ("ALIGN", (0,0), (-1,0), "CENTER"),  # header
         ]))
         elems.append(table)
     
         doc.build(elems)
-        pdf_bytes = buf.getvalue(); buf.close()
+        pdf_bytes = buf.getvalue()
+        buf.close()
         return pdf_bytes
 
 else:
