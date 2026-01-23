@@ -1082,12 +1082,35 @@ with tabs[0]:
 
             if df_status.empty:
                 st.info("Nenhuma internação encontrada para este status com os filtros atuais.")
-            else:
+            else:                
+                # --- Ordenar a lista de internações pela data MAIS RECENTE de procedimento ---
+                # 1) Converte data do procedimento para datetime (seguro)
+                def _safe_pt_date(s):
+                    try:
+                        return datetime.strptime(str(s).strip(), "%d/%m/%Y").date()
+                    except Exception:
+                        try:
+                            return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
+                        except Exception:
+                            return None
+                
+                df_status["_proc_dt"] = df_status["data_procedimento"].apply(_safe_pt_date)
+                
+                # 2) Calcula a data mais recente do procedimento por internação
+                ult_proc_por_int = (
+                    df_status.groupby("internacao_id", as_index=False)["_proc_dt"].max()
+                    .rename(columns={"_proc_dt": "_ult_proc_dt"})
+                )
+                
+                # 3) Monta a lista única de internações e junta a data mais recente
                 cols_show = ["internacao_id","atendimento","paciente","hospital","convenio","data_internacao"]
-                df_ints = (df_status[cols_show]
-                           .drop_duplicates(subset=["internacao_id"])
-                           .sort_values(by=["data_internacao","hospital","paciente"], ascending=[False, True, True]))
-
+                df_ints = (
+                    df_status[cols_show]
+                    .drop_duplicates(subset=["internacao_id"])
+                    .merge(ult_proc_por_int, on="internacao_id", how="left")
+                    .sort_values(by=["_ult_proc_dt", "hospital", "paciente"], ascending=[False, True, True])
+                    .drop(columns=["_ult_proc_dt"])
+                )
                 for _, r in df_ints.iterrows():
                     i1, i2, i3, i4 = st.columns([3, 3, 3, 2])
                     with i1:
