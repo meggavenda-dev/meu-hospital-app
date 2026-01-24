@@ -740,7 +740,7 @@ with tabs[1]:
                         if it["atendimento"] == att and it["data"] == data_proc:
                             if not prof_dia and it.get("profissional"): prof_dia = it["profissional"]
                             if not aviso_dia and it.get("aviso"): aviso_dia = it["aviso"]
-                            if prof_dia e aviso_dia:
+                            if prof_dia and aviso_dia:
                                 pass
                     # Escolhe primeiro encontrado
                     for it in registros_filtrados:
