@@ -258,6 +258,31 @@ def _att_to_number(v):
 # ============================================================
 # Helper de merge tolerante (evita KeyError com DF/coluna vazios)
 # ============================================================
+def _fmt_id_str(x):
+    """
+    Formata códigos numéricos (ex.: aviso, número de guia) como string sem '.0'.
+    - Aceita None, str, int, float.
+    - Remove espaços.
+    - Converte floats inteiros (ex.: 6400413.0 -> '6400413').
+    - Converte '385022.0' ou '3.85022e+05' em '385022'.
+    - Mantém strings não-numéricas como vieram.
+    """
+    if x is None:
+        return ""
+    s = str(x).strip()
+    if s == "":
+        return ""
+    try:
+        f = float(s)
+        # Se for inteiro (tolerância numérica), devolve inteiro sem .0
+        if abs(f - int(f)) < 1e-9:
+            return str(int(f))
+        # Não-inteiro: devolve sem notação científica
+        return ("{0}".format(f)).replace(",", ".")
+    except Exception:
+        # Não era número puro; devolve original
+        return s
+
 def safe_merge(
     left: pd.DataFrame,
     right: pd.DataFrame,
@@ -528,15 +553,17 @@ def deletar_procedimento(proc_id: int) -> bool:
 
 def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_amhptiss=None,
                         guia_complemento=None, valor_complemento=None, quitacao_observacao=None):
+    
     update_data = {
         "quitacao_data": _to_ddmmyyyy(data_quitacao) if data_quitacao else None,
-        "quitacao_guia_amhptiss": guia_amhptiss,
+        "quitacao_guia_amhptiss": (_fmt_id_str(guia_amhptiss) or None),   # <<< sanitiza
         "quitacao_valor_amhptiss": valor_amhptiss,
-        "quitacao_guia_complemento": guia_complemento,
+        "quitacao_guia_complemento": (_fmt_id_str(guia_complemento) or None),  # <<< sanitiza
         "quitacao_valor_complemento": valor_complemento,
         "quitacao_observacao": quitacao_observacao,
         "situacao": "Finalizado",
     }
+
     update_data = {k:v for k,v in update_data.items() if v is not None or k=="situacao"}
     try:
         supabase.table("procedimentos").update(update_data).eq("id", int(proc_id)).execute()
@@ -1349,6 +1376,10 @@ with tabs[2]:
             df_proc = df_proc.sort_values(by=["_data_dt","id"], ascending=[True, True]).reset_index(drop=True)
             df_proc["data_procedimento"] = df_proc["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
             df_proc = df_proc.drop(columns=["_data_dt"])
+            
+            # >>> ADIÇÃO: normalizar Aviso para exibição (remove ".0")
+            if "aviso" in df_proc.columns:
+                df_proc["aviso"] = df_proc["aviso"].apply(_fmt_id_str)
 
             st.subheader("Procedimentos — Editáveis")
             edited = st.data_editor(
@@ -1501,6 +1532,12 @@ with tabs[2]:
                     pid = int(st.session_state["show_quit_id"]); df_q = get_quitacao_by_proc_id(pid)
                     if not df_q.empty:
                         q = df_q.iloc[0]
+
+                        # >>> ADIÇÃO: formatação de códigos (sem ".0")
+                        aviso_fmt     = _fmt_id_str(q.get("aviso"))
+                        guia_amhp_fmt = _fmt_id_str(q.get("quitacao_guia_amhptiss"))
+                        guia_comp_fmt = _fmt_id_str(q.get("quitacao_guia_complemento"))
+                        
                         total = float(q.get("quitacao_valor_amhptiss") or 0) + float(q.get("quitacao_valor_complemento") or 0)
                         st.markdown("---"); st.markdown("### 🧾 Detalhes da quitação")
                         c1, c2, c3 = st.columns(3)
@@ -1514,17 +1551,17 @@ with tabs[2]:
                             st.markdown(f"**Profissional:** {q.get('profissional') or '-'}")
                         with c3:
                             st.markdown(f"**Status:** {pill(q.get('situacao'))}", unsafe_allow_html=True)
-                            st.markdown(f"**Aviso:** {q.get('aviso') or '-'}")
+                            st.markdown(f"**Aviso:** {aviso_fmt or '-'}")
                             st.markdown(f"**Grau participação:** {q.get('grau_participacao') or '-'}")
 
                         st.markdown("#### 💳 Quitação")
                         c4, c5, c6 = st.columns(3)
                         with c4:
                             st.markdown(f"**Data da quitação:** {q.get('quitacao_data') or '-'}")
-                            st.markdown(f"**Guia AMHPTISS:** {q.get('quitacao_guia_amhptiss') or '-'}")
+                            st.markdown(f"**Guia AMHPTISS:** {guia_amhp_fmt or '-'}")
                         with c5:
                             st.markdown(f"**Valor Guia AMHPTISS:** {_format_currency_br(q.get('quitacao_valor_amhptiss'))}")
-                            st.markdown(f"**Guia Complemento:** {q.get('quitacao_guia_complemento') or '-'}")
+                            st.markdown(f"**Guia Complemento:** {guia_comp_fmt or '-'}")
                         with c6:
                             st.markdown(f"**Valor Guia Complemento:** {_format_currency_br(q.get('quitacao_valor_complemento'))}")
                             st.markdown(f"**Total Quitado:** **{_format_currency_br(total)}**")
@@ -1834,6 +1871,11 @@ with tabs[4]:
         df_quit["quitacao_data"] = pd.to_datetime(df_quit["quitacao_data"], dayfirst=True, errors="coerce")
         for col in ["quitacao_valor_amhptiss", "quitacao_valor_complemento"]:
             df_quit[col] = pd.to_numeric(df_quit[col], errors="coerce")
+        
+        # >>> ADIÇÃO: normalizar guias para exibição (remove ".0")
+        for col in ["quitacao_guia_amhptiss", "quitacao_guia_complemento"]:
+            if col in df_quit.columns:
+                df_quit[col] = df_quit[col].apply(_fmt_id_str)
 
         st.markdown("Preencha os dados e clique em **Gravar quitação(ões)**. Ao gravar, o status muda para **Finalizado**.")
         edited = st.data_editor(
