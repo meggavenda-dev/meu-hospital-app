@@ -1176,20 +1176,24 @@ with tabs[2]:
                         )
                         st.toast("Dados da internação atualizados!", icon="✅")
                         st.rerun()
-
+            
             # ===== Excluir internação =====
             with st.expander("🗑️ Excluir esta internação"):
                 st.warning("Esta ação apagará a internação e TODOS os procedimentos vinculados.")
-                confirm_txt = st.text_input("Digite APAGAR para confirmar", key="confirm_del_int")
+                confirm_txt = st.text_input(
+                    "Digite APAGAR para confirmar",
+                    key=f"confirm_del_int_{internacao_id}"  # chave única por internação
+                )
                 col_del = st.columns(6)[-1]
-                with col_del:                    
-                    if st.button("Excluir", key=f"del_proc_{int(r['id'])}", help="Apagar este procedimento"):
-                        ok = deletar_procedimento(int(r["id"]))
-                        if ok:
-                            st.toast(f"Procedimento {int(r['id'])} excluído.", icon="🗑️")
+                with col_del:
+                    if st.button("Excluir internação", key=f"btn_del_int_{internacao_id}", type="primary"):
+                        if confirm_txt.strip().upper() == "APAGAR":
+                            deletar_internacao(internacao_id)
+                            st.toast("🗑️ Internação excluída.", icon="✅")
                             st.rerun()
                         else:
-                            st.stop()  # evita continuar com DF desatualizado nesta execução
+                            st.info("Confirmação inválida. Digite APAGAR.")
+
 
 
             # ===== Procedimentos (edição) =====
