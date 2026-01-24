@@ -2,6 +2,7 @@
 # ============================================================
 #  SISTEMA DE INTERNAÇÕES — VERSÃO SUPABASE (Cloud)
 #  Visual e fluxo do app "Versão Final" — DB: Supabase
+#  Otimizado com: embed (join server), cache, paginação e forms
 # ============================================================
 
 import streamlit as st
@@ -191,7 +192,7 @@ def _format_currency_br(v) -> str:
         return f"R$ {v}"
 
 # ============================================================
-# Helper de merge tolerante (evita KeyError com DF/coluna vazios)
+# Helper de merge tolerante (para eventuais usos)
 # ============================================================
 def safe_merge(
     left: pd.DataFrame,
@@ -201,28 +202,22 @@ def safe_merge(
     how: str = "left",
     suffixes=("", "_right"),
 ) -> pd.DataFrame:
-    """
-    Faz merge sem estourar KeyError quando o 'right' está vazio ou sem a coluna-chave.
-    Retorna 'left' intacto se a chave do 'left' não existir.
-    """
     if not isinstance(left, pd.DataFrame) or left.empty:
         return left if isinstance(left, pd.DataFrame) else pd.DataFrame()
-
     if not isinstance(right, pd.DataFrame) or right.empty or (right_on not in right.columns):
         right = pd.DataFrame(columns=[right_on])
-
     if left_on not in left.columns:
         return left
-
     try:
         return left.merge(right, left_on=left_on, right_on=right_on, how=how, suffixes=suffixes)
     except KeyError:
         return left
 
 # ============================================================
-# CRUD — Supabase (tabelas minúsculas)
+#  C A C H E  de dados que mudam pouco
 # ============================================================
-def get_hospitais(include_inactive: bool = False) -> list:
+@st.cache_data(ttl=600)
+def cached_get_hospitais(include_inactive: bool = False) -> list:
     try:
         query = supabase.table("hospitals").select("name, active")
         if not include_inactive:
@@ -233,6 +228,98 @@ def get_hospitais(include_inactive: bool = False) -> list:
         _sb_debug_error(e, "Falha ao buscar hospitais.")
         return []
 
+@st.cache_data(ttl=300)
+def cached_lista_profissionais() -> list:
+    try:
+        res = supabase.table("procedimentos").select("profissional").execute()
+        df = pd.DataFrame(res.data or [])
+        if "profissional" not in df.columns:
+            return []
+        return sorted({str(x).strip() for x in df["profissional"].dropna() if str(x).strip()})
+    except APIError:
+        return []
+
+@st.cache_data(ttl=120)
+def load_home_df(hosp: str | None) -> pd.DataFrame:
+    """
+    Carrega procedimentos com internacoes embutidas (embed) em UMA chamada.
+    Filtra hospital no servidor quando possível.
+    """
+    try:
+        q = supabase.table("procedimentos").select(
+            "id,internacao_id,data_procedimento,procedimento,profissional,situacao,aviso,grau_participacao,"
+            "internacoes(id,atendimento,paciente,hospital,convenio,data_internacao)"
+        )
+        if hosp and hosp != "Todos":
+            q = q.eq("internacoes.hospital", hosp)
+        res = q.execute()
+        df = pd.DataFrame(res.data or [])
+        if "internacoes" in df.columns:
+            dfi = pd.json_normalize(df["internacoes"])
+            dfi.columns = [c if c != "id" else "id_int" for c in dfi.columns]
+            df = pd.concat([df.drop(columns=["internacoes"]), dfi], axis=1)
+            df = df.rename(columns={
+                "id_int":"id_internacao", "atendimento":"atendimento",
+                "paciente":"paciente", "hospital":"hospital",
+                "convenio":"convenio", "data_internacao":"data_internacao"
+            })
+            # ajuste: manter coluna de ID da internação como 'id'
+            if "id_internacao" in df.columns:
+                df = df.rename(columns={"id_internacao":"id"})
+        return df
+    except APIError as e:
+        _sb_debug_error(e, "Falha ao carregar dados para a Home.")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=120)
+def load_procedures_list(hosp: str, page: int, page_size: int) -> pd.DataFrame:
+    try:
+        q = supabase.table("procedimentos").select(
+            "id,internacao_id,data_procedimento,aviso,profissional,grau_participacao,procedimento,situacao,observacao,"
+            "internacoes(id,hospital,atendimento,paciente)"
+        ).order("data_procedimento", desc=True)
+        if hosp and hosp != "Todos":
+            q = q.eq("internacoes.hospital", hosp)
+        start, end = (page-1)*page_size, page*page_size - 1
+        res = q.range(start, end).execute()
+        df = pd.DataFrame(res.data or [])
+        if "internacoes" in df.columns:
+            dfi = pd.json_normalize(df["internacoes"]).add_suffix("_i")
+            df = pd.concat([df.drop(columns=["internacoes"]), dfi], axis=1)
+        return df
+    except APIError as e:
+        _sb_debug_error(e, "Falha ao carregar procedimentos (Sistema).")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=120)
+def load_quitacao_pendentes(hosp: str, page: int, page_size: int) -> pd.DataFrame:
+    try:
+        q = supabase.table("procedimentos").select(
+            "id,internacao_id,data_procedimento,profissional,aviso,situacao,"
+            "quitacao_data,quitacao_guia_amhptiss,quitacao_valor_amhptiss,"
+            "quitacao_guia_complemento,quitacao_valor_complemento,quitacao_observacao,"
+            "internacoes(id,hospital,atendimento,paciente,convenio)"
+        ).eq("procedimento", "Cirurgia / Procedimento").eq("situacao", "Enviado para pagamento") \
+         .order("data_procedimento", desc=True)
+
+        if hosp and hosp != "Todos":
+            q = q.eq("internacoes.hospital", hosp)
+
+        start, end = (page-1)*page_size, page*page_size - 1
+        res = q.range(start, end).execute()
+        df = pd.DataFrame(res.data or [])
+        if "internacoes" in df.columns:
+            dfi = pd.json_normalize(df["internacoes"])
+            dfi.columns = [c if c != "id" else "id_int" for c in dfi.columns]
+            df = pd.concat([df.drop(columns=["internacoes"]), dfi], axis=1)
+        return df
+    except APIError as e:
+        _sb_debug_error(e, "Falha ao carregar pendências de quitação.")
+        return pd.DataFrame()
+
+# ============================================================
+# CRUD — Supabase (versões server-side)
+# ============================================================
 def get_internacao_by_atendimento(att):
     try:
         res = supabase.table("internacoes").select("*").eq("atendimento", str(att)).execute()
@@ -370,7 +457,7 @@ def get_procedimentos(internacao_id):
         return pd.DataFrame()
 
 def get_quitacao_by_proc_id(proc_id: int):
-    """Retorna Procedimento + Internação (merge em pandas, sem embed)."""
+    """Retorna Procedimento + Internação usando duas chamadas (simples)"""
     try:
         r1 = supabase.table("procedimentos").select("*").eq("id", int(proc_id)).limit(1).execute()
         dfp = pd.DataFrame(r1.data or [])
@@ -451,7 +538,7 @@ with tabs[0]:
 
     colf1, colf2 = st.columns([2,3])
     with colf1:
-        filtro_hosp_home = st.selectbox("Hospital", ["Todos"] + get_hospitais(), index=0, key="home_f_hosp")
+        filtro_hosp_home = st.selectbox("Hospital", ["Todos"] + cached_get_hospitais(), index=0, key="home_f_hosp")
     with colf2:
         st.write(" ")
         st.caption("Períodos (opcionais)")
@@ -473,39 +560,10 @@ with tabs[0]:
         with cold4:
             proc_fim = st.date_input("Procedimento — fim", value=st.session_state.get("home_f_proc_fim", hoje), key="home_f_proc_fim")
 
-    # ------ Carrega Procedimentos + Internações (2 passos, sem embed) ------
-    try:
-        res_p = supabase.table("procedimentos").select(
-            "id, internacao_id, data_procedimento, procedimento, profissional, situacao, aviso, grau_participacao"
-        ).execute()
-        df_p = pd.DataFrame(res_p.data or [])
-        if df_p.empty:
-            df_all = pd.DataFrame(columns=[
-                "internacao_id","atendimento","paciente","hospital","convenio","data_internacao",
-                "id","data_procedimento","procedimento","profissional","situacao","aviso","grau_participacao"
-            ])
-        else:
-            ids = sorted(set(int(x) for x in df_p["internacao_id"].dropna().tolist()))
-            if ids:
-                res_i = supabase.table("internacoes").select(
-                    "id, atendimento, paciente, hospital, convenio, data_internacao"
-                ).in_("id", ids).execute()
-                df_i = pd.DataFrame(res_i.data or [])
-            else:
-                df_i = pd.DataFrame(columns=["id","atendimento","paciente","hospital","convenio","data_internacao"])
-            df_all = safe_merge(
-                df_p,
-                df_i[["id", "atendimento", "paciente", "hospital", "convenio", "data_internacao"]] if not df_i.empty else df_i,
-                left_on="internacao_id",
-                right_on="id",
-                how="left",
-                suffixes=("", "_int"),
-            )
-    except APIError as e:
-        _sb_debug_error(e, "Falha ao carregar dados para a Home.")
-        df_all = pd.DataFrame()
+    # ------ Carrega Procedimentos + Internações (UMA consulta com embed) ------
+    df_all = load_home_df(filtro_hosp_home)
 
-    # Filtros
+    # Filtros de data (client-side, até migrar para DATE)
     if df_all.empty:
         df_f = df_all.copy()
     else:
@@ -518,15 +576,12 @@ with tabs[0]:
                 except Exception:
                     return None
 
-        df_all["_int_dt"]  = df_all["data_internacao"].apply(_safe_pt_date)
+        df_all["_int_dt"]  = df_all["data_internacao"].apply(_safe_pt_date) if "data_internacao" in df_all else None
         df_all["_proc_dt"] = df_all["data_procedimento"].apply(_safe_pt_date)
 
         mask = pd.Series([True]*len(df_all), index=df_all.index)
 
-        if filtro_hosp_home != "Todos":
-            mask &= (df_all["hospital"] == filtro_hosp_home)
-
-        if use_int_range:
+        if use_int_range and "_int_dt" in df_all:
             mask &= df_all["_int_dt"].notna()
             mask &= (df_all["_int_dt"] >= st.session_state["home_f_int_ini"])
             mask &= (df_all["_int_dt"] <= st.session_state["home_f_int_fim"])
@@ -576,12 +631,6 @@ with tabs[0]:
         st.divider()
         st.subheader(f"📋 Internações com ao menos 1 procedimento em: **{status_sel_home}**")
 
-        cc1, _ = st.columns([1, 6])
-        with cc1:
-            if st.button("Fechar lista", key="btn_close_list", type="secondary", use_container_width=True):
-                st.session_state["home_status"] = None
-                st.rerun()
-
         if df_f.empty:
             st.info("Nenhuma internação encontrada com os filtros aplicados.")
         else:
@@ -590,6 +639,9 @@ with tabs[0]:
                 st.info("Nenhuma internação encontrada para este status com os filtros atuais.")
             else:
                 cols_show = ["internacao_id","atendimento","paciente","hospital","convenio","data_internacao"]
+                # Quando usamos embed e renomeamos, 'internacao_id' pode não existir — ajuste:
+                if "internacao_id" not in df_status.columns and "id" in df_status.columns:
+                    df_status = df_status.rename(columns={"id":"internacao_id"})
                 df_ints = df_status[cols_show].drop_duplicates(subset=["internacao_id"]).copy()
 
                 def _safe_pt_date_int(s):
@@ -601,24 +653,15 @@ with tabs[0]:
                         except Exception:
                             return None
 
-                df_ints["_int_dt"] = df_ints["data_internacao"].apply(_safe_pt_date_int)
-                df_ints = (
-                    df_ints.sort_values(by=["_int_dt","hospital","paciente"], ascending=[False,True,True])
-                          .drop(columns=["_int_dt"])
-                )
+                if "data_internacao" in df_ints:
+                    df_ints["_int_dt"] = df_ints["data_internacao"].apply(_safe_pt_date_int)
+                    df_ints = (
+                        df_ints.sort_values(by=["_int_dt","hospital","paciente"], ascending=[False,True,True])
+                              .drop(columns=["_int_dt"])
+                    )
 
-                for _, r in df_ints.iterrows():
-                    i1, i2, i3, i4 = st.columns([3, 3, 3, 2])
-                    with i1:
-                        st.markdown(f"**Atendimento:** {r['atendimento']}  \n**Paciente:** {r.get('paciente') or '-'}")
-                    with i2:
-                        st.markdown(f"**Hospital:** {r.get('hospital') or '-'}  \n**Convênio:** {r.get('convenio') or '-'}")
-                    with i3:
-                        st.markdown(f"**Data internação:** {r.get('data_internacao') or '-'}")
-                    with i4:
-                        if st.button("🔎 Abrir na Consulta", key=f"open_cons_{int(r['internacao_id'])}", use_container_width=True):
-                            st.session_state["consulta_codigo"] = str(r["atendimento"])
-                            st.session_state["goto_tab_label"] = "🔍 Consultar Internação"
+                st.dataframe(df_ints, use_container_width=True, hide_index=True)
+                st.caption("Dica: clique no atendimento e use a aba '🔍 Consultar Internação' para editar.")
 
     if st.session_state.get("consulta_codigo"):
         st.caption(f"🔎 Atendimento **{st.session_state['consulta_codigo']}** pronto para consulta na aba **'🔍 Consultar Internação'**.")
@@ -632,7 +675,7 @@ with tabs[1]:
 
     # Cadastro manual de internação
     cmi1, cmi2, cmi3, cmi4, cmi5 = st.columns(5)
-    with cmi1: hosp_new = st.selectbox("Hospital", get_hospitais(), key="imp_new_int_hosp")
+    with cmi1: hosp_new = st.selectbox("Hospital", cached_get_hospitais(), key="imp_new_int_hosp")
     with cmi2: att_new = st.text_input("Atendimento (único)", key="imp_new_int_att")
     with cmi3: pac_new = st.text_input("Paciente", key="imp_new_int_pac")
     with cmi4: data_new = st.date_input("Data de internação", value=date.today(), key="imp_new_int_data")
@@ -649,12 +692,13 @@ with tabs[1]:
                 nid = criar_internacao(hosp_new, att_new, pac_new, data_new.strftime("%d/%m/%Y"), conv_new)
                 if nid:
                     st.toast(f"Internação criada (ID {nid}).", icon="✅")
+                    st.cache_data.clear()  # invalida caches dependentes de internações
 
     st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
-    hospitais = get_hospitais()
+    hospitais = cached_get_hospitais()
     hospital = st.selectbox("Hospital para esta importação:", hospitais)
     arquivo = st.file_uploader("Selecione o arquivo CSV")
 
@@ -756,22 +800,23 @@ with tabs[1]:
 
                 st.success(f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}")
                 st.toast("✅ Importação concluída.", icon="✅")
+                st.cache_data.clear()  # invalida caches
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================================
-# 🔍 2) CONSULTAR
+# 🔍 2) CONSULTAR (com FORM para evitar rerun a cada tecla)
 # ============================================================
 with tabs[2]:
     st.subheader("🔍 Consultar Internação")
 
-    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
-    hlist = ["Todos"] + get_hospitais()
-    filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)
-    codigo = st.text_input("Digite o atendimento para consultar:", key="consulta_codigo", placeholder="Ex.: 123456")
-    st.markdown("</div>", unsafe_allow_html=True)
+    with st.form("form_consulta"):
+        hlist = ["Todos"] + cached_get_hospitais()
+        filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)
+        codigo = st.text_input("Digite o atendimento para consultar:", key="consulta_codigo", placeholder="Ex.: 123456")
+        ok_busca = st.form_submit_button("Buscar")
 
-    if codigo:
+    if ok_busca and codigo:
         df_int = get_internacao_by_atendimento(codigo)
         if filtro_hosp != "Todos":
             df_int = df_int[df_int["hospital"] == filtro_hosp]
@@ -799,7 +844,7 @@ with tabs[2]:
                         dt_atual = date.today()
                     nova_data = st.date_input("Data da internação:", value=dt_atual)
                 with c4:
-                    todos_hospitais = get_hospitais(include_inactive=True)
+                    todos_hospitais = cached_get_hospitais(include_inactive=True)
                     try:
                         idx_h = todos_hospitais.index(df_int["hospital"].iloc[0])
                     except Exception:
@@ -817,6 +862,7 @@ with tabs[2]:
                             hospital=novo_hospital
                         )
                         st.toast("Dados da internação atualizados!", icon="✅")
+                        st.cache_data.clear()
                         st.rerun()
 
             # ===== Excluir internação =====
@@ -829,6 +875,7 @@ with tabs[2]:
                         if confirm_txt.strip().upper() == "APAGAR":
                             deletar_internacao(internacao_id)
                             st.toast("🗑️ Internação excluída.", icon="✅")
+                            st.cache_data.clear()
                             st.rerun()
                         else:
                             st.info("Confirmação inválida. Digite APAGAR.")
@@ -907,7 +954,7 @@ with tabs[2]:
                     alterados = []
                     for _, row in df_compare.iterrows():
                         changed = any((str(row[c + "_old"] or "") != str(row[c + "_new"] or "")) for c in cols_chk)
-                        if changed:                            
+                        if changed:
                             alterados.append({
                                 "id": int(row["id"]),
                                 "procedimento": row["procedimento_new"],
@@ -929,6 +976,7 @@ with tabs[2]:
                                 aviso=item.get("aviso"),
                             )
                         st.toast(f"{len(alterados)} procedimento(s) atualizado(s).", icon="✅")
+                        st.cache_data.clear()
                         st.rerun()
 
             # ===== Excluir procedimento =====
@@ -945,6 +993,7 @@ with tabs[2]:
                             if st.button("Excluir", key=f"del_proc_{int(r['id'])}", help="Apagar este procedimento"):
                                 deletar_procedimento(int(r["id"]))
                                 st.toast(f"Procedimento {int(r['id'])} excluído.", icon="🗑️")
+                                st.cache_data.clear()
                                 st.rerun()
 
             # ===== Lançar manual =====
@@ -952,21 +1001,8 @@ with tabs[2]:
             st.subheader("➕ Lançar procedimento manual (permite vários no mesmo dia)")
             c1, c2, c3 = st.columns(3)
             with c1: data_proc = st.date_input("Data do procedimento", value=date.today())
-            with c2:               
-                #Profissionais distintos existentes (lado cliente, sem DISTINCT no PostgREST)
-                try:
-                    res_dist = supabase.table("procedimentos").select("profissional").execute()
-                    df_pros = pd.DataFrame(res_dist.data or [])
-                    if "profissional" in df_pros.columns:
-                        lista_profissionais = sorted({
-                            str(x).strip() for x in df_pros["profissional"].dropna()
-                            if str(x).strip()  # remove vazios
-                        })
-                    else:
-                        lista_profissionais = []
-                except APIError:
-                    lista_profissionais = []
-                    
+            with c2:
+                lista_profissionais = cached_lista_profissionais()
                 profissional = st.selectbox("Profissional", ["(selecione)"] + lista_profissionais, index=0)
             with c3: situacao = st.selectbox("Situação", STATUS_OPCOES, index=0)
 
@@ -998,6 +1034,7 @@ with tabs[2]:
                                 grau_participacao=(grau_part if grau_part != "" else None),
                             )
                             st.toast("Procedimento (manual) adicionado.", icon="✅")
+                            st.cache_data.clear()
                             st.rerun()
 
             # ===== Ver quitação (Finalizados) =====
@@ -1059,11 +1096,9 @@ with tabs[2]:
                         with cbot2:
                             if st.button("↩️ Reverter quitação", key=f"rev_{pid}", type="secondary"):
                                 reverter_quitacao(pid)
-                                st.toast(
-                                    "Quitação revertida. Status voltou para 'Enviado para pagamento'.",
-                                    icon="↩️"
-                                )
+                                st.toast("Quitação revertida. Status voltou para 'Enviado para pagamento'.", icon="↩️")
                                 st.session_state["show_quit_id"] = None
+                                st.cache_data.clear()
                                 st.rerun()
 
 # ============================================================
@@ -1081,7 +1116,7 @@ if REPORTLAB_OK:
 
         TH = ParagraphStyle("TH", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=9, leading=11, alignment=1)
         TD = ParagraphStyle("TD", parent=styles["Normal"], fontName="Helvetica", fontSize=8, leading=10, wordWrap="LTR")
-        TD_CENTER = ParagraphStyle(**{**TD.__dict__, "alignment":1})
+        TD_CENTER = ParagraphStyle("TD_CENTER", parent=TD, alignment=1)
         elems = []
         elems.append(Paragraph("Relatório — Cirurgias por Status", H1)); elems.append(Spacer(1,6))
         filtros_txt = (f"Período: {filtros['ini']} a {filtros['fim']}  |  Hospital: {filtros['hospital']}  |  Status: {filtros['status']}")
@@ -1102,23 +1137,25 @@ if REPORTLAB_OK:
             elems.append(t_res); elems.append(Spacer(1,10))
 
         header_labels = ["Atendimento","Aviso","Convênio","Paciente","Data","Tipo","Profissional","Grau de Participação","Hospital","Situação"]
-        header = [Paragraph(h, TH) for h in header_labels]
         col_widths = [2.6*cm,2.0*cm,2.8*cm,5.0*cm,2.2*cm,2.4*cm,2.8*cm,3.0*cm,2.6*cm,2.1*cm]
+        header = [Paragraph(h, TH) for h in header_labels]
 
-        def _p(v, style=TD): return Paragraph("" if v is None else str(v), style)
+        def _p(v, center=False):
+            return Paragraph("" if v is None else str(v), TD_CENTER if center else TD)
+
         data_rows = []
         for _, r in df.iterrows():
             data_rows.append([
-                _p(r.get("atendimento"), TD_CENTER),
-                _p(r.get("aviso"), TD_CENTER),
+                _p(r.get("atendimento"), True),
+                _p(r.get("aviso"), True),
                 _p(r.get("convenio")),
                 _p(r.get("paciente")),
-                _p(r.get("data_procedimento"), TD_CENTER),
+                _p(r.get("data_procedimento"), True),
                 _p(r.get("procedimento")),
                 _p(r.get("profissional")),
-                _p(r.get("grau_participacao"), TD_CENTER),
+                _p(r.get("grau_participacao"), True),
                 _p(r.get("hospital")),
-                _p(r.get("situacao"), TD_CENTER),
+                _p(r.get("situacao"), True),
             ])
         table = Table([header] + data_rows, repeatRows=1, colWidths=col_widths)
         table.setStyle(TableStyle([
@@ -1188,11 +1225,11 @@ if REPORTLAB_OK:
             ["Total Geral:", _format_currency_br(total_geral)],
         ]
         totals_tbl = Table(totals_data, colWidths=[4.5*cm, 3.5*cm], hAlign="RIGHT")
+        from reportlab.platypus import TableStyle
         totals_tbl.setStyle(TableStyle([
             ("FONTNAME", (0,0), (-1,-1), "Helvetica"), ("FONTSIZE", (0,0), (-1,-1), 10),
             ("ALIGN", (0,0), (0,-1), "RIGHT"), ("ALIGN", (1,0), (1,-1), "RIGHT"),
         ]))
-        elems.append(totals_tbl)
         doc.build(elems)
         pdf_bytes = buf.getvalue(); buf.close()
         return pdf_bytes
@@ -1203,9 +1240,9 @@ else:
 with tabs[3]:
     st.subheader("📑 Relatórios — Central")
 
-    # 1) Cirurgias por Status
+    # 1) Cirurgias por Status (carrega via embed; filtra status/hospital no servidor quando possível)
     st.markdown("**1) Cirurgias por Status (PDF)**")
-    hosp_opts = ["Todos"] + get_hospitais()
+    hosp_opts = ["Todos"] + cached_get_hospitais()
     colf1, colf2, colf3 = st.columns(3)
     with colf1: hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="rel_hosp")
     with colf2: status_sel = st.selectbox("Status", ["Todos"] + STATUS_OPCOES, index=0, key="rel_status")
@@ -1214,24 +1251,20 @@ with tabs[3]:
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
-    # Carrega base (procedimentos Cirurgia/Proc + merge com internacoes)
     try:
-        resp = supabase.table("procedimentos").select(
-            "internacao_id, data_procedimento, aviso, profissional, procedimento, grau_participacao, situacao"
-        ).eq("procedimento", "Cirurgia / Procedimento").execute()
-        dfp = pd.DataFrame(resp.data or [])
-        if dfp.empty:
-            df_rel = pd.DataFrame()
-        else:
-            ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
-            if ids:
-                resi = supabase.table("internacoes").select(
-                    "id, hospital, atendimento, paciente, convenio"
-                ).in_("id", ids).execute()
-                dfi = pd.DataFrame(resi.data or [])
-            else:
-                dfi = pd.DataFrame(columns=["id","hospital","atendimento","paciente","convenio"])
-            df_rel = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
+        q = supabase.table("procedimentos").select(
+            "internacao_id, data_procedimento, aviso, profissional, procedimento, grau_participacao, situacao,"
+            "internacoes(id, hospital, atendimento, paciente, convenio)"
+        ).eq("procedimento", "Cirurgia / Procedimento")
+        if hosp_sel != "Todos":
+            q = q.eq("internacoes.hospital", hosp_sel)
+        if status_sel != "Todos":
+            q = q.eq("situacao", status_sel)
+        resp = q.execute()
+        df_rel = pd.DataFrame(resp.data or [])
+        if not df_rel.empty and "internacoes" in df_rel.columns:
+            dfi = pd.json_normalize(df_rel["internacoes"])
+            df_rel = pd.concat([df_rel.drop(columns=["internacoes"]), dfi], axis=1)
     except APIError as e:
         _sb_debug_error(e, "Falha ao carregar dados para Relatório.")
         df_rel = pd.DataFrame()
@@ -1240,8 +1273,6 @@ with tabs[3]:
         df_rel["_data_dt"] = df_rel["data_procedimento"].apply(_pt_date_to_dt)
         mask = (df_rel["_data_dt"].notna()) & (df_rel["_data_dt"] >= dt_ini) & (df_rel["_data_dt"] <= dt_fim)
         df_rel = df_rel[mask].copy()
-        if hosp_sel != "Todos": df_rel = df_rel[df_rel["hospital"] == hosp_sel]
-        if status_sel != "Todos": df_rel = df_rel[df_rel["situacao"] == status_sel]
         df_rel = df_rel.sort_values(by=["_data_dt","hospital","paciente","atendimento"])
         df_rel["data_procedimento"] = df_rel["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
         df_rel = df_rel.drop(columns=["_data_dt"])
@@ -1277,7 +1308,7 @@ with tabs[3]:
 
     # 2) Quitações
     st.markdown("**2) Quitações (PDF)**")
-    hosp_opts_q = ["Todos"] + get_hospitais()
+    hosp_opts_q = ["Todos"] + cached_get_hospitais()
     colq1, colq2 = st.columns(2)
     with colq1:
         hosp_sel_q = st.selectbox("Hospital", hosp_opts_q, index=0, key="rel_q_hosp")
@@ -1287,22 +1318,19 @@ with tabs[3]:
         dt_ini_q = st.date_input("Data inicial da quitação", value=ini_default_q, key="rel_q_ini")
         dt_fim_q = st.date_input("Data final da quitação", value=hoje, key="rel_q_fim")
 
-    # Carrega procedimentos finalizados (com data de quitação) + merge
     try:
-        resp = supabase.table("procedimentos").select(
-            "internacao_id, data_procedimento, profissional, quitacao_data, quitacao_guia_amhptiss, quitacao_guia_complemento, quitacao_valor_amhptiss, quitacao_valor_complemento"
-        ).eq("procedimento", "Cirurgia / Procedimento").not_.is_("quitacao_data", None).execute()
-        dfp = pd.DataFrame(resp.data or [])
-        if dfp.empty:
-            df_quit = pd.DataFrame()
-        else:
-            ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
-            if ids:
-                resi = supabase.table("internacoes").select("id, hospital, atendimento, paciente, convenio").in_("id", ids).execute()
-                dfi = pd.DataFrame(resi.data or [])
-            else:
-                dfi = pd.DataFrame()
-            df_quit = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
+        q = supabase.table("procedimentos").select(
+            "internacao_id, data_procedimento, profissional, quitacao_data, quitacao_guia_amhptiss, "
+            "quitacao_guia_complemento, quitacao_valor_amhptiss, quitacao_valor_complemento, "
+            "internacoes(id, hospital, atendimento, paciente, convenio)"
+        ).eq("procedimento", "Cirurgia / Procedimento").not_.is_("quitacao_data", None)
+        if hosp_sel_q != "Todos":
+            q = q.eq("internacoes.hospital", hosp_sel_q)
+        resp = q.execute()
+        df_quit = pd.DataFrame(resp.data or [])
+        if not df_quit.empty and "internacoes" in df_quit.columns:
+            dfi = pd.json_normalize(df_quit["internacoes"])
+            df_quit = pd.concat([df_quit.drop(columns=["internacoes"]), dfi], axis=1)
     except APIError as e:
         _sb_debug_error(e, "Falha ao carregar dados de quitações.")
         df_quit = pd.DataFrame()
@@ -1311,9 +1339,6 @@ with tabs[3]:
         df_quit["_quit_dt"] = df_quit["quitacao_data"].apply(_pt_date_to_dt)
         mask_q = (df_quit["_quit_dt"].notna()) & (df_quit["_quit_dt"] >= dt_ini_q) & (df_quit["_quit_dt"] <= dt_fim_q)
         df_quit = df_quit[mask_q].copy()
-        if hosp_sel_q != "Todos":
-            df_quit = df_quit[df_quit["hospital"] == hosp_sel_q]
-
         df_quit = df_quit.sort_values(by=["_quit_dt","convenio","paciente"])
         df_quit["data_procedimento"] = df_quit["data_procedimento"].apply(
             lambda s: _pt_date_to_dt(s).strftime("%d/%m/%Y") if pd.notna(_pt_date_to_dt(s)) else (s or "")
@@ -1367,48 +1392,32 @@ with tabs[3]:
             )
 
 # ============================================================
-# 💼 4) QUITAÇÃO (edição em lote)
+# 💼 4) QUITAÇÃO (edição em lote) — com paginação
 # ============================================================
 with tabs[4]:
     st.subheader("💼 Quitação de Cirurgias")
 
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
-    hosp_opts = ["Todos"] + get_hospitais()
-    hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="quit_hosp")
+    hosp_opts = ["Todos"] + cached_get_hospitais()
+    colq0, colq1 = st.columns([1,1])
+    with colq0:
+        hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="quit_hosp")
+    with colq1:
+        page_size = st.selectbox("Itens por página", [50, 100, 200], index=1, key="quit_page_size")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Carrega pendentes de envio + merge (sem embed)
-    try:
-        resp = supabase.table("procedimentos").select(
-            "id, internacao_id, data_procedimento, profissional, aviso, situacao, "
-            "quitacao_data, quitacao_guia_amhptiss, quitacao_valor_amhptiss, "
-            "quitacao_guia_complemento, quitacao_valor_complemento, quitacao_observacao"
-        ).eq("procedimento", "Cirurgia / Procedimento").eq("situacao", "Enviado para pagamento").execute()
-        dfp = pd.DataFrame(resp.data or [])
-        if dfp.empty:
-            df_quit = pd.DataFrame()
-        else:
-            ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
-            if ids:
-                resi = supabase.table("internacoes").select("id, hospital, atendimento, paciente, convenio").in_("id", ids).execute()
-                dfi = pd.DataFrame(resi.data or [])
-            else:
-                dfi = pd.DataFrame()
-            df_quit = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_int"))
-    except APIError as e:
-        _sb_debug_error(e, "Falha ao carregar pendências de quitação.")
-        df_quit = pd.DataFrame()
-
-    if hosp_sel != "Todos" and not df_quit.empty:
-        df_quit = df_quit[df_quit["hospital"] == hosp_sel]
+    page = st.number_input("Página", min_value=1, step=1, value=1, key="quit_pg")
+    df_quit = load_quitacao_pendentes(hosp_sel, page, page_size)
 
     if df_quit.empty:
-        st.info("Não há cirurgias com status 'Enviado para pagamento' para quitação.")
+        st.info("Não há cirurgias com status 'Enviado para pagamento' para quitação nesta página/filtro.")
     else:
         # normalizações de tipos
-        df_quit["quitacao_data"] = pd.to_datetime(df_quit["quitacao_data"], dayfirst=True, errors="coerce")
+        if "quitacao_data" in df_quit:
+            df_quit["quitacao_data"] = pd.to_datetime(df_quit["quitacao_data"], dayfirst=True, errors="coerce")
         for col in ["quitacao_valor_amhptiss", "quitacao_valor_complemento"]:
-            df_quit[col] = pd.to_numeric(df_quit[col], errors="coerce")
+            if col in df_quit:
+                df_quit[col] = pd.to_numeric(df_quit[col], errors="coerce")
 
         st.markdown("Preencha os dados e clique em **Gravar quitação(ões)**. Ao gravar, o status muda para **Finalizado**.")
         edited = st.data_editor(
@@ -1465,9 +1474,11 @@ with tabs[4]:
                     st.warning("Nenhuma quitação gravada. Preencha a **Data da quitação** para finalizar.")
                 elif faltando_data > 0 and atualizados > 0:
                     st.toast(f"{atualizados} quitação(ões) gravada(s). {faltando_data} linha(s) ignoradas sem **Data da quitação**.", icon="✅")
+                    st.cache_data.clear()
                     st.rerun()
                 else:
                     st.toast(f"{atualizados} quitação(ões) gravada(s).", icon="✅")
+                    st.cache_data.clear()
                     st.rerun()
 
 # ============================================================
@@ -1477,109 +1488,85 @@ with tabs[5]:
     st.subheader("⚙️ Sistema")
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     st.markdown("**🔌 Conexão Supabase**")
-    ok = True
     try:
         _ = supabase.table("hospitals").select("id", count="exact").limit(1).execute()
         st.success("Conexão OK.")
     except APIError as e:
-        ok = False
         _sb_debug_error(e, "Falha ao conectar/consultar Supabase.")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("**📋 Procedimentos — Lista**")
-    filtro = ["Todos"] + get_hospitais()
-    chosen = st.selectbox("Hospital (lista de procedimentos):", filtro, key="sys_proc_hosp")
+    st.markdown("**📋 Procedimentos — Lista (paginado)**")
+    filtro = ["Todos"] + cached_get_hospitais()
+    colsys1, colsys2 = st.columns([1,1])
+    with colsys1:
+        chosen = st.selectbox("Hospital:", filtro, key="sys_proc_hosp")
+    with colsys2:
+        page_size_sys = st.selectbox("Itens por página", [100, 200, 500], index=0, key="sys_page_size")
+    page_sys = st.number_input("Página", min_value=1, step=1, value=1, key="sys_pg")
 
     if st.button("Carregar procedimentos", key="btn_carregar_proc", type="primary"):
-        try:
-            resp = supabase.table("procedimentos").select(
-                "id, internacao_id, data_procedimento, aviso, profissional, grau_participacao, procedimento, situacao, observacao"
-            ).execute()
-            dfp = pd.DataFrame(resp.data or [])
-            if dfp.empty:
-                st.info("Sem procedimentos.")
-            else:
-                ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
-                resi = supabase.table("internacoes").select("id, hospital, atendimento, paciente").in_("id", ids).execute() if ids else None
-                dfi = pd.DataFrame(resi.data or []) if resi else pd.DataFrame()
-                df = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_i"))
-                if chosen != "Todos":
-                    df = df[df["hospital"] == chosen]
-                df = df.sort_values(by=["data_procedimento","id"], ascending=[False, False])
-                st.dataframe(df, use_container_width=True, hide_index=True)
-        except APIError as e:
-            _sb_debug_error(e, "Falha ao carregar procedimentos.")
+        df = load_procedures_list(chosen, page_sys, page_size_sys)
+        if chosen != "Todos":
+            # já filtrado no servidor, mas mantemos por segurança
+            if "hospital_i" in df.columns:
+                df = df[df["hospital_i"] == chosen]
+            elif "internacoes.hospital" in df.columns:
+                df = df[df["internacoes.hospital"] == chosen]
+        if not df.empty:
+            st.dataframe(df.sort_values(by=["data_procedimento","id"], ascending=[False, False]), use_container_width=True, hide_index=True)
+        else:
+            st.info("Sem procedimentos para os filtros/página informados.")
 
     st.divider()
     st.markdown("**🧾 Resumo por Profissional**")
-    filtro_prof = ["Todos"] + get_hospitais()
-    chosen_prof = st.selectbox("Hospital (resumo por profissional):", filtro_prof, key="sys_prof_hosp")
+    chosen_prof = st.selectbox("Hospital (resumo por profissional):", ["Todos"] + cached_get_hospitais(), key="sys_prof_hosp")
     try:
-        resp = supabase.table("procedimentos").select("internacao_id, profissional").not_.is_("profissional", None).execute()
+        q = supabase.table("procedimentos").select("profissional, internacoes(hospital)") \
+                                          .not_.is_("profissional", None)
+        if chosen_prof != "Todos":
+            q = q.eq("internacoes.hospital", chosen_prof)
+        resp = q.execute()
         dfp = pd.DataFrame(resp.data or [])
+        if not dfp.empty and "internacoes" in dfp.columns:
+            dfi = pd.json_normalize(dfp["internacoes"])
+            dfp = pd.concat([dfp.drop(columns=["internacoes"]), dfi], axis=1)
         if dfp.empty:
             st.info("Sem dados.")
         else:
-            ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
-            resi = supabase.table("internacoes").select("id, hospital").in_("id", ids).execute() if ids else None
-            dfi = pd.DataFrame(resi.data or []) if resi else pd.DataFrame()
-            dfm = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
-            if chosen_prof != "Todos":
-                dfm = dfm[dfm["hospital"] == chosen_prof]
-            df_prof = dfm.groupby("profissional")["profissional"].count().reset_index(name="total").sort_values("total", ascending=False)
+            dfp = dfp[dfp["profissional"].notna() & (dfp["profissional"].astype(str).str.strip() != "")]
+            df_prof = dfp.groupby("profissional", as_index=False)["profissional"].count().rename(columns={"profissional":"total"}).sort_values("total", ascending=False)
             st.dataframe(df_prof, use_container_width=True, hide_index=True)
     except APIError as e:
         _sb_debug_error(e, "Falha no resumo por profissional.")
 
     st.divider()
     st.markdown("**💸 Resumo por Convênio**")
-    filtro_conv = ["Todos"] + get_hospitais()
-    chosen_conv = st.selectbox("Hospital (resumo por convênio):", filtro_conv, key="sys_conv_hosp")
+    chosen_conv = st.selectbox("Hospital (resumo por convênio):", ["Todos"] + cached_get_hospitais(), key="sys_conv_hosp")
 
     try:
-        # Internações (lado direito do merge), traz convenio e hospital
-        resi = supabase.table("internacoes").select("id, convenio, hospital").execute()
-        dfi = pd.DataFrame(resi.data or [])
-
-        if dfi.empty:
-            st.info("Sem dados de internações.")
+        # Busca direta dos procedimentos com internacoes embutidas (só o necessário)
+        q = supabase.table("procedimentos").select("internacao_id, internacoes(id, convenio, hospital)")
+        if chosen_conv != "Todos":
+            q = q.eq("internacoes.hospital", chosen_conv)
+        res = q.execute()
+        dfm = pd.DataFrame(res.data or [])
+        if not dfm.empty and "internacoes" in dfm.columns:
+            dfi = pd.json_normalize(dfm["internacoes"])
+            dfm = pd.concat([dfm.drop(columns=["internacoes"]), dfi], axis=1)  # colunas: id, convenio, hospital
+        if dfm.empty:
+            st.info("Sem dados para o resumo por convênio.")
         else:
-            if chosen_conv != "Todos":
-                dfi = dfi[dfi["hospital"] == chosen_conv]
-
-            # Procedimentos (lado esquerdo do merge), traz internacao_id
-            resp = supabase.table("procedimentos").select("internacao_id").execute()
-            dfp = pd.DataFrame(resp.data or [])
-
-            if dfp.empty:
-                st.info("Sem procedimentos.")
+            df_conv = (
+                dfm[dfm["convenio"].notna() & (dfm["convenio"].astype(str).str.strip() != "")]
+                .groupby("convenio")["convenio"]
+                .count()
+                .reset_index(name="total")
+                .sort_values("total", ascending=False)
+            )
+            if df_conv.empty:
+                st.info("Sem dados para o resumo por convênio.")
             else:
-                # Garante internacao_id válidos
-                dfp = dfp[dfp["internacao_id"].notna()]
-                ids = sorted(set(int(x) for x in dfp["internacao_id"].tolist() if pd.notna(x)))
-
-                if not ids:
-                    st.info("Sem vínculos de procedimentos com internações.")
-                else:
-                    # Reduz o universo de internações para as usadas
-                    dfi_ids = dfi[dfi["id"].isin(ids)].copy()
-
-                    # Merge seguro
-                    dfm = safe_merge(dfp, dfi_ids, left_on="internacao_id", right_on="id", how="left")
-
-                    # Agrega por convênio (ignora nulos/vazios)
-                    df_conv = (
-                        dfm[dfm["convenio"].notna() & (dfm["convenio"].astype(str).str.strip() != "")]
-                        .groupby("convenio")["convenio"]
-                        .count()
-                        .reset_index(name="total")
-                        .sort_values("total", ascending=False)
-                    )
-
-                    if df_conv.empty:
-                        st.info("Sem dados para o resumo por convênio.")
-                    else:
-                        st.dataframe(df_conv, use_container_width=True, hide_index=True)
+                st.dataframe(df_conv, use_container_width=True, hide_index=True)
 
     except APIError as e:
         _sb_debug_error(e, "Falha no resumo por convênio.")
@@ -1590,9 +1577,10 @@ if st.session_state.get("goto_tab_label"):
     st.session_state["goto_tab_label"] = None
 
 # ============================================================
-# (Opcional) DDL Sugerido — Execute no SQL Editor do Supabase
+# (Opcional) DDL e ÍNDICES — Execute no SQL Editor do Supabase
 # ============================================================
 # /*
+# -- Tabelas (se ainda não existirem)
 # CREATE TABLE IF NOT EXISTS public.hospitals (
 #   id serial PRIMARY KEY,
 #   name text UNIQUE NOT NULL,
@@ -1605,14 +1593,14 @@ if st.session_state.get("goto_tab_label"):
 #   hospital text NULL,
 #   atendimento text UNIQUE,
 #   paciente text NULL,
-#   data_internacao text NULL,   -- pode trocar para DATE e ajustar o app
+#   data_internacao text NULL,   -- (recomendado migrar para DATE abaixo)
 #   convenio text NULL
 # );
 #
 # CREATE TABLE IF NOT EXISTS public.procedimentos (
 #   id serial PRIMARY KEY,
 #   internacao_id int4 REFERENCES public.internacoes(id) ON UPDATE CASCADE ON DELETE CASCADE,
-#   data_procedimento text NULL, -- pode trocar para DATE e ajustar o app
+#   data_procedimento text NULL, -- (recomendado migrar para DATE abaixo)
 #   profissional text NULL,
 #   procedimento text NULL,
 #   situacao text NOT NULL DEFAULT 'Pendente',
@@ -1628,8 +1616,30 @@ if st.session_state.get("goto_tab_label"):
 #   quitacao_observacao text NULL
 # );
 #
-# -- Índice único parcial: 1 registro automático (is_manual=0) por (internação, data)
+# -- Único: 1 lançamento automático/dia (manuais permitem múltiplos)
 # CREATE UNIQUE INDEX IF NOT EXISTS ux_proc_auto
 #   ON public.procedimentos(internacao_id, data_procedimento)
 #   WHERE is_manual = 0;
+#
+# -- ÍNDICES (ajudam muito nas telas)
+# CREATE INDEX IF NOT EXISTS ix_internacoes_atendimento ON public.internacoes (atendimento);
+# CREATE INDEX IF NOT EXISTS ix_internacoes_hospital    ON public.internacoes (hospital);
+# CREATE INDEX IF NOT EXISTS ix_proc_internacao_id      ON public.procedimentos (internacao_id);
+# CREATE INDEX IF NOT EXISTS ix_proc_situacao           ON public.procedimentos (situacao);
+# CREATE INDEX IF NOT EXISTS ix_proc_profissional       ON public.procedimentos (profissional);
+#
+# -- (opcional) Migrar datas para DATE e usar nas consultas futuras
+# ALTER TABLE public.procedimentos ADD COLUMN IF NOT EXISTS data_procedimento_date date;
+# UPDATE public.procedimentos
+#    SET data_procedimento_date = to_date(data_procedimento, 'DD/MM/YYYY')
+#  WHERE data_procedimento ~ '^[0-9]{2}/[0-9]{2}/[0-9]{4}$';
+#
+# ALTER TABLE public.internacoes ADD COLUMN IF NOT EXISTS data_internacao_date date;
+# UPDATE public.internacoes
+#    SET data_internacao_date = to_date(data_internacao, 'DD/MM/YYYY')
+#  WHERE data_internacao ~ '^[0-9]{2}/[0-9]{2}/[0-9]{4}$';
+#
+# -- Depois de validar, crie índices nessas colunas DATE:
+# CREATE INDEX IF NOT EXISTS ix_proc_data_btree ON public.procedimentos (data_procedimento_date);
+# CREATE INDEX IF NOT EXISTS ix_int_data_btree  ON public.internacoes (data_internacao_date);
 # */
