@@ -408,26 +408,45 @@ def atualizar_procedimento(proc_id, procedimento=None, situacao=None,
         _sb_debug_error(e, "Falha ao atualizar procedimento.")
 
 
+
 def deletar_procedimento(proc_id: int) -> bool:
+    """Exclui o procedimento com verificação pré/pós (compatível com supabase-py atual)."""
     try:
-        # Força 'Prefer: return=representation' para receber a linha excluída
-        res = (
+        # 1) Pré-checagem: existe?
+        pre = (
             supabase.table("procedimentos")
-            .delete()
+            .select("id")
             .eq("id", int(proc_id))
-            .select("id")  # <- força retorno (evita 204 sem corpo)
+            .limit(1)
             .execute()
         )
-        rows = res.data or []
-        if not rows:
-            # Pode ser: RLS sem policy de delete, ID inexistente, ou FK bloqueando
-            st.error("❌ Não foi possível excluir. Verifique permissões (RLS), ID e vínculos (FK).")
+        if not (pre.data or []):
+            st.info("Registro já não existe (nada a excluir).")
+            return True
+
+        # 2) DELETE (sem .select, pois não é suportado nessa versão)
+        supabase.table("procedimentos").delete().eq("id", int(proc_id)).execute()
+
+        # 3) Pós-checagem: sumiu mesmo?
+        pos = (
+            supabase.table("procedimentos")
+            .select("id")
+            .eq("id", int(proc_id))
+            .limit(1)
+            .execute()
+        )
+        ok = len(pos.data or []) == 0
+        if ok:
+            invalidate_caches()
+            return True
+        else:
+            st.error("❌ Não foi possível excluir. Verifique RLS/Policies ou vínculos (FK).")
             return False
-        invalidate_caches()
-        return True
+
     except APIError as e:
         _sb_debug_error(e, "Falha ao deletar procedimento.")
         return False
+
 
 def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_amhptiss=None,
                         guia_complemento=None, valor_complemento=None, quitacao_observacao=None):
