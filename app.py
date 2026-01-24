@@ -1,3 +1,4 @@
+
 # ============================================================
 #  SISTEMA DE INTERNAÇÕES — VERSÃO SUPABASE (Cloud)
 #  Visual e fluxo do app "Versão Final" — DB: Supabase
@@ -27,7 +28,7 @@ except ModuleNotFoundError:
     REPORTLAB_OK = False
 
 # Parser (seu módulo)
-#  -&gt; mantenha o arquivo parser.py no projeto com parse_tiss_original(csv_text) definido.
+#  -> mantenha o arquivo parser.py no projeto com parse_tiss_original(csv_text) definido.
 try:
     from parser import parse_tiss_original
 except Exception:
@@ -70,7 +71,7 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 
 def inject_css():
     st.markdown("""
-    &lt;style&gt;
+    <style>
     /* ===== KPIs maiores e centralizados ===== */
     .kpi-wrap.center .kpi{ text-align:center; }
     .kpi.big .label{ font-size: 1.05rem; font-weight: 700; }
@@ -93,10 +94,10 @@ def inject_css():
     div[data-baseweb="option"]{ background:#FFF!important;color:var(--text)!important;}
     div[data-baseweb="option"][aria-selected="true"]{ background:#EEF2FF!important;color:#111827!important;}
     div[data-baseweb="option"]:hover{ background:#F3F4F6!important;}
-    .stFileUploader &gt; section{ border:1px solid var(--border)!important; background:#FFF!important;border-radius:var(--radius)!important;}
+    .stFileUploader > section{ border:1px solid var(--border)!important; background:#FFF!important;border-radius:var(--radius)!important;}
     .stFileUploader div[role="button"]{ background:#FFF!important;color:var(--text)!important;border:1px solid var(--border)!important;border-radius:var(--radius)!important;}
-    .stButton&gt;button{ background:var(--primary)!important;color:#FFF!important;border:none!important;border-radius:var(--radius)!important;padding:6px 16px!important;font-weight:600!important;box-shadow:none!important;}
-    .stButton&gt;button:hover{ background:var(--primary-hover)!important; }
+    .stButton>button{ background:var(--primary)!important;color:#FFF!important;border:none!important;border-radius:var(--radius)!important;padding:6px 16px!important;font-weight:600!important;box-shadow:none!important;}
+    .stButton>button:hover{ background:var(--primary-hover)!important; }
     .element-container:has(.stDataFrame) .st-emotion-cache-1wmy9hl,
     .element-container:has(.stDataEditor) .st-emotion-cache-1wmy9hl{
       background:#FFF;border:1px solid var(--border);border-radius:var(--radius);padding-top:6px;
@@ -109,10 +110,10 @@ def inject_css():
     .pill-enviado{ background:#EEF2FF; border-color:#C7D2FE;}
     .pill-digitacao{ background:#ECFEFF; border-color:#BAE6FD;}
     .pill-ok{ background:#ECFDF5; border-color:#A7F3D0;}
-    &lt;/style&gt;
+    </style>
     """, unsafe_allow_html=True)
 
-def pill(situacao: str) -&gt; str:
+def pill(situacao: str) -> str:
     s = (situacao or "").strip()
     cls = "pill"
     if s == "Pendente": cls += " pill-pendente"
@@ -120,30 +121,30 @@ def pill(situacao: str) -&gt; str:
     elif s == "Enviado para pagamento": cls += " pill-enviado"
     elif s == "Aguardando Digitação - AMHP": cls += " pill-digitacao"
     elif s == "Finalizado": cls += " pill-ok"
-    return f"&lt;span class='{cls}'&gt;{s or '-'}&lt;/span&gt;"
+    return f"<span class='{cls}'>{s or '-'}</span>"
 
 def kpi_row(items, extra_class: str = ""):
-    st.markdown(f"&lt;div class='kpi-wrap {extra_class}'&gt;", unsafe_allow_html=True)
+    st.markdown(f"<div class='kpi-wrap {extra_class}'>", unsafe_allow_html=True)
     for it in items:
         st.markdown(
             f"""
-            &lt;div class='kpi big'&gt;
-              &lt;div class='label'&gt;{it.get('label','')}&lt;/div&gt;
-              &lt;div class='value'&gt;{it.get('value','')}&lt;/div&gt;
-              { '&lt;div class="hint"&gt;'+it.get('hint','')+'&lt;/div&gt;' if it.get('hint') else '' }
-            &lt;/div&gt;
+            <div class='kpi big'>
+              <div class='label'>{it.get('label','')}</div>
+              <div class='value'>{it.get('value','')}</div>
+              { '<div class="hint">'+it.get('hint','')+'</div>' if it.get('hint') else '' }
+            </div>
             """,
             unsafe_allow_html=True
         )
-    st.markdown("&lt;/div&gt;", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 def app_header(title: str, subtitle: str = ""):
     st.markdown(
         f"""
-        &lt;div class="app-header"&gt;
-            &lt;div class="title"&gt;🏥 {title}&lt;/div&gt;
-            &lt;div class="sub"&gt;{subtitle}&lt;/div&gt;
-        &lt;/div&gt;
+        <div class="app-header">
+            <div class="title">🏥 {title}</div>
+            <div class="sub">{subtitle}</div>
+        </div>
         """,
         unsafe_allow_html=True
     )
@@ -181,7 +182,7 @@ def _to_float_or_none(v):
     try: return float(s)
     except: return None
 
-def _format_currency_br(v) -&gt; str:
+def _format_currency_br(v) -> str:
     if v is None or (isinstance(v, float) and pd.isna(v)): return "R$ 0,00"
     try:
         v = float(v); s = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -199,7 +200,7 @@ def safe_merge(
     right_on: str,
     how: str = "left",
     suffixes=("", "_right"),
-) -&gt; pd.DataFrame:
+) -> pd.DataFrame:
     """
     Faz merge sem estourar KeyError quando o 'right' está vazio ou sem a coluna-chave.
     Retorna 'left' intacto se a chave do 'left' não existir.
@@ -221,7 +222,7 @@ def safe_merge(
 # ============================================================
 # CRUD — Supabase (tabelas minúsculas)
 # ============================================================
-def get_hospitais(include_inactive: bool = False) -&gt; list:
+def get_hospitais(include_inactive: bool = False) -> list:
     try:
         query = supabase.table("hospitals").select("name, active")
         if not include_inactive:
@@ -303,7 +304,7 @@ def existe_procedimento_no_dia(internacao_id, data_proc):
             .limit(1)
             .execute()
         )
-        return len(res.data or []) &gt; 0
+        return len(res.data or []) > 0
     except APIError as e:
         _sb_debug_error(e, "Falha ao verificar existência de procedimento no dia.")
         return False
@@ -398,14 +399,14 @@ def _switch_to_tab_by_label(tab_label: str):
     Usa JSON para injetar a string com segurança e evita f-string no JS.
     """
     js = """
-    &lt;script&gt;
+    <script>
     (function(){
       const target = __TAB_LABEL__;
-      const norm = (s) =&gt; (s || "").replace(/\\s+/g, " ").trim();
+      const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
 
       let attempts = 0;
       const maxAttempts = 20;  // 20 * 100ms = 2s
-      const timer = setInterval(() =&gt; {
+      const timer = setInterval(() => {
         attempts++;
         const tabs = window.parent.document.querySelectorAll('button[role="tab"]');
         for (const t of tabs) {
@@ -416,13 +417,13 @@ def _switch_to_tab_by_label(tab_label: str):
             return;
           }
         }
-        if (attempts &gt;= maxAttempts) {
+        if (attempts >= maxAttempts) {
           clearInterval(timer);
           console.warn("Tab não encontrada para:", target);
         }
       }, 100);
     })();
-    &lt;/script&gt;
+    </script>
     """
     js = js.replace("__TAB_LABEL__", json.dumps(tab_label))
     components.html(js, height=0, width=0)
@@ -523,17 +524,17 @@ with tabs[0]:
         mask = pd.Series([True]*len(df_all), index=df_all.index)
 
         if filtro_hosp_home != "Todos":
-            mask &amp;= (df_all["hospital"] == filtro_hosp_home)
+            mask &= (df_all["hospital"] == filtro_hosp_home)
 
         if use_int_range:
-            mask &amp;= df_all["_int_dt"].notna()
-            mask &amp;= (df_all["_int_dt"] &gt;= st.session_state["home_f_int_ini"])
-            mask &amp;= (df_all["_int_dt"] &lt;= st.session_state["home_f_int_fim"])
+            mask &= df_all["_int_dt"].notna()
+            mask &= (df_all["_int_dt"] >= st.session_state["home_f_int_ini"])
+            mask &= (df_all["_int_dt"] <= st.session_state["home_f_int_fim"])
 
         if use_proc_range:
-            mask &amp;= df_all["_proc_dt"].notna()
-            mask &amp;= (df_all["_proc_dt"] &gt;= st.session_state["home_f_proc_ini"])
-            mask &amp;= (df_all["_proc_dt"] &lt;= st.session_state["home_f_proc_fim"])
+            mask &= df_all["_proc_dt"].notna()
+            mask &= (df_all["_proc_dt"] >= st.session_state["home_f_proc_ini"])
+            mask &= (df_all["_proc_dt"] <= st.session_state["home_f_proc_fim"])
 
         df_f = df_all[mask].copy()
 
@@ -551,24 +552,24 @@ with tabs[0]:
     with c1:
         kpi_row([{"label":"Pendentes", "value": f"{tot_pendente}", "hint": "Todos os procedimentos"}], extra_class="center")
         lbl = "🔽 Esconder Pendentes" if active == "Pendente" else "👁️ Ver Pendentes"
-        st.markdown("&lt;div class='kpi-action'&gt;", unsafe_allow_html=True)
+        st.markdown("<div class='kpi-action'>", unsafe_allow_html=True)
         if st.button(lbl, key="kpi_btn_pend", use_container_width=True):
             _toggle_home_status("Pendente")
-        st.markdown("&lt;/div&gt;", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
     with c2:
         kpi_row([{"label":"Finalizadas", "value": f"{tot_finalizado}", "hint": "Todos os procedimentos"}], extra_class="center")
         lbl = "🔽 Esconder Finalizadas" if active == "Finalizado" else "👁️ Ver Finalizadas"
-        st.markdown("&lt;div class='kpi-action'&gt;", unsafe_allow_html=True)
+        st.markdown("<div class='kpi-action'>", unsafe_allow_html=True)
         if st.button(lbl, key="kpi_btn_fin", use_container_width=True):
             _toggle_home_status("Finalizado")
-        st.markdown("&lt;/div&gt;", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
     with c3:
         kpi_row([{"label":"Não Cobrar", "value": f"{tot_nao_cobrar}", "hint": "Todos os procedimentos"}], extra_class="center")
         lbl = "🔽 Esconder Não Cobrar" if active == "Não Cobrar" else "👁️ Ver Não Cobrar"
-        st.markdown("&lt;div class='kpi-action'&gt;", unsafe_allow_html=True)
+        st.markdown("<div class='kpi-action'>", unsafe_allow_html=True)
         if st.button(lbl, key="kpi_btn_nc", use_container_width=True):
             _toggle_home_status("Não Cobrar")
-        st.markdown("&lt;/div&gt;", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     status_sel_home = st.session_state.get("home_status")
     if status_sel_home:
@@ -627,7 +628,7 @@ with tabs[0]:
 # ============================================================
 with tabs[1]:
     st.subheader("📤 Importar arquivo")
-    st.markdown("&lt;div class='soft-card'&gt;", unsafe_allow_html=True)
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
 
     # Cadastro manual de internação
     cmi1, cmi2, cmi3, cmi4, cmi5 = st.columns(5)
@@ -649,10 +650,10 @@ with tabs[1]:
                 if nid:
                     st.toast(f"Internação criada (ID {nid}).", icon="✅")
 
-    st.markdown("&lt;/div&gt;", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
-    st.markdown("&lt;div class='soft-card'&gt;", unsafe_allow_html=True)
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hospitais = get_hospitais()
     hospital = st.selectbox("Hospital para esta importação:", hospitais)
     arquivo = st.file_uploader("Selecione o arquivo CSV")
@@ -711,8 +712,8 @@ with tabs[1]:
 
         pares = sorted({(r["atendimento"], r["data"]) for r in registros_filtrados if r.get("atendimento") and r.get("data")})
         st.markdown(
-            f"&lt;div&gt;🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
-            f"{pill('1 auto por internação/dia')} (manuais podem ser vários).&lt;/div&gt;",
+            f"<div>🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
+            f"{pill('1 auto por internação/dia')} (manuais podem ser vários).</div>",
             unsafe_allow_html=True
         )
 
@@ -739,6 +740,13 @@ with tabs[1]:
                         if it["atendimento"] == att and it["data"] == data_proc:
                             if not prof_dia and it.get("profissional"): prof_dia = it["profissional"]
                             if not aviso_dia and it.get("aviso"): aviso_dia = it["aviso"]
+                            if prof_dia e aviso_dia:
+                                pass
+                    # Escolhe primeiro encontrado
+                    for it in registros_filtrados:
+                        if it["atendimento"] == att and it["data"] == data_proc:
+                            if not prof_dia and it.get("profissional"): prof_dia = it["profissional"]
+                            if not aviso_dia and it.get("aviso"): aviso_dia = it["aviso"]
                             if prof_dia and aviso_dia: break
 
                     if not prof_dia:
@@ -756,7 +764,7 @@ with tabs[1]:
                 st.success(f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}")
                 st.toast("✅ Importação concluída.", icon="✅")
 
-    st.markdown("&lt;/div&gt;", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================================
 # 🔍 2) CONSULTAR
@@ -764,11 +772,11 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("🔍 Consultar Internação")
 
-    st.markdown("&lt;div class='soft-card'&gt;", unsafe_allow_html=True)
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hlist = ["Todos"] + get_hospitais()
     filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)
     codigo = st.text_input("Digite o atendimento para consultar:", key="consulta_codigo", placeholder="Ex.: 123456")
-    st.markdown("&lt;/div&gt;", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if codigo:
         df_int = get_internacao_by_atendimento(codigo)
@@ -906,7 +914,7 @@ with tabs[2]:
                     alterados = []
                     for _, row in df_compare.iterrows():
                         changed = any((str(row[c + "_old"] or "") != str(row[c + "_new"] or "")) for c in cols_chk)
-                        if changed:                            
+                        if changed:
                             alterados.append({
                                 "id": int(row["id"]),
                                 "procedimento": row["procedimento_new"],
@@ -939,7 +947,7 @@ with tabs[2]:
                         c1, c2, c3, c4 = st.columns([3, 3, 3, 2])
                         with c1: st.markdown(f"**ID:** {int(r['id'])}  —  **Data:** {r['data_procedimento']}")
                         with c2: st.markdown(f"**Profissional:** {r['profissional'] or '-'}")
-                        with c3: st.markdown(f"**Tipo:** {r['procedimento']}&lt;br&gt;{pill(r['situacao'])}", unsafe_allow_html=True)
+                        with c3: st.markdown(f"**Tipo:** {r['procedimento']}<br>{pill(r['situacao'])}", unsafe_allow_html=True)
                         with c4:
                             if st.button("Excluir", key=f"del_proc_{int(r['id'])}", help="Apagar este procedimento"):
                                 deletar_procedimento(int(r["id"]))
@@ -951,8 +959,8 @@ with tabs[2]:
             st.subheader("➕ Lançar procedimento manual (permite vários no mesmo dia)")
             c1, c2, c3 = st.columns(3)
             with c1: data_proc = st.date_input("Data do procedimento", value=date.today())
-            with c2:               
-                Profissionais distintos existentes (lado cliente, sem DISTINCT no PostgREST)
+            with c2:
+                # Profissionais distintos existentes (lado cliente, sem DISTINCT no PostgREST)
                 try:
                     res_dist = supabase.table("procedimentos").select("profissional").execute()
                     df_pros = pd.DataFrame(res_dist.data or [])
@@ -965,7 +973,7 @@ with tabs[2]:
                         lista_profissionais = []
                 except APIError:
                     lista_profissionais = []
-                    
+
                 profissional = st.selectbox("Profissional", ["(selecione)"] + lista_profissionais, index=0)
             with c3: situacao = st.selectbox("Situação", STATUS_OPCOES, index=0)
 
@@ -982,7 +990,7 @@ with tabs[2]:
                 except:
                     dt_internacao = date.today()
                 if st.button("Adicionar procedimento", key="btn_add_manual", type="primary"):
-                    if data_proc &lt; dt_internacao:
+                    if data_proc < dt_internacao:
                         st.error("❌ A data do procedimento não pode ser anterior à data da internação.")
                     else:
                         if profissional == "(selecione)":
@@ -1085,9 +1093,9 @@ if REPORTLAB_OK:
         elems.append(Paragraph("Relatório — Cirurgias por Status", H1)); elems.append(Spacer(1,6))
         filtros_txt = (f"Período: {filtros['ini']} a {filtros['fim']}  |  Hospital: {filtros['hospital']}  |  Status: {filtros['status']}")
         elems.append(Paragraph(filtros_txt, N)); elems.append(Spacer(1,8))
-        total = len(df); elems.append(Paragraph(f"Total de cirurgias: &lt;b&gt;{total}&lt;/b&gt;", H2))
+        total = len(df); elems.append(Paragraph(f"Total de cirurgias: <b>{total}</b>", H2))
 
-        if total &gt; 0 and filtros["status"] == "Todos":
+        if total > 0 and filtros["status"] == "Todos":
             resumo = (df.groupby("situacao")["situacao"].count().sort_values(ascending=False).reset_index(name="qtd"))
             data_resumo = [["Situação", "Quantidade"]] + resumo.values.tolist()
             t_res = Table(data_resumo, hAlign="LEFT")
@@ -1191,7 +1199,6 @@ if REPORTLAB_OK:
             ("FONTNAME", (0,0), (-1,-1), "Helvetica"), ("FONTSIZE", (0,0), (-1,-1), 10),
             ("ALIGN", (0,0), (0,-1), "RIGHT"), ("ALIGN", (1,0), (1,-1), "RIGHT"),
         ]))
-        elems.append(totals_tbl)
         doc.build(elems)
         pdf_bytes = buf.getvalue(); buf.close()
         return pdf_bytes
@@ -1237,7 +1244,7 @@ with tabs[3]:
 
     if not df_rel.empty:
         df_rel["_data_dt"] = df_rel["data_procedimento"].apply(_pt_date_to_dt)
-        mask = (df_rel["_data_dt"].notna()) &amp; (df_rel["_data_dt"] &gt;= dt_ini) &amp; (df_rel["_data_dt"] &lt;= dt_fim)
+        mask = (df_rel["_data_dt"].notna()) & (df_rel["_data_dt"] >= dt_ini) & (df_rel["_data_dt"] <= dt_fim)
         df_rel = df_rel[mask].copy()
         if hosp_sel != "Todos": df_rel = df_rel[df_rel["hospital"] == hosp_sel]
         if status_sel != "Todos": df_rel = df_rel[df_rel["situacao"] == status_sel]
@@ -1308,7 +1315,7 @@ with tabs[3]:
 
     if not df_quit.empty:
         df_quit["_quit_dt"] = df_quit["quitacao_data"].apply(_pt_date_to_dt)
-        mask_q = (df_quit["_quit_dt"].notna()) &amp; (df_quit["_quit_dt"] &gt;= dt_ini_q) &amp; (df_quit["_quit_dt"] &lt;= dt_fim_q)
+        mask_q = (df_quit["_quit_dt"].notna()) & (df_quit["_quit_dt"] >= dt_ini_q) & (df_quit["_quit_dt"] <= dt_fim_q)
         df_quit = df_quit[mask_q].copy()
         if hosp_sel_q != "Todos":
             df_quit = df_quit[df_quit["hospital"] == hosp_sel_q]
@@ -1371,10 +1378,10 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("💼 Quitação de Cirurgias")
 
-    st.markdown("&lt;div class='soft-card'&gt;", unsafe_allow_html=True)
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hosp_opts = ["Todos"] + get_hospitais()
     hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="quit_hosp")
-    st.markdown("&lt;/div&gt;", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # Carrega pendentes de envio + merge (sem embed)
     try:
@@ -1460,9 +1467,9 @@ with tabs[4]:
                     )
                     atualizados += 1
 
-                if faltando_data &gt; 0 and atualizados == 0:
+                if faltando_data > 0 and atualizados == 0:
                     st.warning("Nenhuma quitação gravada. Preencha a **Data da quitação** para finalizar.")
-                elif faltando_data &gt; 0 and atualizados &gt; 0:
+                elif faltando_data > 0 and atualizados > 0:
                     st.toast(f"{atualizados} quitação(ões) gravada(s). {faltando_data} linha(s) ignoradas sem **Data da quitação**.", icon="✅")
                     st.rerun()
                 else:
@@ -1474,7 +1481,7 @@ with tabs[4]:
 # ============================================================
 with tabs[5]:
     st.subheader("⚙️ Sistema")
-    st.markdown("&lt;div class='soft-card'&gt;", unsafe_allow_html=True)
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     st.markdown("**🔌 Conexão Supabase**")
     ok = True
     try:
@@ -1483,7 +1490,7 @@ with tabs[5]:
     except APIError as e:
         ok = False
         _sb_debug_error(e, "Falha ao conectar/consultar Supabase.")
-    st.markdown("&lt;/div&gt;", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("**📋 Procedimentos — Lista**")
     filtro = ["Todos"] + get_hospitais()
@@ -1568,7 +1575,7 @@ with tabs[5]:
 
                     # Agrega por convênio (ignora nulos/vazios)
                     df_conv = (
-                        dfm[dfm["convenio"].notna() &amp; (dfm["convenio"].astype(str).str.strip() != "")]
+                        dfm[dfm["convenio"].notna() & (dfm["convenio"].astype(str).str.strip() != "")]
                         .groupby("convenio")["convenio"]
                         .count()
                         .reset_index(name="total")
