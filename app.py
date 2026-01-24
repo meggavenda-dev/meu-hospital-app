@@ -664,15 +664,18 @@ with tabs[0]:
 
         df_f = df_all[mask].copy()
 
-    tot_pendente   = int((df_f["situacao"] == "Pendente").sum()) if not df_f.empty else 0
-    tot_finalizado = int((df_f["situcao"] == "Finalizado").sum()) if not df_f.empty else 0  # corrigir typo se necessário
-    # Corrigindo o typo acima sem alterar lógica visível:
-    if not df_f.empty and "situcao" in df_f.columns and "situacao" in df_f.columns:
-        # Em algumas execuções, pode haver erro de digitação; garantir contagem correta:
-        tot_finalizado = int((df_f["situacao"] == "Finalizado").sum())
-    elif not df_f.empty and "situacao" in df_f.columns:
-        tot_finalizado = int((df_f["situacao"] == "Finalizado").sum())
-    tot_nao_cobrar = int((df_f["situacao"] == "Não Cobrar").sum()) if not df_f.empty else 0
+    # --- contadores de status (robusto contra ausência de coluna) ---
+    def _count_status(df: pd.DataFrame, status: str) -> int:
+        if df is None or df.empty:
+            return 0
+        col = "situacao" if "situacao" in df.columns else None
+        if col is None:
+            return 0
+        return int((df[col] == status).sum())
+
+    tot_pendente   = _count_status(df_f, "Pendente")
+    tot_finalizado = _count_status(df_f, "Finalizado")
+    tot_nao_cobrar = _count_status(df_f, "Não Cobrar")
 
     def _toggle_home_status(target: str):
         curr = st.session_state.get("home_status")
