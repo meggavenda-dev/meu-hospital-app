@@ -952,14 +952,21 @@ with tabs[2]:
             st.subheader("➕ Lançar procedimento manual (permite vários no mesmo dia)")
             c1, c2, c3 = st.columns(3)
             with c1: data_proc = st.date_input("Data do procedimento", value=date.today())
-            with c2:
-                # Profissionais distintos existentes
+            with c2:               
+                Profissionais distintos existentes (lado cliente, sem DISTINCT no PostgREST)
                 try:
-                    res_dist = supabase.table("procedimentos").select("profissional", distinct=True).not_.is_("profissional", None).execute()
+                    res_dist = supabase.table("procedimentos").select("profissional").execute()
                     df_pros = pd.DataFrame(res_dist.data or [])
-                    lista_profissionais = [p for p in sorted({(x or "").strip() for x in df_pros["profissional"].tolist()}) if p]
+                    if "profissional" in df_pros.columns:
+                        lista_profissionais = sorted({
+                            str(x).strip() for x in df_pros["profissional"].dropna()
+                            if str(x).strip()  # remove vazios
+                        })
+                    else:
+                        lista_profissionais = []
                 except APIError:
                     lista_profissionais = []
+                    
                 profissional = st.selectbox("Profissional", ["(selecione)"] + lista_profissionais, index=0)
             with c3: situacao = st.selectbox("Situação", STATUS_OPCOES, index=0)
 
