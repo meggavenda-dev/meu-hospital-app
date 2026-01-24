@@ -348,12 +348,13 @@ def deletar_internacao(internacao_id: int):
     except APIError as e:
         _sb_debug_error(e, "Falha ao deletar internação.")
 
+
 def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
                        situacao="Pendente", observacao=None, is_manual=0,
                        aviso=None, grau_participacao=None):
     payload = {
         "internacao_id": int(internacao_id),
-        "data_procedimento": _to_ddmmyyyy(data_proc),
+        "data_procedimento": _to_ddmmyyyy(data_proc),  # se a coluna no DB for DATE/TIMESTAMP, prefira enviar ISO (YYYY-MM-DD)
         "profissional": profissional,
         "procedimento": procedimento,
         "situacao": situacao or "Pendente",
@@ -363,10 +364,17 @@ def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
         "grau_participacao": grau_participacao,
     }
     try:
-        supabase.table("procedimentos").insert(payload).execute()
+        res = supabase.table("procedimentos").insert(payload).execute()
+        data = res.data or []
+        if not data:
+            st.error("❌ O banco não confirmou a inclusão do procedimento (resposta vazia).")
+            return None
         invalidate_caches()
+        return int(data[0].get("id")) if data[0].get("id") is not None else True
     except APIError as e:
         _sb_debug_error(e, "Falha ao criar procedimento.")
+        return None
+
 
 def existe_procedimento_no_dia(internacao_id, data_proc):
     try:
