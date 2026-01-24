@@ -340,13 +340,75 @@ def atualizar_internacao(internacao_id, **kwargs):
     except APIError as e:
         _sb_debug_error(e, "Falha ao atualizar internação.")
 
-def deletar_internacao(internacao_id: int):
+
+def deletar_internacao(internacao_id: int) -> bool:
+    """
+    Exclui uma internação e seus procedimentos vinculados, com verificação pré/pós,
+    compatível com supabase-py que não suporta delete().select(...).
+    """
     try:
-        supabase.table("procedimentos").delete().eq("internacao_id", int(internacao_id)).execute()
-        supabase.table("internacoes").delete().eq("id", int(internacao_id)).execute()
-        invalidate_caches()
+        iid = int(internacao_id)
+
+        # 0) Pré: internação existe?
+        pre_int = (
+            supabase.table("internacoes")
+            .select("id")
+            .eq("id", iid)
+            .limit(1)
+            .execute()
+        )
+        if not (pre_int.data or []):
+            st.info("A internação já não existe (nada a excluir).")
+            return True
+
+        # 1) Pré: quantos procedimentos vinculados?
+        pre_procs = (
+            supabase.table("procedimentos")
+            .select("id")
+            .eq("internacao_id", iid)
+            .execute()
+        )
+        qtd_procs = len(pre_procs.data or [])
+
+        # 2) DELETE filhos primeiro (se houver)
+        if qtd_procs > 0:
+            supabase.table("procedimentos").delete().eq("internacao_id", iid).execute()
+
+            # 2b) Pós-checagem: sobrou algum filho?
+            chk_procs = (
+                supabase.table("procedimentos")
+                .select("id")
+                .eq("internacao_id", iid)
+                .limit(1)
+                .execute()
+            )
+            if chk_procs.data:
+                st.error("❌ Não foi possível excluir todos os procedimentos vinculados. Verifique RLS/Policies ou FKs.")
+                return False
+
+        # 3) DELETE da internação
+        supabase.table("internacoes").delete().eq("id", iid).execute()
+
+        # 3b) Pós-checagem: sumiu?
+        pos_int = (
+            supabase.table("internacoes")
+            .select("id")
+            .eq("id", iid)
+            .limit(1)
+            .execute()
+        )
+        ok = len(pos_int.data or []) == 0
+
+        if ok:
+            invalidate_caches()
+            return True
+        else:
+            st.error("❌ Não foi possível excluir a internação. Verifique RLS/Policies ou vínculos (FK).")
+            return False
+
     except APIError as e:
         _sb_debug_error(e, "Falha ao deletar internação.")
+        return False
 
 
 def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
@@ -1196,22 +1258,23 @@ with tabs[2]:
                         st.toast("Dados da internação atualizados!", icon="✅")
                         st.rerun()
             
-            # ===== Excluir internação =====
+            # ===== Excluir internação =====            
             with st.expander("🗑️ Excluir esta internação"):
                 st.warning("Esta ação apagará a internação e TODOS os procedimentos vinculados.")
-                confirm_txt = st.text_input(
-                    "Digite APAGAR para confirmar",
-                    key=f"confirm_del_int_{internacao_id}"  # chave única por internação
-                )
+                confirm_txt = st.text_input("Digite APAGAR para confirmar", key=f"confirm_del_int_{internacao_id}")
                 col_del = st.columns(6)[-1]
                 with col_del:
                     if st.button("Excluir internação", key=f"btn_del_int_{internacao_id}", type="primary"):
                         if confirm_txt.strip().upper() == "APAGAR":
-                            deletar_internacao(internacao_id)
-                            st.toast("🗑️ Internação excluída.", icon="✅")
-                            st.rerun()
+                            ok = deletar_internacao(internacao_id)
+                            if ok:
+                                st.toast("🗑️ Internação excluída.", icon="✅")
+                                st.rerun()
+                            else:
+                                st.stop()
                         else:
                             st.info("Confirmação inválida. Digite APAGAR.")
+
 
 
 
