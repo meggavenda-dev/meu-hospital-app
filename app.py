@@ -175,17 +175,16 @@ def app_header(title: str, subtitle: str = ""):
     )
 
 
+
 def tab_header_with_home(title: str, home_label: str = "🏠 Início", btn_key_suffix: str = ""):
-    """
-    Renderiza um cabeçalho com título da aba + botão 'Ir para Início'.
-    - btn_key_suffix: passe um sufixo único por aba para evitar colisão de chave de widget.
-    """
     col_t1, col_t2 = st.columns([8, 2])
     with col_t1:
         st.subheader(title)
     with col_t2:
         if st.button(home_label, key=f"btn_go_home_{btn_key_suffix}", use_container_width=True):
+            # Define o alvo e incrementa um nonce para "forçar" o HTML a ser reinjetado
             st.session_state["goto_tab_label"] = "🏠 Início"
+            st.session_state["__goto_nonce"] = st.session_state.get("__goto_nonce", 0) + 1
             st.rerun()
 
 # ============================================================
@@ -769,13 +768,17 @@ inject_css()
 app_header("Sistema de Internações — Supabase",
            "Importação, edição, quitação e relatórios (banco em nuvem)")
 
+
 def _switch_to_tab_by_label(tab_label: str):
     """
     Clica na aba cujo rótulo visível contém `tab_label` (match por substring).
-    Usa JSON para injetar a string com segurança e evita f-string no JS.
+    Usa JSON para injetar a string com segurança e injeta um nonce para evitar cache do componente.
     """
+    nonce = int(st.session_state.get("__goto_nonce", 0))  # muda a cada clique
+
     js = """
     <script>
+    // nonce: __NONCE__
     (function(){
       const target = __TAB_LABEL__;
       const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
@@ -802,7 +805,9 @@ def _switch_to_tab_by_label(tab_label: str):
     </script>
     """
     js = js.replace("__TAB_LABEL__", json.dumps(tab_label))
+    js = js.replace("__NONCE__", str(nonce))
     components.html(js, height=0, width=0)
+
 
 tabs = st.tabs([
     "🏠 Início",
