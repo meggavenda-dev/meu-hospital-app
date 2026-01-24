@@ -984,47 +984,28 @@ with tabs[0]:
     if st.session_state.get("consulta_codigo"):
         st.caption(f"🔎 Atendimento **{st.session_state['consulta_codigo']}** pronto para consulta na aba **'🔍 Consultar Internação'**.")
 
+
 # ============================================================
-# 📤 1) IMPORTAR
+# 📤 1) IMPORTAR  (Importação primeiro, cadastro manual depois)
 # ============================================================
 with tabs[1]:
     tab_header_with_home("📤 Importar arquivo", btn_key_suffix="import")
+
+    # --------- Seção: Importação de CSV ---------
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
 
-    # Cadastro manual de internação
-    cmi1, cmi2, cmi3, cmi4, cmi5 = st.columns(5)
-    with cmi1: hosp_new = st.selectbox("Hospital", get_hospitais(), key="imp_new_int_hosp")
-    with cmi2: att_new = st.text_input("Atendimento (único)", key="imp_new_int_att")
-    with cmi3: pac_new = st.text_input("Paciente", key="imp_new_int_pac")
-    with cmi4: data_new = st.date_input("Data de internação", value=date.today(), key="imp_new_int_data")
-    with cmi5: conv_new = st.text_input("Convênio", key="imp_new_int_conv")
-
-    col_btn = st.columns(6)[-1]
-    with col_btn:
-        if st.button("Criar internação", key="imp_btn_criar_int", type="primary"):
-            if not att_new:
-                st.warning("Informe o atendimento.")
-            elif not get_internacao_by_atendimento(att_new).empty:
-                st.error("Já existe uma internação com este atendimento (considerando zeros à esquerda).")
-            else:
-                nid = criar_internacao(hosp_new, att_new, pac_new, data_new.strftime("%d/%m/%Y"), conv_new)
-                if nid:
-                    st.toast(f"Internação criada (ID {nid}).", icon="✅")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.divider()
-
-    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hospitais = get_hospitais()
-    hospital = st.selectbox("Hospital para esta importação:", hospitais)
-    arquivo = st.file_uploader("Selecione o arquivo CSV")
+    hospital = st.selectbox("Hospital para esta importação:", hospitais, key="import_csv_hospital")
+    arquivo = st.file_uploader("Selecione o arquivo CSV", key="import_csv_uploader")
 
     if parse_tiss_original is None:
         st.info("Adicione o arquivo parser.py com a função parse_tiss_original() para habilitar a importação.")
     elif arquivo:
         raw_bytes = arquivo.getvalue()
-        try: csv_text = raw_bytes.decode("latin1")
-        except UnicodeDecodeError: csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
+        try:
+            csv_text = raw_bytes.decode("latin1")
+        except UnicodeDecodeError:
+            csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
 
         registros = parse_tiss_original(csv_text)
         st.success(f"{len(registros)} registros interpretados!")
@@ -1032,9 +1013,9 @@ with tabs[1]:
         pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
         pares = sorted({(r.get("atendimento"), r.get("data")) for r in registros if r.get("atendimento") and r.get("data")})
         kpi_row([
-            {"label":"Registros no arquivo", "value": f"{len(registros):,}".replace(",", ".")},
-            {"label":"Médicos distintos",    "value": f"{len(pros):,}".replace(",", ".")},
-            {"label":"Pares (atendimento, data)", "value": f"{len(pares):,}".replace(",", ".")},
+            {"label": "Registros no arquivo", "value": f"{len(registros):,}".replace(",", ".")},
+            {"label": "Médicos distintos",    "value": f"{len(pros):,}".replace(",", ".")},
+            {"label": "Pares (atendimento, data)", "value": f"{len(pares):,}".replace(",", ".")},
         ])
 
         st.subheader("👨‍⚕️ Seleção de médicos")
@@ -1043,7 +1024,7 @@ with tabs[1]:
 
         colsel1, colsel2 = st.columns([1, 3])
         with colsel1:
-            import_all = st.checkbox("Importar todos os médicos", value=st.session_state["import_all_docs"])
+            import_all = st.checkbox("Importar todos os médicos", value=st.session_state["import_all_docs"], key="import_all_docs_chk")
         with colsel2:
             if import_all:
                 st.info("Todos os médicos do arquivo serão importados.")
@@ -1054,6 +1035,7 @@ with tabs[1]:
                     "Médicos a importar (os da lista fixa sempre serão incluídos na gravação):",
                     options=pros,
                     default=st.session_state["import_selected_docs"] or default_pre,
+                    key="import_selected_docs_ms"
                 )
 
         st.session_state["import_all_docs"] = import_all
@@ -1078,10 +1060,10 @@ with tabs[1]:
             unsafe_allow_html=True
         )
 
+        # ======== IMPORTAÇÃO TURBO (mesmo código que você já tinha) ========
         colg1, colg2 = st.columns([1, 4])
         with colg1:
-            if st.button("Gravar no banco", type="primary"):
-                # ======== IMPORTAÇÃO TURBO (anti N+1) — com normalização ========
+            if st.button("Gravar no banco", type="primary", key="import_csv_gravar"):
                 total_criados = total_ignorados = total_internacoes = 0
 
                 # 1) Atendimentos únicos (originais) do arquivo pós-filtro
@@ -1090,7 +1072,7 @@ with tabs[1]:
                 # Mapeia original -> normalizado e conjuntos para busca
                 orig_to_norm = {att: _att_norm(att) for att in atts_file}
                 norm_set = sorted({v for v in orig_to_norm.values() if v})
-                num_set = sorted({ _att_to_number(att) for att in atts_file if _att_to_number(att) is not None })
+                num_set = sorted({_att_to_number(att) for att in atts_file if _att_to_number(att) is not None})
 
                 # 2) Carrega internações existentes (por atendimento e por numero)
                 existing_map_norm_to_id = {}
@@ -1102,7 +1084,6 @@ with tabs[1]:
                     if num_set:
                         res_int_num = supabase.table("internacoes").select("id, numero_internacao").in_("numero_internacao", num_set).execute()
                         for r in (res_int_num.data or []):
-                            # normaliza chave a partir do número
                             k = _att_norm(str(int(float(r["numero_internacao"]))))
                             existing_map_norm_to_id[k] = int(r["id"])
                 except APIError as e:
@@ -1156,8 +1137,12 @@ with tabs[1]:
                 existing_auto = set()
                 try:
                     if target_iids:
-                        res_auto = supabase.table("procedimentos").select("internacao_id, data_procedimento, is_manual") \
-                                            .in_("internacao_id", target_iids).eq("is_manual", 0).execute()
+                        res_auto = (
+                            supabase.table("procedimentos")
+                            .select("internacao_id, data_procedimento, is_manual")
+                            .in_("internacao_id", target_iids).eq("is_manual", 0)
+                            .execute()
+                        )
                         for r in (res_auto.data or []):
                             iid = int(r["internacao_id"])
                             dt = _to_ddmmyyyy(r.get("data_procedimento"))
@@ -1214,9 +1199,37 @@ with tabs[1]:
                     except APIError as e:
                         _sb_debug_error(e, "Falha ao inserir procedimentos em lote.")
 
-                st.success(f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}")
+                st.success(
+                    f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}"
+                )
                 st.toast("✅ Importação concluída.", icon="✅")
-                # ======== FIM IMPORTAÇÃO TURBO ========
+        # ======== FIM IMPORTAÇÃO TURBO ========
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.divider()
+
+    # --------- Seção: Cadastro manual de internação (AGORA ABAIXO) ---------
+    st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
+    st.subheader("➕ Cadastro manual de internação")
+
+    cmi1, cmi2, cmi3, cmi4, cmi5 = st.columns(5)
+    with cmi1: hosp_new = st.selectbox("Hospital", get_hospitais(), key="manual_new_int_hosp")
+    with cmi2: att_new  = st.text_input("Atendimento (único)", key="manual_new_int_att")
+    with cmi3: pac_new  = st.text_input("Paciente", key="manual_new_int_pac")
+    with cmi4: data_new = st.date_input("Data de internação", value=date.today(), key="manual_new_int_data")
+    with cmi5: conv_new = st.text_input("Convênio", key="manual_new_int_conv")
+
+    col_btn = st.columns(6)[-1]
+    with col_btn:
+        if st.button("Criar internação", key="manual_btn_criar_int", type="primary"):
+            if not att_new:
+                st.warning("Informe o atendimento.")
+            elif not get_internacao_by_atendimento(att_new).empty:
+                st.error("Já existe uma internação com este atendimento (considerando zeros à esquerda).")
+            else:
+                nid = criar_internacao(hosp_new, att_new, pac_new, data_new.strftime("%d/%m/%Y"), conv_new)
+                if nid:
+                    st.toast(f"Internação criada (ID {nid}).", icon="✅")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
