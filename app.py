@@ -1,19 +1,16 @@
 
 # ============================================================
 #  SISTEMA DE INTERNAÇÕES — VERSÃO SUPABASE (Cloud)
-#  Visual: igual ao seu app "Versão Final"; back-end: Supabase
+#  Visual e fluxo do app "Versão Final" — DB: Supabase
 # ============================================================
 
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
 import io
-import base64, json
-import requests
-import re
 import json
+import re
 import streamlit.components.v1 as components
-
 
 # ==== Supabase ====
 from supabase import create_client, Client
@@ -43,7 +40,8 @@ except Exception:
 URL = st.secrets.get("SUPABASE_URL", "")
 KEY = st.secrets.get("SUPABASE_KEY", "")
 if not URL or not KEY:
-    st.stop()  # falha dura: sem credencial não prossegue
+    st.error("Configure SUPABASE_URL e SUPABASE_KEY em Secrets para iniciar o app.")
+    st.stop()
 supabase: Client = create_client(URL, KEY)
 
 def _sb_debug_error(e: APIError, prefix="Erro Supabase"):
@@ -191,6 +189,35 @@ def _format_currency_br(v) -> str:
         return f"R$ {s}"
     except Exception:
         return f"R$ {v}"
+
+# ============================================================
+# Helper de merge tolerante (evita KeyError com DF/coluna vazios)
+# ============================================================
+def safe_merge(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    left_on: str,
+    right_on: str,
+    how: str = "left",
+    suffixes=("", "_right"),
+) -> pd.DataFrame:
+    """
+    Faz merge sem estourar KeyError quando o 'right' está vazio ou sem a coluna-chave.
+    Retorna 'left' intacto se a chave do 'left' não existir.
+    """
+    if not isinstance(left, pd.DataFrame) or left.empty:
+        return left if isinstance(left, pd.DataFrame) else pd.DataFrame()
+
+    if not isinstance(right, pd.DataFrame) or right.empty or (right_on not in right.columns):
+        right = pd.DataFrame(columns=[right_on])
+
+    if left_on not in left.columns:
+        return left
+
+    try:
+        return left.merge(right, left_on=left_on, right_on=right_on, how=how, suffixes=suffixes)
+    except KeyError:
+        return left
 
 # ============================================================
 # CRUD — Supabase (tabelas minúsculas)
@@ -352,7 +379,7 @@ def get_quitacao_by_proc_id(proc_id: int):
         r2 = supabase.table("internacoes").select("*").eq("id", iid).limit(1).execute()
         dfi = pd.DataFrame(r2.data or [])
         if dfi.empty: return dfp
-        df = dfp.merge(dfi, left_on="internacao_id", right_on="id", suffixes=("", "_int"))
+        df = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_int"))
         return df
     except APIError as e:
         _sb_debug_error(e, "Falha ao consultar quitação.")
@@ -365,7 +392,6 @@ st.set_page_config(page_title="Gestão de Internações", page_icon="🏥", layo
 inject_css()
 app_header("Sistema de Internações — Supabase",
            "Importação, edição, quitação e relatórios (banco em nuvem)")
-
 
 def _switch_to_tab_by_label(tab_label: str):
     """
@@ -399,8 +425,6 @@ def _switch_to_tab_by_label(tab_label: str):
     })();
     </script>
     """
-
-   # injeta o label como string JS segura
     js = js.replace("__TAB_LABEL__", json.dumps(tab_label))
     components.html(js, height=0, width=0)
 
@@ -469,7 +493,14 @@ with tabs[0]:
                 df_i = pd.DataFrame(res_i.data or [])
             else:
                 df_i = pd.DataFrame(columns=["id","atendimento","paciente","hospital","convenio","data_internacao"])
-            df_all = df_p.merge(df_i, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_int"))
+            df_all = safe_merge(
+                df_p,
+                df_i[["id", "atendimento", "paciente", "hospital", "convenio", "data_internacao"]] if not df_i.empty else df_i,
+                left_on="internacao_id",
+                right_on="id",
+                how="left",
+                suffixes=("", "_int"),
+            )
     except APIError as e:
         _sb_debug_error(e, "Falha ao carregar dados para a Home.")
         df_all = pd.DataFrame()
@@ -1029,7 +1060,7 @@ with tabs[2]:
                                 st.rerun()
 
 # ============================================================
-# 📑 3) RELATÓRIOS (mesma lógica; dados via Supabase)
+# 📑 3) RELATÓRIOS
 # ============================================================
 # --- PDF: Cirurgias por Status ---
 if REPORTLAB_OK:
@@ -1193,7 +1224,7 @@ with tabs[3]:
                 dfi = pd.DataFrame(resi.data or [])
             else:
                 dfi = pd.DataFrame(columns=["id","hospital","atendimento","paciente","convenio"])
-            df_rel = dfp.merge(dfi, left_on="internacao_id", right_on="id", how="left")
+            df_rel = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
     except APIError as e:
         _sb_debug_error(e, "Falha ao carregar dados para Relatório.")
         df_rel = pd.DataFrame()
@@ -1264,7 +1295,7 @@ with tabs[3]:
                 dfi = pd.DataFrame(resi.data or [])
             else:
                 dfi = pd.DataFrame()
-            df_quit = dfp.merge(dfi, left_on="internacao_id", right_on="id", how="left")
+            df_quit = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
     except APIError as e:
         _sb_debug_error(e, "Falha ao carregar dados de quitações.")
         df_quit = pd.DataFrame()
@@ -1356,7 +1387,7 @@ with tabs[4]:
                 dfi = pd.DataFrame(resi.data or [])
             else:
                 dfi = pd.DataFrame()
-            df_quit = dfp.merge(dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_int"))
+            df_quit = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_int"))
     except APIError as e:
         _sb_debug_error(e, "Falha ao carregar pendências de quitação.")
         df_quit = pd.DataFrame()
@@ -1464,7 +1495,7 @@ with tabs[5]:
                 ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
                 resi = supabase.table("internacoes").select("id, hospital, atendimento, paciente").in_("id", ids).execute() if ids else None
                 dfi = pd.DataFrame(resi.data or []) if resi else pd.DataFrame()
-                df = dfp.merge(dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_i"))
+                df = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_i"))
                 if chosen != "Todos":
                     df = df[df["hospital"] == chosen]
                 df = df.sort_values(by=["data_procedimento","id"], ascending=[False, False])
@@ -1485,7 +1516,7 @@ with tabs[5]:
             ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
             resi = supabase.table("internacoes").select("id, hospital").in_("id", ids).execute() if ids else None
             dfi = pd.DataFrame(resi.data or []) if resi else pd.DataFrame()
-            dfm = dfp.merge(dfi, left_on="internacao_id", right_on="id", how="left")
+            dfm = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
             if chosen_prof != "Todos":
                 dfm = dfm[dfm["hospital"] == chosen_prof]
             df_prof = dfm.groupby("profissional")["profissional"].count().reset_index(name="total").sort_values("total", ascending=False)
@@ -1497,20 +1528,52 @@ with tabs[5]:
     st.markdown("**💸 Resumo por Convênio**")
     filtro_conv = ["Todos"] + get_hospitais()
     chosen_conv = st.selectbox("Hospital (resumo por convênio):", filtro_conv, key="sys_conv_hosp")
+
     try:
-        resi = supabase.table("internacoes").select("id, convenio, hospital").not_.is_("convenio", None).execute()
+        # Internações (lado direito do merge), traz convenio e hospital
+        resi = supabase.table("internacoes").select("id, convenio, hospital").execute()
         dfi = pd.DataFrame(resi.data or [])
-        if chosen_conv != "Todos":
-            dfi = dfi[dfi["hospital"] == chosen_conv]
-        resp = supabase.table("procedimentos").select("internacao_id").execute()
-        dfp = pd.DataFrame(resp.data or [])
-        dfm = dfp.merge(dfi, left_on="internacao_id", right_on="id", how="left")
-        df_conv = (
-            dfm[dfm["convenio"].notna() & (dfm["convenio"].astype(str).str.strip()!="")]
-            .groupby("convenio")["convenio"].count()
-            .reset_index(name="total").sort_values("total", ascending=False)
-        )
-        st.dataframe(df_conv, use_container_width=True, hide_index=True)
+
+        if dfi.empty:
+            st.info("Sem dados de internações.")
+        else:
+            if chosen_conv != "Todos":
+                dfi = dfi[dfi["hospital"] == chosen_conv]
+
+            # Procedimentos (lado esquerdo do merge), traz internacao_id
+            resp = supabase.table("procedimentos").select("internacao_id").execute()
+            dfp = pd.DataFrame(resp.data or [])
+
+            if dfp.empty:
+                st.info("Sem procedimentos.")
+            else:
+                # Garante internacao_id válidos
+                dfp = dfp[dfp["internacao_id"].notna()]
+                ids = sorted(set(int(x) for x in dfp["internacao_id"].tolist() if pd.notna(x)))
+
+                if not ids:
+                    st.info("Sem vínculos de procedimentos com internações.")
+                else:
+                    # Reduz o universo de internações para as usadas
+                    dfi_ids = dfi[dfi["id"].isin(ids)].copy()
+
+                    # Merge seguro
+                    dfm = safe_merge(dfp, dfi_ids, left_on="internacao_id", right_on="id", how="left")
+
+                    # Agrega por convênio (ignora nulos/vazios)
+                    df_conv = (
+                        dfm[dfm["convenio"].notna() & (dfm["convenio"].astype(str).str.strip() != "")]
+                        .groupby("convenio")["convenio"]
+                        .count()
+                        .reset_index(name="total")
+                        .sort_values("total", ascending=False)
+                    )
+
+                    if df_conv.empty:
+                        st.info("Sem dados para o resumo por convênio.")
+                    else:
+                        st.dataframe(df_conv, use_container_width=True, hide_index=True)
+
     except APIError as e:
         _sb_debug_error(e, "Falha no resumo por convênio.")
 
@@ -1518,3 +1581,48 @@ with tabs[5]:
 if st.session_state.get("goto_tab_label"):
     _switch_to_tab_by_label(st.session_state["goto_tab_label"])
     st.session_state["goto_tab_label"] = None
+
+# ============================================================
+# (Opcional) DDL Sugerido — Execute no SQL Editor do Supabase
+# ============================================================
+# /*
+# CREATE TABLE IF NOT EXISTS public.hospitals (
+#   id serial PRIMARY KEY,
+#   name text UNIQUE NOT NULL,
+#   active int4 NOT NULL DEFAULT 1
+# );
+#
+# CREATE TABLE IF NOT EXISTS public.internacoes (
+#   id serial PRIMARY KEY,
+#   numero_internacao numeric NULL,
+#   hospital text NULL,
+#   atendimento text UNIQUE,
+#   paciente text NULL,
+#   data_internacao text NULL,   -- pode trocar para DATE e ajustar o app
+#   convenio text NULL
+# );
+#
+# CREATE TABLE IF NOT EXISTS public.procedimentos (
+#   id serial PRIMARY KEY,
+#   internacao_id int4 REFERENCES public.internacoes(id) ON UPDATE CASCADE ON DELETE CASCADE,
+#   data_procedimento text NULL, -- pode trocar para DATE e ajustar o app
+#   profissional text NULL,
+#   procedimento text NULL,
+#   situacao text NOT NULL DEFAULT 'Pendente',
+#   observacao text NULL,
+#   is_manual int4 NOT NULL DEFAULT 0,
+#   aviso text NULL,
+#   grau_participacao text NULL,
+#   quitacao_data text NULL,
+#   quitacao_guia_amhptiss text NULL,
+#   quitacao_valor_amhptiss numeric NULL,
+#   quitacao_guia_complemento text NULL,
+#   quitacao_valor_complemento numeric NULL,
+#   quitacao_observacao text NULL
+# );
+#
+# -- Índice único parcial: 1 registro automático (is_manual=0) por (internação, data)
+# CREATE UNIQUE INDEX IF NOT EXISTS ux_proc_auto
+#   ON public.procedimentos(internacao_id, data_procedimento)
+#   WHERE is_manual = 0;
+# */
