@@ -56,14 +56,14 @@ ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MA
 # ---------------------------
 
 def get_hospitais(include_inactive: bool = False) -> list:
-    query = supabase.table("Hospitals").select("name")
+    query = supabase.table("hospitals").select("name")
     if not include_inactive:
         query = query.eq("active", 1)
     res = query.order("name").execute()
     return [item['name'] for item in res.data]
 
 def get_internacao_by_atendimento(att):
-    res = supabase.table("Internacoes").select("*").eq("atendimento", str(att)).execute()
+    res = supabase.table("internacoes").select("*").eq("atendimento", str(att)).execute()
     return pd.DataFrame(res.data)
 
 def criar_internacao(hospital, atendimento, paciente, data, convenio):
@@ -75,12 +75,12 @@ def criar_internacao(hospital, atendimento, paciente, data, convenio):
         "convenio": convenio,
         "numero_internacao": float(atendimento) if str(atendimento).replace('.','').isdigit() else 0
     }
-    res = supabase.table("Internacoes").insert(payload).execute()
+    res = supabase.table("internacoes").insert(payload).execute()
     return res.data[0]['id']
 
 def atualizar_internacao(internacao_id, **kwargs):
     update_data = {k: v for k, v in kwargs.items() if v is not None}
-    supabase.table("Internacoes").update(update_data).eq("id", internacao_id).execute()
+    supabase.table("internacoes").update(update_data).eq("id", internacao_id).execute()
 
 def criar_procedimento(internacao_id, data_proc, profissional, procedimento, **kwargs):
     payload = {
@@ -94,21 +94,21 @@ def criar_procedimento(internacao_id, data_proc, profissional, procedimento, **k
         "observacao": kwargs.get("observacao"),
         "grau_participacao": kwargs.get("grau_participacao")
     }
-    supabase.table("Procedimentos").insert(payload).execute()
+    supabase.table("procedimentos").insert(payload).execute()
 
 def atualizar_procedimento(proc_id, **kwargs):
     update_data = {k: v for k, v in kwargs.items() if v is not None}
-    supabase.table("Procedimentos").update(update_data).eq("id", proc_id).execute()
+    supabase.table("procedimentos").update(update_data).eq("id", proc_id).execute()
 
 def deletar_internacao(internacao_id: int):
-    supabase.table("Procedimentos").delete().eq("internacao_id", internacao_id).execute()
-    supabase.table("Internacoes").delete().eq("id", internacao_id).execute()
+    supabase.table("procedimentos").delete().eq("internacao_id", internacao_id).execute()
+    supabase.table("internacoes").delete().eq("id", internacao_id).execute()
 
 def deletar_procedimento(proc_id: int):
-    supabase.table("Procedimentos").delete().eq("id", proc_id).execute()
+    supabase.table("procedimentos").delete().eq("id", proc_id).execute()
 
 def existe_procedimento_no_dia(internacao_id, data_proc):
-    res = supabase.table("Procedimentos").select("id").eq("internacao_id", internacao_id).eq("data_procedimento", data_proc).eq("is_manual", 0).execute()
+    res = supabase.table("procedimentos").select("id").eq("internacao_id", internacao_id).eq("data_procedimento", data_proc).eq("is_manual", 0).execute()
     return len(res.data) > 0
 
 def quitar_procedimento(proc_id, **kwargs):
@@ -122,7 +122,7 @@ def quitar_procedimento(proc_id, **kwargs):
         "situacao": "Finalizado"
     }
     update_data = {k: v for k, v in update_data.items() if v is not None}
-    supabase.table("Procedimentos").update(update_data).eq("id", proc_id).execute()
+    supabase.table("procedimentos").update(update_data).eq("id", proc_id).execute()
 
 def reverter_quitacao(proc_id: int):
     update_data = {
@@ -130,10 +130,10 @@ def reverter_quitacao(proc_id: int):
         "quitacao_guia_complemento": None, "quitacao_valor_complemento": None,
         "quitacao_observacao": None, "situacao": "Enviado para pagamento"
     }
-    supabase.table("Procedimentos").update(update_data).eq("id", proc_id).execute()
+    supabase.table("procedimentos").update(update_data).eq("id", proc_id).execute()
 
 def get_quitacao_by_proc_id(proc_id: int):
-    res = supabase.table("Procedimentos").select("*, Internacoes(*)").eq("id", proc_id).execute()
+    res = supabase.table("procedimentos").select("*, Internacoes(*)").eq("id", proc_id).execute()
     df = pd.json_normalize(res.data)
     df.columns = [c.replace('Internacoes.', '') for c in df.columns]
     return df
@@ -180,7 +180,7 @@ tabs = st.tabs(["🏠 Início", "📤 Importar", "🔍 Consultar", "📑 Relató
 # --- ABA INÍCIO ---
 with tabs[0]:
     st.subheader("Resumo Geral")
-    res = supabase.table("Procedimentos").select("situacao, data_procedimento").execute()
+    res = supabase.table("procedimentos").select("situacao, data_procedimento").execute()
     df_home = pd.DataFrame(res.data)
     
     if not df_home.empty:
@@ -223,7 +223,7 @@ with tabs[2]:
         if not df_i.empty:
             st.write(df_i)
             int_id = int(df_i['id'].iloc[0])
-            res_p = supabase.table("Procedimentos").select("*").eq("internacao_id", int_id).execute()
+            res_p = supabase.table("procedimentos").select("*").eq("internacao_id", int_id).execute()
             df_p = pd.DataFrame(res_p.data)
             st.data_editor(df_p, use_container_width=True)
             
@@ -237,7 +237,7 @@ with tabs[2]:
 # --- ABA QUITAÇÃO ---
 with tabs[4]:
     st.subheader("Processar Quitações")
-    res_q = supabase.table("Procedimentos").select("*, Internacoes(paciente, hospital)").eq("situacao", "Enviado para pagamento").execute()
+    res_q = supabase.table("procedimentos").select("*, Internacoes(paciente, hospital)").eq("situacao", "Enviado para pagamento").execute()
     df_q = pd.json_normalize(res_q.data)
     if not df_q.empty:
         st.data_editor(df_q, key="edit_quit")
