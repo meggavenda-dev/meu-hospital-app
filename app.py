@@ -953,7 +953,7 @@ with tabs[2]:
             c1, c2, c3 = st.columns(3)
             with c1: data_proc = st.date_input("Data do procedimento", value=date.today())
             with c2:               
-                Profissionais distintos existentes (lado cliente, sem DISTINCT no PostgREST)
+                #Profissionais distintos existentes (lado cliente, sem DISTINCT no PostgREST)
                 try:
                     res_dist = supabase.table("procedimentos").select("profissional").execute()
                     df_pros = pd.DataFrame(res_dist.data or [])
