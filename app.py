@@ -3,6 +3,7 @@
 #  SISTEMA DE INTERNAÇÕES — VERSÃO SUPABASE (Cloud)
 #  Visual e fluxo do app "Versão Final" — DB: Supabase
 #  Melhorias: importação turbo, cache TTL centralizado, view opcional
+#  Ajuste: normalização de 'atendimento' (0007064233 == 7064233)
 # ============================================================
 
 import streamlit as st
@@ -215,6 +216,33 @@ def _format_currency_br(v) -> str:
         return f"R$ {v}"
 
 # ============================================================
+# UTIL — atendimento (normalização)
+# ============================================================
+def _att_norm(v) -> str:
+    """
+    Normaliza atendimento para comparação/armazenamento:
+    - mantém apenas dígitos
+    - remove zeros à esquerda
+    - retorna '0' se ficar vazio
+    """
+    s = re.sub(r"\D", "", str(v or ""))
+    s = s.lstrip("0")
+    return s if s else "0"
+
+def _att_to_number(v):
+    """
+    Converte atendimento para número (compatível com numero_internacao).
+    Retorna None se não houver dígitos.
+    """
+    s = re.sub(r"\D", "", str(v or ""))
+    if not s:
+        return None
+    try:
+        return float(s)  # mantém compatibilidade com schema atual (float)
+    except Exception:
+        return None
+
+# ============================================================
 # Helper de merge tolerante (evita KeyError com DF/coluna vazios)
 # ============================================================
 def safe_merge(
@@ -260,22 +288,38 @@ def get_hospitais(include_inactive: bool = False) -> list:
         return []
 
 def get_internacao_by_atendimento(att):
-    # NÃO cachear: usado em loops de import e consulta imediata.
+    """
+    Busca por atendimento normalizado e, em fallback, por numero_internacao.
+    NÃO cachear (usado em loops de import e consulta imediata).
+    """
     try:
-        res = supabase.table("internacoes").select("*").eq("atendimento", str(att)).execute()
-        return pd.DataFrame(res.data or [])
+        att_norm = _att_norm(att)
+        # 1) Busca por atendimento (string normalizada)
+        res = supabase.table("internacoes").select("*").eq("atendimento", att_norm).execute()
+        df = pd.DataFrame(res.data or [])
+        if not df.empty:
+            return df
+
+        # 2) Fallback: busca por numero_internacao
+        num = _att_to_number(att)
+        if num is not None:
+            res2 = supabase.table("internacoes").select("*").eq("numero_internacao", num).execute()
+            return pd.DataFrame(res2.data or [])
+        return pd.DataFrame()
     except APIError as e:
         _sb_debug_error(e, "Falha ao consultar internação.")
         return pd.DataFrame()
 
 def criar_internacao(hospital, atendimento, paciente, data, convenio):
+    att_norm = _att_norm(atendimento)
+    num = _att_to_number(atendimento)
     payload = {
         "hospital": hospital,
-        "atendimento": str(atendimento),
+        "atendimento": att_norm,                      # normalizado
         "paciente": paciente,
         "data_internacao": _to_ddmmyyyy(data),
         "convenio": convenio,
-        "numero_internacao": float(atendimento) if str(atendimento).replace(".","").isdigit() else None
+        "numero_internacao": num                      # numérico (sem zeros à esquerda)
     }
     try:
         res = supabase.table("internacoes").insert(payload).execute()
@@ -442,7 +486,6 @@ def _home_fetch_base_df() -> pd.DataFrame:
             return df
         except APIError as e:
             _sb_debug_error(e, "Falha na view vw_procedimentos_internacoes. Usando fallback local.")
-            # segue para fallback
 
     try:
         res_p = supabase.table("procedimentos").select(
@@ -614,7 +657,7 @@ def _switch_to_tab_by_label(tab_label: str):
     <script>
     (function(){
       const target = __TAB_LABEL__;
-      const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+      const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
 
       let attempts = 0;
       const maxAttempts = 20;  // 20 * 100ms = 2s
@@ -836,7 +879,7 @@ with tabs[1]:
             if not att_new:
                 st.warning("Informe o atendimento.")
             elif not get_internacao_by_atendimento(att_new).empty:
-                st.error("Já existe uma internação com este atendimento.")
+                st.error("Já existe uma internação com este atendimento (considerando zeros à esquerda).")
             else:
                 nid = criar_internacao(hosp_new, att_new, pac_new, data_new.strftime("%d/%m/%Y"), conv_new)
                 if nid:
@@ -912,30 +955,41 @@ with tabs[1]:
         colg1, colg2 = st.columns([1, 4])
         with colg1:
             if st.button("Gravar no banco", type="primary"):
-                # ======== IMPORTAÇÃO TURBO (anti N+1) ========
+                # ======== IMPORTAÇÃO TURBO (anti N+1) — com normalização ========
                 total_criados = total_ignorados = total_internacoes = 0
 
-                # 1) Atendimentos únicos do arquivo pós-filtro
+                # 1) Atendimentos únicos (originais) do arquivo pós-filtro
                 atts_file = sorted({att for (att, d) in pares if att})
 
-                # 2) Carrega internações existentes uma vez
+                # Mapeia original -> normalizado e conjuntos para busca
+                orig_to_norm = {att: _att_norm(att) for att in atts_file}
+                norm_set = sorted({v for v in orig_to_norm.values() if v})
+                num_set = sorted({ _att_to_number(att) for att in atts_file if _att_to_number(att) is not None })
+
+                # 2) Carrega internações existentes (por atendimento e por numero)
+                existing_map_norm_to_id = {}
                 try:
-                    existing_map = {}
-                    if atts_file:
-                        res_int = supabase.table("internacoes").select("id, atendimento") \
-                                           .in_("atendimento", atts_file).execute()
+                    if norm_set:
+                        res_int = supabase.table("internacoes").select("id, atendimento").in_("atendimento", norm_set).execute()
                         for r in (res_int.data or []):
-                            existing_map[str(r["atendimento"])] = int(r["id"])
-                    else:
-                        existing_map = {}
+                            existing_map_norm_to_id[str(r["atendimento"])] = int(r["id"])
+                    if num_set:
+                        res_int_num = supabase.table("internacoes").select("id, numero_internacao").in_("numero_internacao", num_set).execute()
+                        for r in (res_int_num.data or []):
+                            # normaliza chave a partir do número
+                            k = _att_norm(str(int(float(r["numero_internacao"]))))
+                            existing_map_norm_to_id[k] = int(r["id"])
                 except APIError as e:
                     _sb_debug_error(e, "Falha ao buscar internações existentes.")
-                    existing_map = {}
+                    existing_map_norm_to_id = {}
 
-                # 3) Monta payload de internações que faltam
+                # 3) Monta payload de internações que faltam (grava normalizado)
                 to_create_int = []
                 for att in atts_file:
-                    if str(att) in existing_map:
+                    na = orig_to_norm.get(att)
+                    if not na:
+                        continue
+                    if na in existing_map_norm_to_id:
                         continue
                     itens_att = [r for r in registros_filtrados if r.get("atendimento") == att]
                     paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
@@ -943,11 +997,11 @@ with tabs[1]:
                     data_int = next((x.get("data") for x in itens_att if x.get("data")), None) or None
                     to_create_int.append({
                         "hospital": hospital,
-                        "atendimento": str(att),
+                        "atendimento": na,                         # normalizado
                         "paciente": paciente,
                         "data_internacao": _to_ddmmyyyy(data_int) if data_int else _to_ddmmyyyy(date.today()),
                         "convenio": conv_total,
-                        "numero_internacao": float(att) if str(att).replace(".", "").isdigit() else None
+                        "numero_internacao": _att_to_number(att)   # sem zeros à esquerda
                     })
 
                 # 4) Inserção em lote de internações (chunks)
@@ -958,17 +1012,18 @@ with tabs[1]:
                 if to_create_int:
                     try:
                         _chunked_insert("internacoes", to_create_int, chunk=500)
-                        # Recarrega mapeamento agora que criou as novas
-                        res_int2 = supabase.table("internacoes").select("id, atendimento") \
-                                            .in_("atendimento", atts_file).execute()
-                        existing_map = {str(r["atendimento"]): int(r["id"]) for r in (res_int2.data or [])}
+                        # Recarrega mapeamento por atendimento normalizado
+                        if norm_set:
+                            res_int2 = supabase.table("internacoes").select("id, atendimento").in_("atendimento", norm_set).execute()
+                            for r in (res_int2.data or []):
+                                existing_map_norm_to_id[str(r["atendimento"])] = int(r["id"])
                         total_internacoes = len(to_create_int)
                         invalidate_caches()
                     except APIError as e:
                         _sb_debug_error(e, "Falha ao criar internações em lote.")
 
-                # 5) Map (att -> id) e target_iids
-                att_to_id = {str(att): existing_map.get(str(att)) for att in atts_file if str(att) in existing_map}
+                # 5) Map (original -> ID) usando normalizado
+                att_to_id = {att: existing_map_norm_to_id.get(orig_to_norm.get(att)) for att in atts_file}
                 target_iids = sorted({iid for iid in att_to_id.values() if iid})
 
                 # 6) Busca procedimentos automáticos existentes (1 chamada) e cria set (iid, data)
@@ -991,7 +1046,7 @@ with tabs[1]:
                     if not att or not data_proc:
                         total_ignorados += 1
                         continue
-                    iid = att_to_id.get(str(att))
+                    iid = att_to_id.get(att)
                     if not iid:
                         total_ignorados += 1
                         continue
@@ -1048,7 +1103,7 @@ with tabs[2]:
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hlist = ["Todos"] + get_hospitais()
     filtro_hosp = st.selectbox("Filtrar hospital (consulta):", hlist)
-    codigo = st.text_input("Digite o atendimento para consultar:", key="consulta_codigo", placeholder="Ex.: 123456")
+    codigo = st.text_input("Digite o atendimento para consultar:", key="consulta_codigo", placeholder="Ex.: 0007064233 ou 7064233")
     st.markdown("</div>", unsafe_allow_html=True)
 
     if codigo:
