@@ -11,7 +11,9 @@ import io
 import base64, json
 import requests
 import re
+import json
 import streamlit.components.v1 as components
+
 
 # ==== Supabase ====
 from supabase import create_client, Client
@@ -364,25 +366,42 @@ inject_css()
 app_header("Sistema de Internações — Supabase",
            "Importação, edição, quitação e relatórios (banco em nuvem)")
 
+
 def _switch_to_tab_by_label(tab_label: str):
-    js = f"""
+    """
+    Clica na aba cujo rótulo visível contém `tab_label` (match por substring).
+    Usa JSON para injetar a string com segurança e evita f-string no JS.
+    """
+    js = """
     <script>
-    (function(){{
-      const target = "{tab_label}".trim();
-      const norm = (s)=> (s||"").replace(/\\s+/g, " ").trim();
-      let attempts=0; const max=20;
-      const timer=setInterval(()=>{
+    (function(){
+      const target = __TAB_LABEL__;
+      const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+
+      let attempts = 0;
+      const maxAttempts = 20;  // 20 * 100ms = 2s
+      const timer = setInterval(() => {
         attempts++;
-        const tabs=window.parent.document.querySelectorAll('button[role="tab"]');
-        for(const t of tabs){{
-          const txt=norm(t.textContent||t.innerText);
-          if (txt.includes(norm(target))) {{ t.click(); clearInterval(timer); return; }}
-        }}
-        if (attempts>=max) clearInterval(timer);
-      }},100);
-    }})();
+        const tabs = window.parent.document.querySelectorAll('button[role="tab"]');
+        for (const t of tabs) {
+          const txt = norm(t.textContent || t.innerText);
+          if (txt.includes(norm(target))) {
+            t.click();
+            clearInterval(timer);
+            return;
+          }
+        }
+        if (attempts >= maxAttempts) {
+          clearInterval(timer);
+          console.warn("Tab não encontrada para:", target);
+        }
+      }, 100);
+    })();
     </script>
     """
+
+   # injeta o label como string JS segura
+    js = js.replace("__TAB_LABEL__", json.dumps(tab_label))
     components.html(js, height=0, width=0)
 
 tabs = st.tabs([
