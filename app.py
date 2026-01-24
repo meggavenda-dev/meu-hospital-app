@@ -2,7 +2,7 @@
 # ============================================================
 #  SISTEMA DE INTERNAÇÕES — VERSÃO SUPABASE (Cloud)
 #  Visual e fluxo do app "Versão Final" — DB: Supabase
-#  Otimizado: cache leve + invalidação após CRUD
+#  Melhorias: importação turbo, cache TTL centralizado, view opcional
 # ============================================================
 
 import streamlit as st
@@ -57,17 +57,26 @@ def _sb_debug_error(e: APIError, prefix="Erro Supabase"):
         )
 
 # ============================================================
-#  Cache — Utilitários
+#  Configurações de Desempenho
 # ============================================================
+# TTLs centralizados (invalidados manualmente após CRUD)
+TTL_LONG  = 300   # 5 min (listas estáveis: hospitais)
+TTL_MED   = 180   # 3 min (bases agregadas das telas)
+TTL_SHORT = 120   # 2 min (consultas frequentes)
+
+def _to_bool(x):
+    if isinstance(x, bool):
+        return x
+    s = str(x).strip().lower()
+    return s in ("1", "true", "yes", "y", "on")
+
+USE_DB_VIEW = _to_bool(st.secrets.get("USE_DB_VIEW", False))  # opcional: usar VIEW vw_procedimentos_internacoes
+
 def invalidate_caches():
-    """
-    Invalida TODOS os caches de dados (usado após CRUD)
-    para garantir que as telas reflitam as alterações.
-    """
+    """Invalida TODOS os caches (chamado após qualquer CRUD)."""
     try:
         st.cache_data.clear()
     except Exception:
-        # Em cenários específicos, o clear pode não estar disponível; ignore.
         pass
 
 # ============================================================
@@ -238,7 +247,7 @@ def safe_merge(
 # CRUD — Supabase (tabelas minúsculas) + cache-aware
 # ============================================================
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=TTL_LONG, show_spinner=False)
 def get_hospitais(include_inactive: bool = False) -> list:
     try:
         query = supabase.table("hospitals").select("name, active")
@@ -271,7 +280,6 @@ def criar_internacao(hospital, atendimento, paciente, data, convenio):
     try:
         res = supabase.table("internacoes").insert(payload).execute()
         row = (res.data or [{}])[0]
-        # invalida caches (listas/bases)
         invalidate_caches()
         return int(row.get("id"))
     except APIError as e:
@@ -388,7 +396,7 @@ def reverter_quitacao(proc_id: int):
     except APIError as e:
         _sb_debug_error(e, "Falha ao reverter quitação.")
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def get_procedimentos(internacao_id):
     try:
         res = supabase.table("procedimentos").select("*").eq("internacao_id", int(internacao_id)).execute()
@@ -397,7 +405,7 @@ def get_procedimentos(internacao_id):
         _sb_debug_error(e, "Falha ao listar procedimentos.")
         return pd.DataFrame()
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def get_quitacao_by_proc_id(proc_id: int):
     """Retorna Procedimento + Internação (merge em pandas, sem embed)."""
     try:
@@ -416,46 +424,56 @@ def get_quitacao_by_proc_id(proc_id: int):
 
 # ============================================================
 #  Consultas cacheadas (bases usadas em telas pesadas)
+#  Agora com opção de usar VIEW (USE_DB_VIEW) e fallback para merge local
 # ============================================================
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=TTL_MED, show_spinner=False)
 def _home_fetch_base_df() -> pd.DataFrame:
     """Carrega Procedimentos + Internações para a Home (cache curto)."""
+    if USE_DB_VIEW:
+        try:
+            res = supabase.table("vw_procedimentos_internacoes").select(
+                "procedimento_id, internacao_id, data_procedimento, procedimento, profissional, situacao, aviso, grau_participacao, "
+                "atendimento, paciente, hospital, convenio, data_internacao"
+            ).execute()
+            df = pd.DataFrame(res.data or [])
+            if "procedimento_id" in df.columns and "id" not in df.columns:
+                df = df.rename(columns={"procedimento_id": "id"})
+            return df
+        except APIError as e:
+            _sb_debug_error(e, "Falha na view vw_procedimentos_internacoes. Usando fallback local.")
+            # segue para fallback
+
     try:
         res_p = supabase.table("procedimentos").select(
             "id, internacao_id, data_procedimento, procedimento, profissional, situacao, aviso, grau_participacao"
         ).execute()
         df_p = pd.DataFrame(res_p.data or [])
         if df_p.empty:
-            df_all = pd.DataFrame(columns=[
+            return pd.DataFrame(columns=[
                 "internacao_id","atendimento","paciente","hospital","convenio","data_internacao",
                 "id","data_procedimento","procedimento","profissional","situacao","aviso","grau_participacao"
             ])
-        else:
-            ids = sorted(set(int(x) for x in df_p["internacao_id"].dropna().tolist()))
-            if ids:
-                res_i = supabase.table("internacoes").select(
-                    "id, atendimento, paciente, hospital, convenio, data_internacao"
-                ).in_("id", ids).execute()
-                df_i = pd.DataFrame(res_i.data or [])
-            else:
-                df_i = pd.DataFrame(columns=["id","atendimento","paciente","hospital","convenio","data_internacao"])
-            df_all = safe_merge(
-                df_p,
-                df_i[["id", "atendimento", "paciente", "hospital", "convenio", "data_internacao"]] if not df_i.empty else df_i,
-                left_on="internacao_id",
-                right_on="id",
-                how="left",
-                suffixes=("", "_int"),
-            )
-        return df_all
+        ids = sorted(set(int(x) for x in df_p["internacao_id"].dropna().tolist()))
+        res_i = supabase.table("internacoes").select(
+            "id, atendimento, paciente, hospital, convenio, data_internacao"
+        ).in_("id", ids).execute() if ids else None
+        df_i = pd.DataFrame(res_i.data or []) if res_i else pd.DataFrame()
+        return safe_merge(
+            df_p,
+            df_i[["id", "atendimento", "paciente", "hospital", "convenio", "data_internacao"]] if not df_i.empty else df_i,
+            left_on="internacao_id",
+            right_on="id",
+            how="left",
+            suffixes=("", "_int"),
+        )
     except APIError as e:
         _sb_debug_error(e, "Falha ao carregar dados para a Home.")
         return pd.DataFrame()
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=TTL_MED, show_spinner=False)
 def _listar_profissionais_cache() -> list:
-    """Lista de profissionais distintos (cache 60s)."""
+    """Lista de profissionais distintos (cache 3 min)."""
     try:
         res_dist = supabase.table("procedimentos").select("profissional").execute()
         df_pros = pd.DataFrame(res_dist.data or [])
@@ -470,9 +488,22 @@ def _listar_profissionais_cache() -> list:
     except APIError:
         return []
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=TTL_MED, show_spinner=False)
 def _rel_cirurgias_base_df() -> pd.DataFrame:
     """Base para Relatório 'Cirurgias por Status' (cache curto)."""
+    if USE_DB_VIEW:
+        try:
+            res = supabase.table("vw_procedimentos_internacoes").select(
+                "procedimento_id, internacao_id, data_procedimento, aviso, profissional, procedimento, grau_participacao, situacao, "
+                "hospital, atendimento, paciente, convenio"
+            ).eq("procedimento", "Cirurgia / Procedimento").execute()
+            df = pd.DataFrame(res.data or [])
+            if "procedimento_id" in df.columns and "id" not in df.columns:
+                df = df.rename(columns={"procedimento_id": "id"})
+            return df
+        except APIError as e:
+            _sb_debug_error(e, "Falha na view (rel cirurgias). Usando fallback local.")
+
     try:
         resp = supabase.table("procedimentos").select(
             "internacao_id, data_procedimento, aviso, profissional, procedimento, grau_participacao, situacao"
@@ -488,15 +519,28 @@ def _rel_cirurgias_base_df() -> pd.DataFrame:
             dfi = pd.DataFrame(resi.data or [])
         else:
             dfi = pd.DataFrame(columns=["id","hospital","atendimento","paciente","convenio"])
-        df_rel = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
-        return df_rel
+        return safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
     except APIError as e:
         _sb_debug_error(e, "Falha ao carregar dados para Relatório.")
         return pd.DataFrame()
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=TTL_MED, show_spinner=False)
 def _rel_quitacoes_base_df() -> pd.DataFrame:
     """Base para Relatório de Quitações (cache curto)."""
+    if USE_DB_VIEW:
+        try:
+            res = supabase.table("vw_procedimentos_internacoes").select(
+                "procedimento_id, internacao_id, data_procedimento, profissional, quitacao_data, "
+                "quitacao_guia_amhptiss, quitacao_guia_complemento, quitacao_valor_amhptiss, quitacao_valor_complemento, "
+                "hospital, atendimento, paciente, convenio"
+            ).not_.is_("quitacao_data", None).eq("procedimento", "Cirurgia / Procedimento").execute()
+            df = pd.DataFrame(res.data or [])
+            if "procedimento_id" in df.columns and "id" not in df.columns:
+                df = df.rename(columns={"procedimento_id": "id"})
+            return df
+        except APIError as e:
+            _sb_debug_error(e, "Falha na view (rel quitações). Usando fallback local.")
+
     try:
         resp = supabase.table("procedimentos").select(
             "internacao_id, data_procedimento, profissional, quitacao_data, quitacao_guia_amhptiss, quitacao_guia_complemento, quitacao_valor_amhptiss, quitacao_valor_complemento"
@@ -510,15 +554,29 @@ def _rel_quitacoes_base_df() -> pd.DataFrame:
             dfi = pd.DataFrame(resi.data or [])
         else:
             dfi = pd.DataFrame()
-        df_quit = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
-        return df_quit
+        return safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
     except APIError as e:
         _sb_debug_error(e, "Falha ao carregar dados de quitações.")
         return pd.DataFrame()
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=TTL_MED, show_spinner=False)
 def _quitacao_pendentes_base_df() -> pd.DataFrame:
     """Base para aba Quitação (pendentes 'Enviado para pagamento')."""
+    if USE_DB_VIEW:
+        try:
+            res = supabase.table("vw_procedimentos_internacoes").select(
+                "procedimento_id, internacao_id, data_procedimento, profissional, aviso, situacao, "
+                "quitacao_data, quitacao_guia_amhptiss, quitacao_valor_amhptiss, "
+                "quitacao_guia_complemento, quitacao_valor_complemento, quitacao_observacao, "
+                "hospital, atendimento, paciente, convenio"
+            ).eq("procedimento", "Cirurgia / Procedimento").eq("situacao", "Enviado para pagamento").execute()
+            df = pd.DataFrame(res.data or [])
+            if "procedimento_id" in df.columns and "id" not in df.columns:
+                df = df.rename(columns={"procedimento_id": "id"})
+            return df
+        except APIError as e:
+            _sb_debug_error(e, "Falha na view (pendências quitação). Usando fallback local.")
+
     try:
         resp = supabase.table("procedimentos").select(
             "id, internacao_id, data_procedimento, profissional, aviso, situacao, "
@@ -534,8 +592,7 @@ def _quitacao_pendentes_base_df() -> pd.DataFrame:
             dfi = pd.DataFrame(resi.data or [])
         else:
             dfi = pd.DataFrame()
-        df_quit = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_int"))
-        return df_quit
+        return safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_int"))
     except APIError as e:
         _sb_debug_error(e, "Falha ao carregar pendências de quitação.")
         return pd.DataFrame()
@@ -628,7 +685,7 @@ with tabs[0]:
         with cold4:
             proc_fim = st.date_input("Procedimento — fim", value=st.session_state.get("home_f_proc_fim", hoje), key="home_f_proc_fim")
 
-    # ------ Carrega Procedimentos + Internações (cache curto; 2 passos, sem embed) ------
+    # ------ Carrega Procedimentos + Internações (cache curto; 2 passos, ou view) ------
     df_all = _home_fetch_base_df()
 
     # Filtros
@@ -855,44 +912,130 @@ with tabs[1]:
         colg1, colg2 = st.columns([1, 4])
         with colg1:
             if st.button("Gravar no banco", type="primary"):
+                # ======== IMPORTAÇÃO TURBO (anti N+1) ========
                 total_criados = total_ignorados = total_internacoes = 0
 
-                for (att, data_proc) in pares:
-                    if not att: continue
-                    df_int = get_internacao_by_atendimento(att)
-                    if df_int.empty:
-                        itens_att = [r for r in registros_filtrados if r["atendimento"] == att]
-                        paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
-                        conv_total = next((x.get("convenio") for x in itens_att if x.get("convenio")), "") if itens_att else ""
-                        data_int = next((x.get("data") for x in itens_att if x.get("data")), data_proc)
-                        internacao_id = criar_internacao(hospital, att, paciente, data_int, conv_total)
-                        if internacao_id: total_internacoes += 1
+                # 1) Atendimentos únicos do arquivo pós-filtro
+                atts_file = sorted({att for (att, d) in pares if att})
+
+                # 2) Carrega internações existentes uma vez
+                try:
+                    existing_map = {}
+                    if atts_file:
+                        res_int = supabase.table("internacoes").select("id, atendimento") \
+                                           .in_("atendimento", atts_file).execute()
+                        for r in (res_int.data or []):
+                            existing_map[str(r["atendimento"])] = int(r["id"])
                     else:
-                        internacao_id = int(df_int["id"].iloc[0])
+                        existing_map = {}
+                except APIError as e:
+                    _sb_debug_error(e, "Falha ao buscar internações existentes.")
+                    existing_map = {}
 
-                    # Otimização: captura primeiro profissional/aviso presentes para o par (att, data_proc)
-                    if internacao_id:
-                        prof_dia = next((it.get("profissional") for it in registros_filtrados
-                                         if it["atendimento"] == att and it["data"] == data_proc and it.get("profissional")), "")
-                        aviso_dia = next((it.get("aviso") for it in registros_filtrados
-                                         if it["atendimento"] == att and it["data"] == data_proc and it.get("aviso")), "")
+                # 3) Monta payload de internações que faltam
+                to_create_int = []
+                for att in atts_file:
+                    if str(att) in existing_map:
+                        continue
+                    itens_att = [r for r in registros_filtrados if r.get("atendimento") == att]
+                    paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
+                    conv_total = next((x.get("convenio") for x in itens_att if x.get("convenio")), "") if itens_att else ""
+                    data_int = next((x.get("data") for x in itens_att if x.get("data")), None) or None
+                    to_create_int.append({
+                        "hospital": hospital,
+                        "atendimento": str(att),
+                        "paciente": paciente,
+                        "data_internacao": _to_ddmmyyyy(data_int) if data_int else _to_ddmmyyyy(date.today()),
+                        "convenio": conv_total,
+                        "numero_internacao": float(att) if str(att).replace(".", "").isdigit() else None
+                    })
 
-                        if not prof_dia:
-                            total_ignorados += 1
-                            continue
-                        if existe_procedimento_no_dia(internacao_id, data_proc):
-                            total_ignorados += 1
-                            continue
+                # 4) Inserção em lote de internações (chunks)
+                def _chunked_insert(table_name: str, rows: list, chunk: int = 500):
+                    for i in range(0, len(rows), chunk):
+                        supabase.table(table_name).insert(rows[i:i+chunk]).execute()
 
-                        criar_procedimento(
-                            internacao_id, data_proc, prof_dia,
-                            procedimento="Cirurgia / Procedimento", situacao="Pendente",
-                            observacao=None, is_manual=0, aviso=aviso_dia or None, grau_participacao=None
-                        )
-                        total_criados += 1
+                if to_create_int:
+                    try:
+                        _chunked_insert("internacoes", to_create_int, chunk=500)
+                        # Recarrega mapeamento agora que criou as novas
+                        res_int2 = supabase.table("internacoes").select("id, atendimento") \
+                                            .in_("atendimento", atts_file).execute()
+                        existing_map = {str(r["atendimento"]): int(r["id"]) for r in (res_int2.data or [])}
+                        total_internacoes = len(to_create_int)
+                        invalidate_caches()
+                    except APIError as e:
+                        _sb_debug_error(e, "Falha ao criar internações em lote.")
+
+                # 5) Map (att -> id) e target_iids
+                att_to_id = {str(att): existing_map.get(str(att)) for att in atts_file if str(att) in existing_map}
+                target_iids = sorted({iid for iid in att_to_id.values() if iid})
+
+                # 6) Busca procedimentos automáticos existentes (1 chamada) e cria set (iid, data)
+                existing_auto = set()
+                try:
+                    if target_iids:
+                        res_auto = supabase.table("procedimentos").select("internacao_id, data_procedimento, is_manual") \
+                                            .in_("internacao_id", target_iids).eq("is_manual", 0).execute()
+                        for r in (res_auto.data or []):
+                            iid = int(r["internacao_id"])
+                            dt = _to_ddmmyyyy(r.get("data_procedimento"))
+                            if iid and dt:
+                                existing_auto.add((iid, dt))
+                except APIError as e:
+                    _sb_debug_error(e, "Falha ao buscar procedimentos existentes.")
+
+                # 7) Gera payload dos novos (garante 1 automático/dia)
+                to_insert_auto = []
+                for (att, data_proc) in pares:
+                    if not att or not data_proc:
+                        total_ignorados += 1
+                        continue
+                    iid = att_to_id.get(str(att))
+                    if not iid:
+                        total_ignorados += 1
+                        continue
+
+                    data_norm = _to_ddmmyyyy(data_proc)
+                    if (iid, data_norm) in existing_auto:
+                        total_ignorados += 1
+                        continue
+
+                    prof_dia = next((it.get("profissional") for it in registros_filtrados
+                                     if it.get("atendimento") == att and it.get("data") == data_proc and it.get("profissional")), "")
+                    aviso_dia = next((it.get("aviso") for it in registros_filtrados
+                                      if it.get("atendimento") == att and it.get("data") == data_proc and it.get("aviso")), "")
+
+                    if not prof_dia:
+                        total_ignorados += 1
+                        continue
+
+                    to_insert_auto.append({
+                        "internacao_id": int(iid),
+                        "data_procedimento": data_norm,
+                        "profissional": prof_dia,
+                        "procedimento": "Cirurgia / Procedimento",
+                        "situacao": "Pendente",
+                        "observacao": None,
+                        "is_manual": 0,
+                        "aviso": (aviso_dia or None),
+                        "grau_participacao": None
+                    })
+                    # evita duplicar dentro do mesmo arquivo
+                    existing_auto.add((iid, data_norm))
+
+                # 8) Insere procedimentos em lote
+                if to_insert_auto:
+                    try:
+                        _chunked_insert("procedimentos", to_insert_auto, chunk=500)
+                        invalidate_caches()
+                        total_criados = len(to_insert_auto)
+                    except APIError as e:
+                        _sb_debug_error(e, "Falha ao inserir procedimentos em lote.")
 
                 st.success(f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}")
                 st.toast("✅ Importação concluída.", icon="✅")
+                # ======== FIM IMPORTAÇÃO TURBO ========
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1090,7 +1233,7 @@ with tabs[2]:
             c1, c2, c3 = st.columns(3)
             with c1: data_proc = st.date_input("Data do procedimento", value=date.today())
             with c2:
-                # Profissionais distintos (cache 60s)
+                # Profissionais distintos (cache 3 min)
                 lista_profissionais = _listar_profissionais_cache()
                 profissional = st.selectbox("Profissional", ["(selecione)"] + lista_profissionais, index=0)
             with c3: situacao = st.selectbox("Situação", STATUS_OPCOES, index=0)
@@ -1338,7 +1481,7 @@ with tabs[3]:
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
-    # Carrega base (procedimentos Cirurgia/Proc + merge com internacoes) — cache curto
+    # Base (procedimentos Cirurgia/Proc + merge com internacoes ou view)
     df_rel = _rel_cirurgias_base_df()
 
     if not df_rel.empty:
@@ -1392,7 +1535,7 @@ with tabs[3]:
         dt_ini_q = st.date_input("Data inicial da quitação", value=ini_default_q, key="rel_q_ini")
         dt_fim_q = st.date_input("Data final da quitação", value=hoje, key="rel_q_fim")
 
-    # Base de quitações — cache curto
+    # Base de quitações
     df_quit = _rel_quitacoes_base_df()
 
     if not df_quit.empty:
@@ -1465,7 +1608,7 @@ with tabs[4]:
     hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="quit_hosp")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Carrega pendentes de envio + merge (sem embed) — cache curto
+    # Carrega pendentes de envio
     df_quit = _quitacao_pendentes_base_df()
 
     if hosp_sel != "Todos" and not df_quit.empty:
