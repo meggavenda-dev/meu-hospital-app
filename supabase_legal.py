@@ -2,6 +2,7 @@
 # ============================================================
 #  SISTEMA DE INTERNAÇÕES — VERSÃO SUPABASE (Cloud)
 #  Visual e fluxo do app "Versão Final" — DB: Supabase
+#  Otimizado: cache leve + invalidação após CRUD
 # ============================================================
 
 import streamlit as st
@@ -54,6 +55,20 @@ def _sb_debug_error(e: APIError, prefix="Erro Supabase"):
             f"hint: {getattr(e, 'hint', None)}",
             language="text",
         )
+
+# ============================================================
+#  Cache — Utilitários
+# ============================================================
+def invalidate_caches():
+    """
+    Invalida TODOS os caches de dados (usado após CRUD)
+    para garantir que as telas reflitam as alterações.
+    """
+    try:
+        st.cache_data.clear()
+    except Exception:
+        # Em cenários específicos, o clear pode não estar disponível; ignore.
+        pass
 
 # ============================================================
 #  Domínio e Aparência
@@ -220,8 +235,10 @@ def safe_merge(
         return left
 
 # ============================================================
-# CRUD — Supabase (tabelas minúsculas)
+# CRUD — Supabase (tabelas minúsculas) + cache-aware
 # ============================================================
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_hospitais(include_inactive: bool = False) -> list:
     try:
         query = supabase.table("hospitals").select("name, active")
@@ -234,6 +251,7 @@ def get_hospitais(include_inactive: bool = False) -> list:
         return []
 
 def get_internacao_by_atendimento(att):
+    # NÃO cachear: usado em loops de import e consulta imediata.
     try:
         res = supabase.table("internacoes").select("*").eq("atendimento", str(att)).execute()
         return pd.DataFrame(res.data or [])
@@ -253,6 +271,8 @@ def criar_internacao(hospital, atendimento, paciente, data, convenio):
     try:
         res = supabase.table("internacoes").insert(payload).execute()
         row = (res.data or [{}])[0]
+        # invalida caches (listas/bases)
+        invalidate_caches()
         return int(row.get("id"))
     except APIError as e:
         _sb_debug_error(e, "Falha ao criar internação.")
@@ -264,6 +284,7 @@ def atualizar_internacao(internacao_id, **kwargs):
         update_data["data_internacao"] = _to_ddmmyyyy(update_data["data_internacao"])
     try:
         supabase.table("internacoes").update(update_data).eq("id", int(internacao_id)).execute()
+        invalidate_caches()
     except APIError as e:
         _sb_debug_error(e, "Falha ao atualizar internação.")
 
@@ -271,6 +292,7 @@ def deletar_internacao(internacao_id: int):
     try:
         supabase.table("procedimentos").delete().eq("internacao_id", int(internacao_id)).execute()
         supabase.table("internacoes").delete().eq("id", int(internacao_id)).execute()
+        invalidate_caches()
     except APIError as e:
         _sb_debug_error(e, "Falha ao deletar internação.")
 
@@ -290,6 +312,7 @@ def criar_procedimento(internacao_id, data_proc, profissional, procedimento,
     }
     try:
         supabase.table("procedimentos").insert(payload).execute()
+        invalidate_caches()
     except APIError as e:
         _sb_debug_error(e, "Falha ao criar procedimento.")
 
@@ -320,12 +343,14 @@ def atualizar_procedimento(proc_id, procedimento=None, situacao=None,
     if not update_data: return
     try:
         supabase.table("procedimentos").update(update_data).eq("id", int(proc_id)).execute()
+        invalidate_caches()
     except APIError as e:
         _sb_debug_error(e, "Falha ao atualizar procedimento.")
 
 def deletar_procedimento(proc_id: int):
     try:
         supabase.table("procedimentos").delete().eq("id", int(proc_id)).execute()
+        invalidate_caches()
     except APIError as e:
         _sb_debug_error(e, "Falha ao deletar procedimento.")
 
@@ -343,6 +368,7 @@ def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_a
     update_data = {k:v for k,v in update_data.items() if v is not None or k=="situacao"}
     try:
         supabase.table("procedimentos").update(update_data).eq("id", int(proc_id)).execute()
+        invalidate_caches()
     except APIError as e:
         _sb_debug_error(e, "Falha ao quitar procedimento.")
 
@@ -358,9 +384,11 @@ def reverter_quitacao(proc_id: int):
     }
     try:
         supabase.table("procedimentos").update(update_data).eq("id", int(proc_id)).execute()
+        invalidate_caches()
     except APIError as e:
         _sb_debug_error(e, "Falha ao reverter quitação.")
 
+@st.cache_data(ttl=15, show_spinner=False)
 def get_procedimentos(internacao_id):
     try:
         res = supabase.table("procedimentos").select("*").eq("internacao_id", int(internacao_id)).execute()
@@ -369,6 +397,7 @@ def get_procedimentos(internacao_id):
         _sb_debug_error(e, "Falha ao listar procedimentos.")
         return pd.DataFrame()
 
+@st.cache_data(ttl=15, show_spinner=False)
 def get_quitacao_by_proc_id(proc_id: int):
     """Retorna Procedimento + Internação (merge em pandas, sem embed)."""
     try:
@@ -383,6 +412,132 @@ def get_quitacao_by_proc_id(proc_id: int):
         return df
     except APIError as e:
         _sb_debug_error(e, "Falha ao consultar quitação.")
+        return pd.DataFrame()
+
+# ============================================================
+#  Consultas cacheadas (bases usadas em telas pesadas)
+# ============================================================
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _home_fetch_base_df() -> pd.DataFrame:
+    """Carrega Procedimentos + Internações para a Home (cache curto)."""
+    try:
+        res_p = supabase.table("procedimentos").select(
+            "id, internacao_id, data_procedimento, procedimento, profissional, situacao, aviso, grau_participacao"
+        ).execute()
+        df_p = pd.DataFrame(res_p.data or [])
+        if df_p.empty:
+            df_all = pd.DataFrame(columns=[
+                "internacao_id","atendimento","paciente","hospital","convenio","data_internacao",
+                "id","data_procedimento","procedimento","profissional","situacao","aviso","grau_participacao"
+            ])
+        else:
+            ids = sorted(set(int(x) for x in df_p["internacao_id"].dropna().tolist()))
+            if ids:
+                res_i = supabase.table("internacoes").select(
+                    "id, atendimento, paciente, hospital, convenio, data_internacao"
+                ).in_("id", ids).execute()
+                df_i = pd.DataFrame(res_i.data or [])
+            else:
+                df_i = pd.DataFrame(columns=["id","atendimento","paciente","hospital","convenio","data_internacao"])
+            df_all = safe_merge(
+                df_p,
+                df_i[["id", "atendimento", "paciente", "hospital", "convenio", "data_internacao"]] if not df_i.empty else df_i,
+                left_on="internacao_id",
+                right_on="id",
+                how="left",
+                suffixes=("", "_int"),
+            )
+        return df_all
+    except APIError as e:
+        _sb_debug_error(e, "Falha ao carregar dados para a Home.")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _listar_profissionais_cache() -> list:
+    """Lista de profissionais distintos (cache 60s)."""
+    try:
+        res_dist = supabase.table("procedimentos").select("profissional").execute()
+        df_pros = pd.DataFrame(res_dist.data or [])
+        if "profissional" in df_pros.columns:
+            lista_profissionais = sorted({
+                str(x).strip() for x in df_pros["profissional"].dropna()
+                if str(x).strip()
+            })
+        else:
+            lista_profissionais = []
+        return lista_profissionais
+    except APIError:
+        return []
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _rel_cirurgias_base_df() -> pd.DataFrame:
+    """Base para Relatório 'Cirurgias por Status' (cache curto)."""
+    try:
+        resp = supabase.table("procedimentos").select(
+            "internacao_id, data_procedimento, aviso, profissional, procedimento, grau_participacao, situacao"
+        ).eq("procedimento", "Cirurgia / Procedimento").execute()
+        dfp = pd.DataFrame(resp.data or [])
+        if dfp.empty:
+            return pd.DataFrame()
+        ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
+        if ids:
+            resi = supabase.table("internacoes").select(
+                "id, hospital, atendimento, paciente, convenio"
+            ).in_("id", ids).execute()
+            dfi = pd.DataFrame(resi.data or [])
+        else:
+            dfi = pd.DataFrame(columns=["id","hospital","atendimento","paciente","convenio"])
+        df_rel = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
+        return df_rel
+    except APIError as e:
+        _sb_debug_error(e, "Falha ao carregar dados para Relatório.")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _rel_quitacoes_base_df() -> pd.DataFrame:
+    """Base para Relatório de Quitações (cache curto)."""
+    try:
+        resp = supabase.table("procedimentos").select(
+            "internacao_id, data_procedimento, profissional, quitacao_data, quitacao_guia_amhptiss, quitacao_guia_complemento, quitacao_valor_amhptiss, quitacao_valor_complemento"
+        ).eq("procedimento", "Cirurgia / Procedimento").not_.is_("quitacao_data", None).execute()
+        dfp = pd.DataFrame(resp.data or [])
+        if dfp.empty:
+            return pd.DataFrame()
+        ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
+        if ids:
+            resi = supabase.table("internacoes").select("id, hospital, atendimento, paciente, convenio").in_("id", ids).execute()
+            dfi = pd.DataFrame(resi.data or [])
+        else:
+            dfi = pd.DataFrame()
+        df_quit = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
+        return df_quit
+    except APIError as e:
+        _sb_debug_error(e, "Falha ao carregar dados de quitações.")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _quitacao_pendentes_base_df() -> pd.DataFrame:
+    """Base para aba Quitação (pendentes 'Enviado para pagamento')."""
+    try:
+        resp = supabase.table("procedimentos").select(
+            "id, internacao_id, data_procedimento, profissional, aviso, situacao, "
+            "quitacao_data, quitacao_guia_amhptiss, quitacao_valor_amhptiss, "
+            "quitacao_guia_complemento, quitacao_valor_complemento, quitacao_observacao"
+        ).eq("procedimento", "Cirurgia / Procedimento").eq("situacao", "Enviado para pagamento").execute()
+        dfp = pd.DataFrame(resp.data or [])
+        if dfp.empty:
+            return pd.DataFrame()
+        ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
+        if ids:
+            resi = supabase.table("internacoes").select("id, hospital, atendimento, paciente, convenio").in_("id", ids).execute()
+            dfi = pd.DataFrame(resi.data or [])
+        else:
+            dfi = pd.DataFrame()
+        df_quit = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_int"))
+        return df_quit
+    except APIError as e:
+        _sb_debug_error(e, "Falha ao carregar pendências de quitação.")
         return pd.DataFrame()
 
 # ============================================================
@@ -473,37 +628,8 @@ with tabs[0]:
         with cold4:
             proc_fim = st.date_input("Procedimento — fim", value=st.session_state.get("home_f_proc_fim", hoje), key="home_f_proc_fim")
 
-    # ------ Carrega Procedimentos + Internações (2 passos, sem embed) ------
-    try:
-        res_p = supabase.table("procedimentos").select(
-            "id, internacao_id, data_procedimento, procedimento, profissional, situacao, aviso, grau_participacao"
-        ).execute()
-        df_p = pd.DataFrame(res_p.data or [])
-        if df_p.empty:
-            df_all = pd.DataFrame(columns=[
-                "internacao_id","atendimento","paciente","hospital","convenio","data_internacao",
-                "id","data_procedimento","procedimento","profissional","situacao","aviso","grau_participacao"
-            ])
-        else:
-            ids = sorted(set(int(x) for x in df_p["internacao_id"].dropna().tolist()))
-            if ids:
-                res_i = supabase.table("internacoes").select(
-                    "id, atendimento, paciente, hospital, convenio, data_internacao"
-                ).in_("id", ids).execute()
-                df_i = pd.DataFrame(res_i.data or [])
-            else:
-                df_i = pd.DataFrame(columns=["id","atendimento","paciente","hospital","convenio","data_internacao"])
-            df_all = safe_merge(
-                df_p,
-                df_i[["id", "atendimento", "paciente", "hospital", "convenio", "data_internacao"]] if not df_i.empty else df_i,
-                left_on="internacao_id",
-                right_on="id",
-                how="left",
-                suffixes=("", "_int"),
-            )
-    except APIError as e:
-        _sb_debug_error(e, "Falha ao carregar dados para a Home.")
-        df_all = pd.DataFrame()
+    # ------ Carrega Procedimentos + Internações (cache curto; 2 passos, sem embed) ------
+    df_all = _home_fetch_base_df()
 
     # Filtros
     if df_all.empty:
@@ -538,9 +664,18 @@ with tabs[0]:
 
         df_f = df_all[mask].copy()
 
-    tot_pendente   = int((df_f["situacao"] == "Pendente").sum()) if not df_f.empty else 0
-    tot_finalizado = int((df_f["situacao"] == "Finalizado").sum()) if not df_f.empty else 0
-    tot_nao_cobrar = int((df_f["situacao"] == "Não Cobrar").sum()) if not df_f.empty else 0
+    # --- contadores de status (robusto contra ausência de coluna) ---
+    def _count_status(df: pd.DataFrame, status: str) -> int:
+        if df is None or df.empty:
+            return 0
+        col = "situacao" if "situacao" in df.columns else None
+        if col is None:
+            return 0
+        return int((df[col] == status).sum())
+
+    tot_pendente   = _count_status(df_f, "Pendente")
+    tot_finalizado = _count_status(df_f, "Finalizado")
+    tot_nao_cobrar = _count_status(df_f, "Não Cobrar")
 
     def _toggle_home_status(target: str):
         curr = st.session_state.get("home_status")
@@ -735,31 +870,26 @@ with tabs[1]:
                     else:
                         internacao_id = int(df_int["id"].iloc[0])
 
-                    prof_dia = ""; aviso_dia = ""
-                    for it in registros_filtrados:
-                        if it["atendimento"] == att and it["data"] == data_proc:
-                            if not prof_dia and it.get("profissional"): prof_dia = it["profissional"]
-                            if not aviso_dia and it.get("aviso"): aviso_dia = it["aviso"]
-                            if prof_dia and aviso_dia:
-                                pass
-                    # Escolhe primeiro encontrado
-                    for it in registros_filtrados:
-                        if it["atendimento"] == att and it["data"] == data_proc:
-                            if not prof_dia and it.get("profissional"): prof_dia = it["profissional"]
-                            if not aviso_dia and it.get("aviso"): aviso_dia = it["aviso"]
-                            if prof_dia and aviso_dia: break
+                    # Otimização: captura primeiro profissional/aviso presentes para o par (att, data_proc)
+                    if internacao_id:
+                        prof_dia = next((it.get("profissional") for it in registros_filtrados
+                                         if it["atendimento"] == att and it["data"] == data_proc and it.get("profissional")), "")
+                        aviso_dia = next((it.get("aviso") for it in registros_filtrados
+                                         if it["atendimento"] == att and it["data"] == data_proc and it.get("aviso")), "")
 
-                    if not prof_dia:
-                        total_ignorados += 1; continue
-                    if existe_procedimento_no_dia(internacao_id, data_proc):
-                        total_ignorados += 1; continue
+                        if not prof_dia:
+                            total_ignorados += 1
+                            continue
+                        if existe_procedimento_no_dia(internacao_id, data_proc):
+                            total_ignorados += 1
+                            continue
 
-                    criar_procedimento(
-                        internacao_id, data_proc, prof_dia,
-                        procedimento="Cirurgia / Procedimento", situacao="Pendente",
-                        observacao=None, is_manual=0, aviso=aviso_dia or None, grau_participacao=None
-                    )
-                    total_criados += 1
+                        criar_procedimento(
+                            internacao_id, data_proc, prof_dia,
+                            procedimento="Cirurgia / Procedimento", situacao="Pendente",
+                            observacao=None, is_manual=0, aviso=aviso_dia or None, grau_participacao=None
+                        )
+                        total_criados += 1
 
                 st.success(f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}")
                 st.toast("✅ Importação concluída.", icon="✅")
@@ -960,20 +1090,8 @@ with tabs[2]:
             c1, c2, c3 = st.columns(3)
             with c1: data_proc = st.date_input("Data do procedimento", value=date.today())
             with c2:
-                # Profissionais distintos existentes (lado cliente, sem DISTINCT no PostgREST)
-                try:
-                    res_dist = supabase.table("procedimentos").select("profissional").execute()
-                    df_pros = pd.DataFrame(res_dist.data or [])
-                    if "profissional" in df_pros.columns:
-                        lista_profissionais = sorted({
-                            str(x).strip() for x in df_pros["profissional"].dropna()
-                            if str(x).strip()  # remove vazios
-                        })
-                    else:
-                        lista_profissionais = []
-                except APIError:
-                    lista_profissionais = []
-
+                # Profissionais distintos (cache 60s)
+                lista_profissionais = _listar_profissionais_cache()
                 profissional = st.selectbox("Profissional", ["(selecione)"] + lista_profissionais, index=0)
             with c3: situacao = st.selectbox("Situação", STATUS_OPCOES, index=0)
 
@@ -1220,27 +1338,8 @@ with tabs[3]:
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
-    # Carrega base (procedimentos Cirurgia/Proc + merge com internacoes)
-    try:
-        resp = supabase.table("procedimentos").select(
-            "internacao_id, data_procedimento, aviso, profissional, procedimento, grau_participacao, situacao"
-        ).eq("procedimento", "Cirurgia / Procedimento").execute()
-        dfp = pd.DataFrame(resp.data or [])
-        if dfp.empty:
-            df_rel = pd.DataFrame()
-        else:
-            ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
-            if ids:
-                resi = supabase.table("internacoes").select(
-                    "id, hospital, atendimento, paciente, convenio"
-                ).in_("id", ids).execute()
-                dfi = pd.DataFrame(resi.data or [])
-            else:
-                dfi = pd.DataFrame(columns=["id","hospital","atendimento","paciente","convenio"])
-            df_rel = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
-    except APIError as e:
-        _sb_debug_error(e, "Falha ao carregar dados para Relatório.")
-        df_rel = pd.DataFrame()
+    # Carrega base (procedimentos Cirurgia/Proc + merge com internacoes) — cache curto
+    df_rel = _rel_cirurgias_base_df()
 
     if not df_rel.empty:
         df_rel["_data_dt"] = df_rel["data_procedimento"].apply(_pt_date_to_dt)
@@ -1293,25 +1392,8 @@ with tabs[3]:
         dt_ini_q = st.date_input("Data inicial da quitação", value=ini_default_q, key="rel_q_ini")
         dt_fim_q = st.date_input("Data final da quitação", value=hoje, key="rel_q_fim")
 
-    # Carrega procedimentos finalizados (com data de quitação) + merge
-    try:
-        resp = supabase.table("procedimentos").select(
-            "internacao_id, data_procedimento, profissional, quitacao_data, quitacao_guia_amhptiss, quitacao_guia_complemento, quitacao_valor_amhptiss, quitacao_valor_complemento"
-        ).eq("procedimento", "Cirurgia / Procedimento").not_.is_("quitacao_data", None).execute()
-        dfp = pd.DataFrame(resp.data or [])
-        if dfp.empty:
-            df_quit = pd.DataFrame()
-        else:
-            ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
-            if ids:
-                resi = supabase.table("internacoes").select("id, hospital, atendimento, paciente, convenio").in_("id", ids).execute()
-                dfi = pd.DataFrame(resi.data or [])
-            else:
-                dfi = pd.DataFrame()
-            df_quit = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left")
-    except APIError as e:
-        _sb_debug_error(e, "Falha ao carregar dados de quitações.")
-        df_quit = pd.DataFrame()
+    # Base de quitações — cache curto
+    df_quit = _rel_quitacoes_base_df()
 
     if not df_quit.empty:
         df_quit["_quit_dt"] = df_quit["quitacao_data"].apply(_pt_date_to_dt)
@@ -1383,27 +1465,8 @@ with tabs[4]:
     hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="quit_hosp")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Carrega pendentes de envio + merge (sem embed)
-    try:
-        resp = supabase.table("procedimentos").select(
-            "id, internacao_id, data_procedimento, profissional, aviso, situacao, "
-            "quitacao_data, quitacao_guia_amhptiss, quitacao_valor_amhptiss, "
-            "quitacao_guia_complemento, quitacao_valor_complemento, quitacao_observacao"
-        ).eq("procedimento", "Cirurgia / Procedimento").eq("situacao", "Enviado para pagamento").execute()
-        dfp = pd.DataFrame(resp.data or [])
-        if dfp.empty:
-            df_quit = pd.DataFrame()
-        else:
-            ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
-            if ids:
-                resi = supabase.table("internacoes").select("id, hospital, atendimento, paciente, convenio").in_("id", ids).execute()
-                dfi = pd.DataFrame(resi.data or [])
-            else:
-                dfi = pd.DataFrame()
-            df_quit = safe_merge(dfp, dfi, left_on="internacao_id", right_on="id", how="left", suffixes=("", "_int"))
-    except APIError as e:
-        _sb_debug_error(e, "Falha ao carregar pendências de quitação.")
-        df_quit = pd.DataFrame()
+    # Carrega pendentes de envio + merge (sem embed) — cache curto
+    df_quit = _quitacao_pendentes_base_df()
 
     if hosp_sel != "Todos" and not df_quit.empty:
         df_quit = df_quit[df_quit["hospital"] == hosp_sel]
