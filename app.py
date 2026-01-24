@@ -174,6 +174,20 @@ def app_header(title: str, subtitle: str = ""):
         unsafe_allow_html=True
     )
 
+
+def tab_header_with_home(title: str, home_label: str = "🏠 Início", btn_key_suffix: str = ""):
+    """
+    Renderiza um cabeçalho com título da aba + botão 'Ir para Início'.
+    - btn_key_suffix: passe um sufixo único por aba para evitar colisão de chave de widget.
+    """
+    col_t1, col_t2 = st.columns([8, 2])
+    with col_t1:
+        st.subheader(title)
+    with col_t2:
+        if st.button(home_label, key=f"btn_go_home_{btn_key_suffix}", use_container_width=True):
+            st.session_state["goto_tab_label"] = "🏠 Início"
+            st.rerun()
+
 # ============================================================
 # UTIL (datas, moeda)
 # ============================================================
@@ -270,6 +284,9 @@ def safe_merge(
         return left.merge(right, left_on=left_on, right_on=right_on, how=how, suffixes=suffixes)
     except KeyError:
         return left
+
+
+
 
 # ============================================================
 # CRUD — Supabase (tabelas minúsculas) + cache-aware
@@ -966,7 +983,7 @@ with tabs[0]:
 # 📤 1) IMPORTAR
 # ============================================================
 with tabs[1]:
-    st.subheader("📤 Importar arquivo")
+    tab_header_with_home("📤 Importar arquivo", btn_key_suffix="import")
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
 
     # Cadastro manual de internação
@@ -1202,7 +1219,7 @@ with tabs[1]:
 # 🔍 2) CONSULTAR
 # ============================================================
 with tabs[2]:
-    st.subheader("🔍 Consultar Internação")
+    tab_header_with_home("🔍 Consultar Internação", btn_key_suffix="consulta")
 
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hlist = ["Todos"] + get_hospitais()
@@ -1376,21 +1393,34 @@ with tabs[2]:
                         st.toast(f"{len(alterados)} procedimento(s) atualizado(s).", icon="✅")
                         st.rerun()
 
-            # ===== Excluir procedimento =====
+            # ===== Excluir procedimento =====           
             with st.expander("🗑️ Excluir cirurgia (procedimento)"):
                 if df_proc.empty:
                     st.info("Não há procedimentos para excluir.")
                 else:
-                    for _, r in df_proc.iterrows():
+                    for row in df_proc.itertuples(index=False):
+                        proc_id = int(getattr(row, "id"))
+                        data_fmt = getattr(row, "data_procedimento", "")
+                        prof     = getattr(row, "profissional", "") or "-"
+                        tipo     = getattr(row, "procedimento", "")
+                        situ     = getattr(row, "situacao", "")
+            
                         c1, c2, c3, c4 = st.columns([3, 3, 3, 2])
-                        with c1: st.markdown(f"**ID:** {int(r['id'])}  —  **Data:** {r['data_procedimento']}")
-                        with c2: st.markdown(f"**Profissional:** {r['profissional'] or '-'}")
-                        with c3: st.markdown(f"**Tipo:** {r['procedimento']}<br>{pill(r['situacao'])}", unsafe_allow_html=True)
+                        with c1:
+                            st.markdown(f"**ID:** {proc_id}  —  **Data:** {data_fmt}")
+                        with c2:
+                            st.markdown(f"**Profissional:** {prof}")
+                        with c3:
+                            st.markdown(f"**Tipo:** {tipo}<br>{pill(situ)}", unsafe_allow_html=True)
                         with c4:
-                            if st.button("Excluir", key=f"del_proc_{int(r['id'])}", help="Apagar este procedimento"):
-                                deletar_procedimento(int(r["id"]))
-                                st.toast(f"Procedimento {int(r['id'])} excluído.", icon="🗑️")
-                                st.rerun()
+                            if st.button("Excluir", key=f"del_proc_{proc_id}", help="Apagar este procedimento"):
+                                ok = deletar_procedimento(proc_id)
+                                if ok:
+                                    st.toast(f"Procedimento {proc_id} excluído.", icon="🗑️")
+                                    st.rerun()
+                                else:
+                                    st.stop()
+
 
             # ===== Lançar manual =====
             st.divider()
@@ -1633,7 +1663,7 @@ else:
         raise RuntimeError("ReportLab não está instalado no ambiente.")
 
 with tabs[3]:
-    st.subheader("📑 Relatórios — Central")
+    tab_header_with_home("📑 Relatórios — Central", btn_key_suffix="relatorios")
 
     # 1) Cirurgias por Status
     st.markdown("**1) Cirurgias por Status (PDF)**")
@@ -1766,7 +1796,7 @@ with tabs[3]:
 # 💼 4) QUITAÇÃO (edição em lote)
 # ============================================================
 with tabs[4]:
-    st.subheader("💼 Quitação de Cirurgias")
+    tab_header_with_home("💼 Quitação de Cirurgias", btn_key_suffix="quitacao")
 
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     hosp_opts = ["Todos"] + get_hospitais()
@@ -1851,7 +1881,7 @@ with tabs[4]:
 # ⚙️ 5) SISTEMA — Diagnósticos simples
 # ============================================================
 with tabs[5]:
-    st.subheader("⚙️ Sistema")
+    tab_header_with_home("⚙️ Sistema", btn_key_suffix="sistema")
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     st.markdown("**🔌 Conexão Supabase**")
     ok = True
