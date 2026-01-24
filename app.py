@@ -407,12 +407,27 @@ def atualizar_procedimento(proc_id, procedimento=None, situacao=None,
     except APIError as e:
         _sb_debug_error(e, "Falha ao atualizar procedimento.")
 
-def deletar_procedimento(proc_id: int):
+
+def deletar_procedimento(proc_id: int) -> bool:
     try:
-        supabase.table("procedimentos").delete().eq("id", int(proc_id)).execute()
+        # Força 'Prefer: return=representation' para receber a linha excluída
+        res = (
+            supabase.table("procedimentos")
+            .delete()
+            .eq("id", int(proc_id))
+            .select("id")  # <- força retorno (evita 204 sem corpo)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            # Pode ser: RLS sem policy de delete, ID inexistente, ou FK bloqueando
+            st.error("❌ Não foi possível excluir. Verifique permissões (RLS), ID e vínculos (FK).")
+            return False
         invalidate_caches()
+        return True
     except APIError as e:
         _sb_debug_error(e, "Falha ao deletar procedimento.")
+        return False
 
 def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_amhptiss=None,
                         guia_complemento=None, valor_complemento=None, quitacao_observacao=None):
@@ -1167,14 +1182,15 @@ with tabs[2]:
                 st.warning("Esta ação apagará a internação e TODOS os procedimentos vinculados.")
                 confirm_txt = st.text_input("Digite APAGAR para confirmar", key="confirm_del_int")
                 col_del = st.columns(6)[-1]
-                with col_del:
-                    if st.button("Excluir internação", key="btn_del_int"):
-                        if confirm_txt.strip().upper() == "APAGAR":
-                            deletar_internacao(internacao_id)
-                            st.toast("🗑️ Internação excluída.", icon="✅")
+                with col_del:                    
+                    if st.button("Excluir", key=f"del_proc_{int(r['id'])}", help="Apagar este procedimento"):
+                        ok = deletar_procedimento(int(r["id"]))
+                        if ok:
+                            st.toast(f"Procedimento {int(r['id'])} excluído.", icon="🗑️")
                             st.rerun()
                         else:
-                            st.info("Confirmação inválida. Digite APAGAR.")
+                            st.stop()  # evita continuar com DF desatualizado nesta execução
+
 
             # ===== Procedimentos (edição) =====
             try:
