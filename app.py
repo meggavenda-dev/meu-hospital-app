@@ -2104,95 +2104,100 @@ with tabs[3]:
 
     st.divider()
 
-    # 2) Quitações
+    # 2) Quitações    
     st.markdown("**2) Quitações (PDF)**")
-    hosp_opts_q = ["Todos"] + get_hospitais()
-    colq1, colq2 = st.columns(2)
-    with colq1:
-        hosp_sel_q = st.selectbox("Hospital", hosp_opts_q, index=0, key="rel_q_hosp")
-    with colq2:
-        hoje = date.today()
-        ini_default_q = hoje.replace(day=1)
-        dt_ini_q = st.date_input("Data inicial da quitação", value=ini_default_q, key="rel_q_ini")
-        dt_fim_q = st.date_input("Data final da quitação", value=hoje, key="rel_q_fim")
-
-    # Base de quitações
+        hosp_opts_q = ["Todos"] + get_hospitais()
+        colq1, colq2 = st.columns(2)
+        with colq1:
+            hosp_sel_q = st.selectbox("Hospital", hosp_opts_q, index=0, key="rel_q_hosp")
+        with colq2:
+            hoje = date.today()
+            ini_default_q = hoje.replace(day=1)
+            dt_ini_q = st.date_input("Data inicial da quitação", value=ini_default_q, key="rel_q_ini")
+            dt_fim_q = st.date_input("Data final da quitação", value=hoje, key="rel_q_fim")
+    
+        # ⚠️ Fora do with colq2: carrega base de quitações
         df_quit = _rel_quitacoes_base_df()
     
-    if not df_quit.empty:
-        # Filtro por período da QUITAÇÃO
-        df_quit["_quit_dt"] = df_quit["quitacao_data"].apply(_pt_date_to_dt)
-        mask_q = (df_quit["_quit_dt"].notna()) & (df_quit["_quit_dt"] >= dt_ini_q) & (df_quit["_quit_dt"] <= dt_fim_q)
-        df_quit = df_quit[mask_q].copy()
-    
-        # Filtro por hospital
-        if hosp_sel_q != "Todos":
-            df_quit = df_quit[df_quit["hospital"] == hosp_sel_q]
-    
-        # Normalizações (sem ".0") e datas
-        for col in ["quitacao_guia_amhptiss", "quitacao_guia_complemento", "aviso"]:
-            if col in df_quit.columns:
-                df_quit[col] = df_quit[col].apply(_fmt_id_str)
-    
-        def _fmt_dt_pt(s):
-            d = _pt_date_to_dt(s)
-            return d.strftime("%d/%m/%Y") if isinstance(d, (date, datetime)) and not pd.isna(d) else (str(s) or "")
-    
-        df_quit["data_procedimento"] = df_quit["data_procedimento"].apply(_fmt_dt_pt)
-        df_quit["quitacao_data"] = df_quit["_quit_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
-        df_quit = df_quit.drop(columns=["_quit_dt"])
-    
-        # Colunas completas (para PDF/CSV)
-        cols_pdf = [
-            "hospital","atendimento","convenio","paciente","profissional","grau_participacao",
-            "data_procedimento","aviso","situacao",
-            "quitacao_guia_amhptiss","quitacao_guia_complemento",
-            "quitacao_valor_amhptiss","quitacao_valor_complemento",
-            "quitacao_data","quitacao_observacao"
-        ]
-        for c in cols_pdf:
-            if c not in df_quit.columns: df_quit[c] = ""
-    
-        # Ordenação
-        df_quit = df_quit.sort_values(
-            by=["quitacao_data","hospital","convenio","paciente","profissional","data_procedimento"]
-        ).reset_index(drop=True)
-    
-    colqb1, colqb2 = st.columns(2)
-    with colqb1:
-        if st.button("Gerar PDF (Quitações)", type="primary"):
-            if df_quit.empty:
-                st.warning("Nenhum registro de quitação encontrado para os filtros informados.")
-            else:
-                if not REPORTLAB_OK:
-                    st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
-                else:
-                    filtros_q = {
-                        "ini": dt_ini_q.strftime("%d/%m/%Y"),
-                        "fim": dt_fim_q.strftime("%d/%m/%Y"),
-                        "hospital": hosp_sel_q,
-                    }
-                    pdf_bytes_q = _pdf_quitacoes(df_quit, filtros_q)
-                    ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
-                    st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
-                    st.download_button(
-                        label="⬇️ Baixar PDF (Quitações)",
-                        data=pdf_bytes_q,
-                        file_name=fname_q,
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
-    with colqb2:
         if not df_quit.empty:
-            csv_quit = df_quit.to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                "⬇️ Baixar CSV (Quitações)",
-                data=csv_quit,
-                file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-            )
-
+            # Filtro por período da QUITAÇÃO
+            df_quit["_quit_dt"] = df_quit["quitacao_data"].apply(_pt_date_to_dt)
+            mask_q = (df_quit["_quit_dt"].notna()) & (df_quit["_quit_dt"] >= dt_ini_q) & (df_quit["_quit_dt"] <= dt_fim_q)
+            df_quit = df_quit[mask_q].copy()
+    
+            # Filtro por hospital
+            if hosp_sel_q != "Todos":
+                df_quit = df_quit[df_quit["hospital"] == hosp_sel_q]
+    
+            # Normalizações (sem ".0") e datas
+            for col in ["quitacao_guia_amhptiss", "quitacao_guia_complemento", "aviso"]:
+                if col in df_quit.columns:
+                    df_quit[col] = df_quit[col].apply(_fmt_id_str)
+    
+            def _fmt_dt_pt(s):
+                d = _pt_date_to_dt(s)
+                return d.strftime("%d/%m/%Y") if isinstance(d, (date, datetime)) and not pd.isna(d) else (str(s) or "")
+    
+            df_quit["data_procedimento"] = df_quit["data_procedimento"].apply(_fmt_dt_pt)
+            df_quit["quitacao_data"] = df_quit["_quit_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
+            df_quit = df_quit.drop(columns=["_quit_dt"]).fillna("")
+    
+            # Colunas completas (para PDF/CSV)
+            cols_pdf = [
+                "hospital","atendimento","convenio","paciente","profissional","grau_participacao",
+                "data_procedimento","aviso","situacao",
+                "quitacao_guia_amhptiss","quitacao_guia_complemento",
+                "quitacao_valor_amhptiss","quitacao_valor_complemento",
+                "quitacao_data","quitacao_observacao"
+            ]
+            for c in cols_pdf:
+                if c not in df_quit.columns: df_quit[c] = ""
+    
+            # Ordenação
+            df_quit = df_quit.sort_values(
+                by=["quitacao_data","hospital","convenio","paciente","profissional","data_procedimento"]
+            ).reset_index(drop=True)
+    
+        # Preferência: incluir ou não "Observação" no PDF
+        incluir_obs = st.checkbox("Incluir coluna 'Observação' no PDF", value=False, key="rel_q_obs")
+    
+        colqb1, colqb2 = st.columns(2)
+        with colqb1:
+            if st.button("Gerar PDF (Quitações)", type="primary"):
+                if df_quit.empty:
+                    st.warning("Nenhum registro de quitação encontrado para os filtros informados.")
+                else:
+                    if not REPORTLAB_OK:
+                        st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
+                    else:
+                        filtros_q = {
+                            "ini": dt_ini_q.strftime("%d/%m/%Y"),
+                            "fim": dt_fim_q.strftime("%d/%m/%Y"),
+                            "hospital": hosp_sel_q,
+                        }
+                        # ✅ Chamada da função nova (compacta)
+                        pdf_bytes_q = _pdf_quitacoes_compacto(df_quit, filtros_q, incluir_obs=incluir_obs)
+                        ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
+                        st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
+                        st.download_button(
+                            label="⬇️ Baixar PDF (Quitações)",
+                            data=pdf_bytes_q,
+                            file_name=fname_q,
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
+        with colqb2:
+            if not df_quit.empty:
+                # CSV com todas as colunas e códigos normalizados
+                csv_quit = df_quit.to_csv(index=False).encode("utf-8-sig")
+                st.download_button(
+                    "⬇️ Baixar CSV (Quitações)",
+                    data=csv_quit,
+                    file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                )
+            
 # ============================================================
 # 💼 4) QUITAÇÃO (edição em lote)
 # ============================================================
@@ -2492,7 +2497,9 @@ with tabs[5]:
     except APIError as e:
         _sb_debug_error(e, "Falha no resumo por convênio.")
 
+
 # ---- Troca de aba programática ----
 if st.session_state.get("goto_tab_label"):
     _switch_to_tab_by_label(st.session_state["goto_tab_label"])
     st.session_state["goto_tab_label"] = None
+
