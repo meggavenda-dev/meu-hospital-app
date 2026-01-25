@@ -1903,32 +1903,30 @@ else:
     def _pdf_cirurgias_por_status(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado no ambiente.")
 
-# --- PDF: Quitações (layout organizado, com bloco financeiro agrupado) ---
-
+# --- PDF: Quitações (colunas fixas, sem Aviso e sem Situação, A4 paisagem) ---
 if REPORTLAB_OK:
     def _pdf_quitacoes_colunas_fixas(df, filtros):
         """
-        Layout com TODAS as colunas separadas:
+        Layout com TODAS as colunas separadas, EXCETO 'Aviso' e 'Situação':
         Quitação | Hospital | Atendimento | Paciente | Convênio | Profissional | Grau |
-        Data Proc. | Aviso | Guia AMHPTISS | R$ AMHPTISS | Guia Compl. | R$ Compl. | Situação
+        Data Proc. | Guia AMHPTISS | R$ AMHPTISS | Guia Compl. | R$ Compl.
         - Larguras somando ~28.4 cm para caber em A4 paisagem com margens padrão (18pt).
         - Fonte reduzida nas colunas longas; alinhamentos consistentes.
-        - Aviso/Guias sempre sem '.0'.
+        - Guias sempre sem '.0'.
         """
         # ---- Garantias de colunas e normalizações ----
         need = [
             "quitacao_data","hospital","atendimento","paciente","convenio",
-            "profissional","grau_participacao","data_procedimento","aviso",
+            "profissional","grau_participacao","data_procedimento",
             "quitacao_guia_amhptiss","quitacao_valor_amhptiss",
             "quitacao_guia_complemento","quitacao_valor_complemento",
-            "situacao"
         ]
         df = df.copy()
         for c in need:
             if c not in df.columns: df[c] = ""
 
-        # Sem ".0" em aviso/guias
-        for col in ["aviso","quitacao_guia_amhptiss","quitacao_guia_complemento"]:
+        # Sem ".0" nas guias
+        for col in ["quitacao_guia_amhptiss","quitacao_guia_complemento"]:
             df[col] = df[col].apply(_fmt_id_str)
 
         # Datas dd/mm/aaaa
@@ -1969,34 +1967,33 @@ if REPORTLAB_OK:
         elems.append(Paragraph(filtros_txt, N))
         elems.append(Spacer(1, 8))
 
-        # Cabeçalho/ordem
+        # Cabeçalho/ordem (12 colunas)
         headers = [
             "Quitação","Hospital","Atendimento","Paciente","Convênio","Profissional","Grau",
-            "Data Proc.","Aviso","Guia AMHPTISS","R$ AMHPTISS","Guia Compl.","R$ Compl.","Situação"
+            "Data Proc.","Guia AMHPTISS","R$ AMHPTISS","Guia Compl.","R$ Compl."
         ]
         cols = [
             "quitacao_data","hospital","atendimento","paciente","convenio","profissional","grau_participacao",
-            "data_procedimento","aviso","quitacao_guia_amhptiss","quitacao_valor_amhptiss",
-            "quitacao_guia_complemento","quitacao_valor_complemento","situacao"
+            "data_procedimento","quitacao_guia_amhptiss","quitacao_valor_amhptiss",
+            "quitacao_guia_complemento","quitacao_valor_complemento",
         ]
 
-        # Larguras (cm) — soma ~28.4 cm (A4 paisagem com margens de 18pt tem ~28.4 cm úteis)
+        # Larguras (cm) — soma ~28.4 cm
         col_widths = [
-            1.6*cm,  # Quitação
-            2.0*cm,  # Hospital
-            1.6*cm,  # Atendimento
-            3.4*cm,  # Paciente (menor)
-            2.0*cm,  # Convênio (menor)
-            2.6*cm,  # Profissional
-            1.6*cm,  # Grau
-            1.8*cm,  # Data Proc.
-            1.8*cm,  # Aviso
-            2.4*cm,  # Guia AMHPTISS
-            2.0*cm,  # R$ AMHPTISS
-            2.2*cm,  # Guia Compl.
-            2.0*cm,  # R$ Compl.
-            1.4*cm,  # Situação
+            1.8*cm,  # Quitação   (+0.2)
+            2.2*cm,  # Hospital    (+0.2)
+            1.8*cm,  # Atendimento (+0.2)
+            4.2*cm,  # Paciente    (+0.8)
+            2.4*cm,  # Convênio    (+0.4)
+            3.2*cm,  # Profissional(+0.6)
+            1.8*cm,  # Grau        (+0.2)
+            2.0*cm,  # Data Proc.  (+0.2)
+            2.8*cm,  # Guia AMHPTISS (+0.4)
+            2.2*cm,  # R$ AMHPTISS (+0.2)
+            2.8*cm,  # Guia Compl. (+0.6)
+            2.2*cm,  # R$ Compl.   (+0.2)
         ]
+        # Observação: somatório ≈ 28.4 cm (cabe na área útil do A4 paisagem com margens 18pt)
 
         # Montagem das linhas
         def P(v, style=TD): return Paragraph("" if v is None else str(v), style)
@@ -2012,12 +2009,10 @@ if REPORTLAB_OK:
                 P(r["profissional"], TD),
                 P(r["grau_participacao"], TD_CENTER),
                 P(r["data_procedimento"], TD_CENTER),
-                P(r["aviso"], TD_CENTER),
                 P(r["quitacao_guia_amhptiss"], TD_CENTER),
                 P(_format_currency_br(r["quitacao_valor_amhptiss"]), TD_RIGHT),
                 P(r["quitacao_guia_complemento"], TD_CENTER),
                 P(_format_currency_br(r["quitacao_valor_complemento"]), TD_RIGHT),
-                P(r["situacao"], TD_CENTER),
             ])
 
         table = Table(
@@ -2032,17 +2027,15 @@ if REPORTLAB_OK:
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
             ("ALIGN", (0,0), (-1,0), "CENTER"),
-            # Alinhar as colunas monetárias à direita
-            ("ALIGN", (10,1), (10,-1), "RIGHT"),
-            ("ALIGN", (12,1), (12,-1), "RIGHT"),
-            # Centralizar códigos e datas
+            # Monetárias à direita
+            ("ALIGN", (9,1), (9,-1), "RIGHT"),
+            ("ALIGN", (11,1), (11,-1), "RIGHT"),
+            # Códigos/datas centralizados
             ("ALIGN", (0,1), (0,-1), "CENTER"),   # Quitação
             ("ALIGN", (2,1), (2,-1), "CENTER"),   # Atendimento
             ("ALIGN", (7,1), (7,-1), "CENTER"),   # Data Proc.
-            ("ALIGN", (8,1), (8,-1), "CENTER"),   # Aviso
-            ("ALIGN", (9,1), (9,-1), "CENTER"),   # Guia AMHPTISS
-            ("ALIGN", (11,1), (11,-1), "CENTER"), # Guia Complemento
-            ("ALIGN", (13,1), (13,-1), "CENTER"), # Situação
+            ("ALIGN", (8,1), (8,-1), "CENTER"),   # Guia AMHPTISS
+            ("ALIGN", (10,1), (10,-1), "CENTER"), # Guia Complemento
         ]))
         elems.append(table)
         elems.append(Spacer(1, 8))
@@ -2068,6 +2061,7 @@ if REPORTLAB_OK:
 else:
     def _pdf_quitacoes_colunas_fixas(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado no ambiente.")
+
 
 with tabs[3]:
     tab_header_with_home("📑 Relatórios — Central", btn_key_suffix="relatorios")
