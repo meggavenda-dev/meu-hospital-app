@@ -1904,14 +1904,16 @@ else:
         raise RuntimeError("ReportLab não está instalado no ambiente.")
 
 # --- PDF: Quitações (colunas fixas, sem Aviso e sem Situação, A4 paisagem) ---
+
 if REPORTLAB_OK:
     def _pdf_quitacoes_colunas_fixas(df, filtros):
         """
         Quitação | Hospital | Atendimento | Paciente | Convênio | Profissional | Grau |
         Data Proc. | Guia AMHPTISS | R$ AMHPTISS | Guia Compl. | R$ Compl.
-        - Ajuste fino de fonte e colunas para caber em A4 paisagem sem cortes.
+        - Evita quebra em 'Atendimento' (header) e nas datas (nobr).
+        - Ajuste fino de larguras para A4 paisagem, sem cortes.
         """
-        # Garantias de colunas
+        # ---- Garantias de colunas ----
         need = [
             "quitacao_data","hospital","atendimento","paciente","convenio",
             "profissional","grau_participacao","data_procedimento",
@@ -1922,22 +1924,23 @@ if REPORTLAB_OK:
         for c in need:
             if c not in df.columns: df[c] = ""
 
-        # Normalizações e datas
+        # ---- Normalizações e datas ----
         for col in ["quitacao_guia_amhptiss","quitacao_guia_complemento"]:
             df[col] = df[col].apply(_fmt_id_str)
 
         def _fmt_dt(s):
             d = _pt_date_to_dt(s)
             return d.strftime("%d/%m/%Y") if isinstance(d, (date, datetime)) and not pd.isna(d) else (str(s) or "")
-        df["quitacao_data"] = df["quitacao_data"].apply(_fmt_dt)
+
+        df["quitacao_data"]     = df["quitacao_data"].apply(_fmt_dt)
         df["data_procedimento"] = df["data_procedimento"].apply(_fmt_dt)
 
-        # Totais
+        # ---- Totais ----
         v_amhp = pd.to_numeric(df.get("quitacao_valor_amhptiss", 0), errors="coerce").fillna(0.0)
         v_comp = pd.to_numeric(df.get("quitacao_valor_complemento", 0), errors="coerce").fillna(0.0)
         total_amhp = float(v_amhp.sum()); total_comp = float(v_comp.sum()); total_geral = total_amhp + total_comp
 
-        # ReportLab
+        # ---- ReportLab ----
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
             buf, pagesize=landscape(A4),
@@ -1951,68 +1954,78 @@ if REPORTLAB_OK:
         from reportlab.lib import colors
         from reportlab.lib.units import cm
 
-        # ↓↓↓ Ajuste de fontes (menor, só onde precisa)
+        # Fonte um pouco menor + estilos
         TH = ParagraphStyle("TH", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.2, leading=9.8, alignment=1)
         TD = ParagraphStyle("TD", parent=styles["Normal"], fontName="Helvetica", fontSize=7.8, leading=9.6, wordWrap="LTR")
         TD_CENTER = ParagraphStyle("TD_CENTER", parent=TD, alignment=1)
         TD_RIGHT  = ParagraphStyle("TD_RIGHT", parent=TD, alignment=2)
         TD_SMALL  = ParagraphStyle("TD_SMALL", parent=TD, fontSize=7.0, leading=8.6)  # Paciente/Convênio
 
+        # Helper para impedir quebra dentro do texto
+        def nobr(text: str) -> str:
+            s = "" if text is None else str(text)
+            return f"<nobr>{s}</nobr>"
+
+        # Título e filtros
         elems = []
         elems.append(Paragraph("Relatório — Quitações", H1))
         filtros_txt = f"Período da quitação: {filtros['ini']} a {filtros['fim']}  |  Hospital: {filtros['hospital']}"
         elems.append(Paragraph(filtros_txt, N))
         elems.append(Spacer(1, 8))
 
-        headers = [
-            "Quitação","Hospital","Atendimento","Paciente","Convênio","Profissional","Grau",
+        # Cabeçalho (aplicando nobr SOMENTE em 'Atendimento')
+        headers_raw = [
+            "Quitação","Hospital", nobr("Atendimento"), "Paciente","Convênio","Profissional","Grau",
             "Data Proc.","Guia AMHPTISS","R$ AMHPTISS","Guia Compl.","R$ Compl."
         ]
+        headers = [Paragraph(h, TH) for h in headers_raw]
+
+        # Ordem de colunas
         cols = [
             "quitacao_data","hospital","atendimento","paciente","convenio","profissional","grau_participacao",
             "data_procedimento","quitacao_guia_amhptiss","quitacao_valor_amhptiss",
             "quitacao_guia_complemento","quitacao_valor_complemento",
         ]
 
-        # ↓↓↓ Larguras (cm) — somam ~28,4 cm (A4 paisagem útil)
+        # Larguras (cm) — soma ≈ 28,4 cm (área útil em A4 paisagem com margens 18pt)
+        # ↑ aumento em Quitação (+0.2) e Atendimento (+0.2) para evitar quebra; compensação nas guias (−0.4 no total)
         col_widths = [
-            1.8*cm,  # Quitação   (↑)
-            2.2*cm,  # Hospital   (↑)
-            2.0*cm,  # Atendimento (↑ de 1.8 -> evita "Atendim ento")
-            4.4*cm,  # Paciente   (↑)
-            2.6*cm,  # Convênio   (↑)
+            2.0*cm,  # Quitação   (↑ +0.2)
+            2.2*cm,  # Hospital
+            2.2*cm,  # Atendimento (↑ +0.2)
+            4.3*cm,  # Paciente
+            2.6*cm,  # Convênio
             3.2*cm,  # Profissional
             1.8*cm,  # Grau
             2.0*cm,  # Data Proc.
-            2.6*cm,  # Guia AMHPTISS (↓)
-            2.2*cm,  # R$ AMHPTISS
-            2.4*cm,  # Guia Compl.  (↓)
-            2.2*cm,  # R$ Compl.
+            2.5*cm,  # Guia AMHPTISS (↓ -0.1)
+            2.1*cm,  # R$ AMHPTISS (↓ -0.1)
+            2.5*cm,  # Guia Compl.   (↓ -0.1)
+            2.0*cm,  # R$ Compl.     (↓ -0.2)
         ]
 
+        # Builder de Paragraph
         def P(v, style=TD): return Paragraph("" if v is None else str(v), style)
 
+        # Linhas (aplicando nobr nas DATAS)
         data_rows = []
         for _, r in df.iterrows():
             data_rows.append([
-                P(r["quitacao_data"], TD_CENTER),
+                P(nobr(r["quitacao_data"]), TD_CENTER),           # Quitação (data) sem quebra
                 P(r["hospital"], TD),
                 P(r["atendimento"], TD_CENTER),
                 P(r["paciente"], TD_SMALL),
                 P(r["convenio"], TD_SMALL),
                 P(r["profissional"], TD),
                 P(r["grau_participacao"], TD_CENTER),
-                P(r["data_procedimento"], TD_CENTER),
+                P(nobr(r["data_procedimento"]), TD_CENTER),       # Data Proc. sem quebra
                 P(r["quitacao_guia_amhptiss"], TD_CENTER),
                 P(_format_currency_br(r["quitacao_valor_amhptiss"]), TD_RIGHT),
                 P(r["quitacao_guia_complemento"], TD_CENTER),
                 P(_format_currency_br(r["quitacao_valor_complemento"]), TD_RIGHT),
             ])
 
-        table = Table(
-            [[Paragraph(h, TH) for h in headers]] + data_rows,
-            repeatRows=1, colWidths=col_widths
-        )
+        table = Table([headers] + data_rows, repeatRows=1, colWidths=col_widths)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
             ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
@@ -2021,17 +2034,20 @@ if REPORTLAB_OK:
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
             ("ALIGN", (0,0), (-1,0), "CENTER"),
-            ("ALIGN", (9,1), (9,-1), "RIGHT"),   # R$ AMHPTISS
-            ("ALIGN", (11,1), (11,-1), "RIGHT"), # R$ Compl.
-            ("ALIGN", (0,1), (0,-1), "CENTER"),  # Quitação
-            ("ALIGN", (2,1), (2,-1), "CENTER"),  # Atendimento
-            ("ALIGN", (7,1), (7,-1), "CENTER"),  # Data Proc.
-            ("ALIGN", (8,1), (8,-1), "CENTER"),  # Guia AMHPTISS
-            ("ALIGN", (10,1), (10,-1), "CENTER"),# Guia Compl.
+            # monetárias
+            ("ALIGN", (9,1), (9,-1), "RIGHT"),
+            ("ALIGN", (11,1), (11,-1), "RIGHT"),
+            # datas/códigos
+            ("ALIGN", (0,1), (0,-1), "CENTER"),   # Quitação
+            ("ALIGN", (2,1), (2,-1), "CENTER"),   # Atendimento
+            ("ALIGN", (7,1), (7,-1), "CENTER"),   # Data Proc.
+            ("ALIGN", (8,1), (8,-1), "CENTER"),   # Guia AMHPTISS
+            ("ALIGN", (10,1), (10,-1), "CENTER"), # Guia Compl.
         ]))
         elems.append(table)
         elems.append(Spacer(1, 8))
 
+        # Totais
         totals_data = [
             ["Total AMHPTISS:", _format_currency_br(total_amhp)],
             ["Total Complemento:", _format_currency_br(total_comp)],
