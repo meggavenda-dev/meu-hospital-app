@@ -1897,7 +1897,6 @@ else:
         raise RuntimeError("ReportLab não está instalado no ambiente.")
 
 # --- PDF: Quitações ---
-
 if REPORTLAB_OK:
     def _pdf_quitacoes(df, filtros):
         """
@@ -1943,6 +1942,8 @@ if REPORTLAB_OK:
         )
         styles = getSampleStyleSheet()
         H1 = styles["Heading1"]; N = styles["BodyText"]
+
+        # Estilos de célula
         from reportlab.lib.styles import ParagraphStyle
         TH = ParagraphStyle("TH", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=9, leading=11, alignment=1)
         TD = ParagraphStyle("TD", parent=styles["Normal"], fontName="Helvetica", fontSize=8, leading=10)
@@ -1964,7 +1965,6 @@ if REPORTLAB_OK:
         ]
         header = [Paragraph(h, TH) for h in header_labels]
 
-        # Ajuste fino de colunas - considerando A4 paisagem
         from reportlab.lib.units import cm
         col_widths = [
             3.0*cm, 2.6*cm, 3.0*cm, 5.2*cm, 4.8*cm, 2.8*cm, 2.4*cm,
@@ -1993,9 +1993,7 @@ if REPORTLAB_OK:
                 P(r.get("quitacao_observacao"), TD),
             ])
 
-        from reportlab.platypus import Table, TableStyle, Spacer, Paragraph
-        from reportlab.lib import colors
-
+        # Tabela
         table = Table([header] + data_rows, repeatRows=1, colWidths=col_widths)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
