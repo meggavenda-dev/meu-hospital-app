@@ -336,20 +336,43 @@ def upload_zip_to_storage(zip_bytes: bytes, filename: str) -> bool:
         st.error(f"Falha ao enviar ao Storage: {e}")
         return False
 
-def list_backups_from_storage(prefix: str = "") -> List[Dict[str, Any]]:
+
+def list_backups_from_storage(prefix: str = "", limit: int = 1000, offset: int = 0) -> list[dict]:
     """
     Lista arquivos no bucket de backups (Storage).
+    - prefix: subpasta dentro do bucket; "" lista a raiz do bucket.
+    - limit/offset: paginação simples.
+    Retorna somente arquivos .zip e tenta ordenar por data desc (se o provider retornar campos).
     """
     try:
-        res = admin_client.storage.from_(BUCKET).list(path=prefix or "", search=None)
-        # Normaliza para incluir apenas .zip
-        files = [f for f in res if isinstance(f, dict) and f.get('name', '').lower().endswith(".zip")]
-        # Ordena por modificação desc, se disponível
-        files.sort(key=lambda x: x.get("updated_at") or x.get("last_modified") or x.get("created_at") or "", reverse=True)
+        # Em alguns providers (S3/MinIO) os campos de data podem variar;
+        # usamos sortBy para tentar ordenar server-side quando possível.
+        options = {
+            "limit": limit,
+            "offset": offset,
+            "sortBy": {"column": "updated_at", "order": "desc"}
+        }
+
+        # A assinatura correta não tem 'search'
+        res = admin_client.storage.from_(BUCKET).list(path=prefix or "", options=options)
+
+        # Filtra somente .zip
+        files = [
+            f for f in res
+            if isinstance(f, dict) and f.get("name", "").lower().endswith(".zip")
+        ]
+
+        # Garantia de ordenação client-side (caso o sortBy não seja respeitado)
+        def _get_when(x: dict):
+            return x.get("updated_at") or x.get("last_modified") or x.get("created_at") or ""
+        files.sort(key=_get_when, reverse=True)
+
         return files
+
     except Exception as e:
         st.error(f"Falha ao listar backups no Storage: {e}")
         return []
+
 
 def download_backup_from_storage(name: str) -> bytes:
     """
@@ -2193,25 +2216,46 @@ with tabs[5]:
         with colb3:
             st.write("")  # espaçamento
     
+        
         st.markdown("---")
         st.markdown("**☁️ Backups no Storage**")
-        files = list_backups_from_storage("")
+        
+        # Se quiser subpastas, mude prefix="" para algo como "daily/" ou "2026/01/"
+        files = list_backups_from_storage(prefix="")
+        
         if not files:
             st.info("Nenhum backup no Storage (ou bucket vazio).")
         else:
-            for f in files[:50]:  # limita lista
-                name = f.get("name")
-                size = f.get("metadata", {}).get("size") or f.get("size")
-                updated = f.get("updated_at") or f.get("last_modified") or f.get("created_at") or ""
-                c1, c2, c3, c4 = st.columns([4,2,2,2])
-                with c1: st.markdown(f"**{name}**")
-                with c2: st.caption(f"{(int(size) if size else 0)/1024:.1f} KB")
-                with c3: st.caption(updated)
+            # Mostra no máx. 50
+            for f in files[:50]:
+                name = f.get("name", "")
+                size = f.get("metadata", {}).get("size") or f.get("size") or 0
+                updated = f.get("updated_at") or f.get("last_modified") or f.get("created_at") or "-"
+        
+                c1, c2, c3, c4 = st.columns([4, 2, 2, 2])
+                with c1:
+                    st.markdown(f"**{name}**")
+                with c2:
+                    try:
+                        st.caption(f"{(int(size) or 0)/1024:.1f} KB")
+                    except Exception:
+                        st.caption("-")
+                with c3:
+                    st.caption(str(updated))
                 with c4:
+                    # Para evitar conflito de chave, inclua o prefixo no id do botão
                     if st.button("Baixar", key=f"dl_{name}"):
                         content = download_backup_from_storage(name)
                         if content:
-                            st.download_button("⬇️ Download", data=content, file_name=name, mime="application/zip", use_container_width=True)
+                            st.download_button(
+                                "⬇️ Download",
+                                data=content,
+                                file_name=name,
+                                mime="application/zip",
+                                use_container_width=True,
+                                key=f"dl_btn_{name}",
+                            )
+
     
         st.markdown("---")
         st.markdown("**♻️ Restaurar de backup (.zip)**")
