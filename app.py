@@ -2160,6 +2160,80 @@ with tabs[4]:
 with tabs[5]:
     tab_header_with_home("⚙️ Sistema", btn_key_suffix="sistema")
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
+    
+    # ============================
+    # 🛡️ Backups (na aba Sistema)
+    # ============================
+    st.markdown("**🛡️ Backups**")
+    with st.container():
+        st.caption("Gere um arquivo .zip contendo JSON e CSV de cada tabela. Opcionalmente, envie ao Supabase Storage.")
+    
+        colb1, colb2, colb3 = st.columns([2,2,2])
+        with colb1:
+            if st.button("🧩 Gerar backup (ZIP)", key="btn_gen_backup", type="primary", use_container_width=True):
+                with st.spinner("Gerando backup..."):
+                    zip_bytes = export_tables_to_zip(["hospitals", "internacoes", "procedimentos"])
+                ts = _now_ts()
+                fname = f"backup_internacoes_{ts}.zip"
+                st.success("Backup gerado!")
+                st.download_button("⬇️ Baixar ZIP", data=zip_bytes, file_name=fname, mime="application/zip", use_container_width=True)
+                st.session_state["__last_backup_zip"] = (fname, zip_bytes)
+    
+        with colb2:
+            if st.button("☁️ Enviar último backup ao Storage", key="btn_push_storage", use_container_width=True):
+                last = st.session_state.get("__last_backup_zip")
+                if not last:
+                    st.info("Gere um backup primeiro (ou use a seção abaixo para listar/baixar do Storage).")
+                else:
+                    fname, zip_bytes = last
+                    ok = upload_zip_to_storage(zip_bytes, fname)
+                    if ok:
+                        st.toast(f"Backup enviado: {fname}", icon="☁️")
+    
+        with colb3:
+            st.write("")  # espaçamento
+    
+        st.markdown("---")
+        st.markdown("**☁️ Backups no Storage**")
+        files = list_backups_from_storage("")
+        if not files:
+            st.info("Nenhum backup no Storage (ou bucket vazio).")
+        else:
+            for f in files[:50]:  # limita lista
+                name = f.get("name")
+                size = f.get("metadata", {}).get("size") or f.get("size")
+                updated = f.get("updated_at") or f.get("last_modified") or f.get("created_at") or ""
+                c1, c2, c3, c4 = st.columns([4,2,2,2])
+                with c1: st.markdown(f"**{name}**")
+                with c2: st.caption(f"{(int(size) if size else 0)/1024:.1f} KB")
+                with c3: st.caption(updated)
+                with c4:
+                    if st.button("Baixar", key=f"dl_{name}"):
+                        content = download_backup_from_storage(name)
+                        if content:
+                            st.download_button("⬇️ Download", data=content, file_name=name, mime="application/zip", use_container_width=True)
+    
+        st.markdown("---")
+        st.markdown("**♻️ Restaurar de backup (.zip)**")
+        up = st.file_uploader("Selecione o arquivo .zip do backup", type=["zip"], key="restore_zip")
+        mode = st.radio("Modo de restauração", ["upsert", "replace"], index=0, help="replace apaga tudo e insere do zero (use com cautela).")
+        if st.button("♻️ Restaurar", key="btn_restore", type="primary"):
+            if not up:
+                st.warning("Selecione um .zip primeiro.")
+            else:
+                with st.spinner("Restaurando..."):
+                    rep = restore_from_zip(up.read(), mode=mode)
+                if rep.get("status") == "ok":
+                    st.success("Restauração concluída!")
+                    for d in rep.get("details", []):
+                        st.write("• " + d)
+                    st.toast("Caches limpos e dados restaurados.", icon="✅")
+                    st.rerun()
+                else:
+                    st.error("Falha na restauração.")
+                    for d in rep.get("details", []):
+                        st.write("• " + d)
+
     st.markdown("**🔌 Conexão Supabase**")
     ok = True
     try:
@@ -2272,76 +2346,3 @@ with tabs[5]:
 if st.session_state.get("goto_tab_label"):
     _switch_to_tab_by_label(st.session_state["goto_tab_label"])
     st.session_state["goto_tab_label"] = None
-
-# ============================
-# 🛡️ Backups (na aba Sistema)
-# ============================
-st.markdown("**🛡️ Backups**")
-with st.container():
-    st.caption("Gere um arquivo .zip contendo JSON e CSV de cada tabela. Opcionalmente, envie ao Supabase Storage.")
-
-    colb1, colb2, colb3 = st.columns([2,2,2])
-    with colb1:
-        if st.button("🧩 Gerar backup (ZIP)", key="btn_gen_backup", type="primary", use_container_width=True):
-            with st.spinner("Gerando backup..."):
-                zip_bytes = export_tables_to_zip(["hospitals", "internacoes", "procedimentos"])
-            ts = _now_ts()
-            fname = f"backup_internacoes_{ts}.zip"
-            st.success("Backup gerado!")
-            st.download_button("⬇️ Baixar ZIP", data=zip_bytes, file_name=fname, mime="application/zip", use_container_width=True)
-            st.session_state["__last_backup_zip"] = (fname, zip_bytes)
-
-    with colb2:
-        if st.button("☁️ Enviar último backup ao Storage", key="btn_push_storage", use_container_width=True):
-            last = st.session_state.get("__last_backup_zip")
-            if not last:
-                st.info("Gere um backup primeiro (ou use a seção abaixo para listar/baixar do Storage).")
-            else:
-                fname, zip_bytes = last
-                ok = upload_zip_to_storage(zip_bytes, fname)
-                if ok:
-                    st.toast(f"Backup enviado: {fname}", icon="☁️")
-
-    with colb3:
-        st.write("")  # espaçamento
-
-    st.markdown("---")
-    st.markdown("**☁️ Backups no Storage**")
-    files = list_backups_from_storage("")
-    if not files:
-        st.info("Nenhum backup no Storage (ou bucket vazio).")
-    else:
-        for f in files[:50]:  # limita lista
-            name = f.get("name")
-            size = f.get("metadata", {}).get("size") or f.get("size")
-            updated = f.get("updated_at") or f.get("last_modified") or f.get("created_at") or ""
-            c1, c2, c3, c4 = st.columns([4,2,2,2])
-            with c1: st.markdown(f"**{name}**")
-            with c2: st.caption(f"{(int(size) if size else 0)/1024:.1f} KB")
-            with c3: st.caption(updated)
-            with c4:
-                if st.button("Baixar", key=f"dl_{name}"):
-                    content = download_backup_from_storage(name)
-                    if content:
-                        st.download_button("⬇️ Download", data=content, file_name=name, mime="application/zip", use_container_width=True)
-
-    st.markdown("---")
-    st.markdown("**♻️ Restaurar de backup (.zip)**")
-    up = st.file_uploader("Selecione o arquivo .zip do backup", type=["zip"], key="restore_zip")
-    mode = st.radio("Modo de restauração", ["upsert", "replace"], index=0, help="replace apaga tudo e insere do zero (use com cautela).")
-    if st.button("♻️ Restaurar", key="btn_restore", type="primary"):
-        if not up:
-            st.warning("Selecione um .zip primeiro.")
-        else:
-            with st.spinner("Restaurando..."):
-                rep = restore_from_zip(up.read(), mode=mode)
-            if rep.get("status") == "ok":
-                st.success("Restauração concluída!")
-                for d in rep.get("details", []):
-                    st.write("• " + d)
-                st.toast("Caches limpos e dados restaurados.", icon="✅")
-                st.rerun()
-            else:
-                st.error("Falha na restauração.")
-                for d in rep.get("details", []):
-                    st.write("• " + d)
