@@ -13,6 +13,7 @@ import io
 import json
 import re
 import streamlit.components.v1 as components
+from io import BytesIO
 
 # ==== Supabase ====
 from supabase import create_client, Client
