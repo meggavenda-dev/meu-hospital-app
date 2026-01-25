@@ -1903,19 +1903,16 @@ else:
     def _pdf_cirurgias_por_status(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado no ambiente.")
 
-# --- PDF: Quitações ---
-
-
+# --- PDF: Quitações (layout organizado, com bloco financeiro agrupado) ---
 if REPORTLAB_OK:
-    def _pdf_quitacoes_compacto(df, filtros, incluir_obs: bool = False):
+    def _pdf_quitacoes_organizado(df, filtros, incluir_obs: bool = False):
         """
-        Relatório de Quitações (compacto, 1 linha por registro).
-        - 'Paciente (Convênio)' numa única coluna com quebra de linha.
-        - Totais ao final.
-        - Guias/Aviso sem '.0'.
-        - Cabeçalho único, repetido a cada página.
+        Relatório de Quitações:
+        - Layout com 1 linha por registro e bloco financeiro agrupado (2 linhas).
+        - Evita esmagar colunas e melhora legibilidade.
+        - Guias/Aviso normalizados (sem '.0').
         """
-        # Segurança: colunas esperadas
+        # 1) Garantias de colunas + cópia local
         need = [
             "quitacao_data","hospital","atendimento","paciente","convenio",
             "profissional","grau_participacao","data_procedimento",
@@ -1925,9 +1922,10 @@ if REPORTLAB_OK:
         ]
         df = df.copy()
         for c in need:
-            if c not in df.columns: df[c] = ""
+            if c not in df.columns:
+                df[c] = ""
 
-        # Normalizações (.0) e datas
+        # 2) Normalizações (sem .0) e datas
         for col in ["aviso","quitacao_guia_amhptiss","quitacao_guia_complemento"]:
             df[col] = df[col].apply(_fmt_id_str)
 
@@ -1938,19 +1936,12 @@ if REPORTLAB_OK:
         df["data_procedimento"] = df["data_procedimento"].apply(_fmt_dt)
         df["quitacao_data"] = df["quitacao_data"].apply(_fmt_dt)
 
-        # Monta coluna "Paciente (Convênio)"
-        def _nz(x):
-            if x is None: return ""
-            if isinstance(x, float) and pd.isna(x): return ""
-            return str(x)
-        df["paciente_conv"] = df.apply(lambda r: f"{_nz(r['paciente'])}\n({_nz(r['convenio'])})".strip(), axis=1)
-
-        # Totais
+        # 3) Totais
         v_amhp = pd.to_numeric(df.get("quitacao_valor_amhptiss", 0), errors="coerce").fillna(0.0)
         v_comp = pd.to_numeric(df.get("quitacao_valor_complemento", 0), errors="coerce").fillna(0.0)
         total_amhp = float(v_amhp.sum()); total_comp = float(v_comp.sum()); total_geral = total_amhp + total_comp
 
-        # === ReportLab ===
+        # 4) ReportLab setup
         buf = io.BytesIO()
         doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
                                 leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18)
@@ -1966,6 +1957,7 @@ if REPORTLAB_OK:
         TD = ParagraphStyle("TD", parent=styles["Normal"], fontName="Helvetica", fontSize=8.2, leading=10, wordWrap="LTR")
         TD_CENTER = ParagraphStyle("TD_CENTER", parent=TD, alignment=1)
         TD_RIGHT  = ParagraphStyle("TD_RIGHT", parent=TD, alignment=2)
+        TD_SMALL  = ParagraphStyle("TD_SMALL", parent=TD, fontSize=7.6, leading=9.2)
 
         elems = []
         elems.append(Paragraph("Relatório — Quitações", H1))
@@ -1973,40 +1965,48 @@ if REPORTLAB_OK:
         elems.append(Paragraph(filtros_txt, N))
         elems.append(Spacer(1, 8))
 
-        # Cabeçalho e ordem de colunas
-        headers = ["Quitação","Hospital","Atend.","Paciente (Convênio)","Prof.","Grau","Proc.",
-                   "Aviso","Guia AMHP","R$ AMHP","Guia Comp.","R$ Comp.","Sit."]
-        cols = ["quitacao_data","hospital","atendimento","paciente_conv","profissional","grau_participacao","data_procedimento",
-                "aviso","quitacao_guia_amhptiss","quitacao_valor_amhptiss","quitacao_guia_complemento","quitacao_valor_complemento","situacao"]
-
+        # 5) Cabeçalho e ordem de colunas
+        headers = ["Quitação","Hospital","Atend.","Paciente","Convênio","Prof.","Grau","Proc.","Aviso","Financeiro","Sit."]
+        cols = ["quitacao_data","hospital","atendimento","paciente","convenio","profissional","grau_participacao","data_procedimento","aviso","__financeiro__","situacao"]
         if incluir_obs:
             headers.append("Obs.")
             cols.append("quitacao_observacao")
 
-        # Larguras (A4 paisagem) - ajustadas para texto longo em "Paciente (Convênio)"
-        col_widths = [2.4*cm, 2.8*cm, 2.4*cm, 7.2*cm, 4.6*cm, 2.6*cm, 2.4*cm,
-                      2.6*cm, 3.2*cm, 3.0*cm, 3.4*cm, 3.0*cm, 2.2*cm]
+        # 6) Larguras — ajuste fino aqui se quiser
+        col_widths = [
+            2.2*cm,  2.8*cm,  2.2*cm,  5.6*cm,  3.6*cm,
+            4.2*cm,  2.4*cm,  2.2*cm,  2.6*cm,  7.2*cm,
+            2.2*cm
+        ]
         if incluir_obs:
             col_widths.append(6.0*cm)
 
-        # Montagem das linhas
+        # 7) Montagem das linhas
         def P(v, style=TD): return Paragraph("" if v is None else str(v), style)
+
         data_rows = []
         for _, r in df.iterrows():
+            # Bloco financeiro em UMA célula (duas linhas)
+            fin = (
+                f"<b>AMHPTISS:</b> {(r['quitacao_guia_amhptiss'] or '-')}"
+                f"  •  {_format_currency_br(r['quitacao_valor_amhptiss'])}"
+                "<br/>"
+                f"<b>Complemento:</b> {(r['quitacao_guia_complemento'] or '-')}"
+                f"  •  {_format_currency_br(r['quitacao_valor_complemento'])}"
+            )
+
             row = [
-                P(r["quitacao_data"], TD_CENTER),
-                P(r["hospital"], TD),
-                P(r["atendimento"], TD_CENTER),
-                P(r["paciente_conv"], TD),
-                P(r["profissional"], TD),
-                P(r["grau_participacao"], TD_CENTER),
-                P(r["data_procedimento"], TD_CENTER),
-                P(r["aviso"], TD_CENTER),
-                P(r["quitacao_guia_amhptiss"], TD_CENTER),
-                P(_format_currency_br(r["quitacao_valor_amhptiss"]), TD_RIGHT),
-                P(r["quitacao_guia_complemento"], TD_CENTER),
-                P(_format_currency_br(r["quitacao_valor_complemento"]), TD_RIGHT),
-                P(r["situacao"], TD_CENTER)
+                P(r["quitacao_data"], TD_CENTER),         # Quitação
+                P(r["hospital"], TD),                     # Hospital
+                P(r["atendimento"], TD_CENTER),           # Atend.
+                P(r["paciente"], TD_SMALL),               # Paciente (menor)
+                P(r["convenio"], TD_SMALL),               # Convênio (menor)
+                P(r["profissional"], TD),                 # Prof.
+                P(r["grau_participacao"], TD_CENTER),     # Grau
+                P(r["data_procedimento"], TD_CENTER),     # Proc.
+                P(r["aviso"], TD_CENTER),                 # Aviso
+                P(fin, TD_SMALL),                         # Financeiro (menor, 2 linhas)
+                P(r["situacao"], TD_CENTER)               # Sit.
             ]
             if incluir_obs:
                 row.append(P(r["quitacao_observacao"], TD))
@@ -2026,9 +2026,9 @@ if REPORTLAB_OK:
         elems.append(table)
         elems.append(Spacer(1, 8))
 
-        # Totais
+        # 8) Totais
         totals_data = [
-            ["Total AMHP:", _format_currency_br(total_amhp)],
+            ["Total AMHPTISS:", _format_currency_br(total_amhp)],
             ["Total Complemento:", _format_currency_br(total_comp)],
             ["Total Geral:", _format_currency_br(total_geral)],
         ]
@@ -2045,7 +2045,7 @@ if REPORTLAB_OK:
         pdf_bytes = buf.getvalue(); buf.close()
         return pdf_bytes
 else:
-    def _pdf_quitacoes_compacto(*args, **kwargs):
+    def _pdf_quitacoes_organizado(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado no ambiente.")
 
 with tabs[3]:
@@ -2176,7 +2176,7 @@ with tabs[3]:
                         "hospital": hosp_sel_q,
                     }
                     # ✅ usa a função COMPACTA
-                    pdf_bytes_q = _pdf_quitacoes_compacto(df_quit, filtros_q, incluir_obs=incluir_obs)
+                    pdf_bytes_q = _pdf_quitacoes_organizado(df_quit, filtros_q, incluir_obs=incluir_obs)
                     ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
                     fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
                     st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
