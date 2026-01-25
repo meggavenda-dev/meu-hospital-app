@@ -2205,6 +2205,7 @@ if REPORTLAB_OK:
         pdf_bytes = buf.getvalue(); buf.close()
         return pdf_bytes
 
+
 with tabs[3]:
     tab_header_with_home("📑 Relatórios — Central", btn_key_suffix="relatorios")
 
@@ -2212,77 +2213,70 @@ with tabs[3]:
     st.markdown("**1) Cirurgias por Status (PDF)**")
     hosp_opts = ["Todos"] + get_hospitais()
     colf1, colf2, colf3 = st.columns(3)
-    with colf1: hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="rel_hosp")
-    with colf2: status_sel = st.selectbox("Status", ["Todos"] + STATUS_OPCOES, index=0, key="rel_status")
+    with colf1:
+        hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="rel_hosp")
+    with colf2:
+        status_sel = st.selectbox("Status", ["Todos"] + STATUS_OPCOES, index=0, key="rel_status")
     with colf3:
-        hoje = date.today(); ini_default = hoje.replace(day=1)
+        hoje = date.today()
+        ini_default = hoje.replace(day=1)
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
     # Base (procedimentos Cirurgia/Proc + merge com internacoes ou view)
     df_rel = _rel_cirurgias_base_df()
-
     if not df_rel.empty:
         df_rel["_data_dt"] = df_rel["data_procedimento"].apply(_pt_date_to_dt)
         mask = (df_rel["_data_dt"].notna()) & (df_rel["_data_dt"] >= dt_ini) & (df_rel["_data_dt"] <= dt_fim)
         df_rel = df_rel[mask].copy()
-        if hosp_sel != "Todos": df_rel = df_rel[df_rel["hospital"] == hosp_sel]
-        if status_sel != "Todos": df_rel = df_rel[df_rel["situacao"] == status_sel]
+        if hosp_sel != "Todos":
+            df_rel = df_rel[df_rel["hospital"] == hosp_sel]
+        if status_sel != "Todos":
+            df_rel = df_rel[df_rel["situacao"] == status_sel]
         df_rel = df_rel.sort_values(by=["_data_dt","hospital","paciente","atendimento"])
         df_rel["data_procedimento"] = df_rel["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
         df_rel = df_rel.drop(columns=["_data_dt"])
 
-    
-    colqb1, colqb2 = st.columns(2)
-        with colqb1:
-            if st.button("Gerar PDF (Quitações)", type="primary"):
-                if df_quit.empty:
-                    st.warning("Nenhum registro de quitação encontrado para os filtros informados.")
-                else:
-                    if not REPORTLAB_OK:
-                        st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
-                    else:
-                        filtros_q = {
-                            "ini": dt_ini_q.strftime("%d/%m/%Y"),
-                            "fim": dt_fim_q.strftime("%d/%m/%Y"),
-                            "hospital": hosp_sel_q,
-                        }
-                        pdf_bytes_q = _pdf_quitacoes_colunas_fixas(df_quit, filtros_q)
-                        ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
-                        st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
-                        st.download_button(
-                            label="⬇️ Baixar PDF (Quitações)",
-                            data=pdf_bytes_q,
-                            file_name=fname_q,
-                            mime="application/pdf",
-                            use_container_width=True
-                        )
-        with colqb2:
-            if not df_quit.empty:
-                # CSV simples (mantém todas as colunas da base)
-                csv_quit = df_quit.to_csv(index=False).encode("utf-8-sig")
+    colc1, colc2 = st.columns(2)
+    with colc1:
+        if st.button("Gerar PDF (Cirurgias por Status)", key="btn_pdf_cir", type="primary"):
+            if df_rel.empty:
+                st.warning("Nenhum registro encontrado para os filtros informados.")
+            elif not REPORTLAB_OK:
+                st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
+            else:
+                filtros = {
+                    "ini": dt_ini.strftime("%d/%m/%Y"),
+                    "fim": dt_fim.strftime("%d/%m/%Y"),
+                    "hospital": hosp_sel,
+                    "status": status_sel,
+                }
+                pdf_bytes = _pdf_cirurgias_por_status(df_rel, filtros)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                fname = f"relatorio_cirurgias_por_status_{ts}.pdf"
+                st.success(f"Relatório gerado com {len(df_rel)} registro(s).")
                 st.download_button(
-                    "⬇️ Baixar CSV (Quitações)",
-                    data=csv_quit,
-                    file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
+                    label="⬇️ Baixar PDF",
+                    data=pdf_bytes,
+                    file_name=fname,
+                    mime="application/pdf",
+                    use_container_width=True
                 )
-    
-                # >>> NOVO: Excel com o MESMO layout do PDF (sem Aviso/Situação)
-                xlsx_bytes = _excel_quitacoes_colunas_fixas(df_quit)
-                st.download_button(
-                    "⬇️ Baixar Excel (layout do PDF)",
-                    data=xlsx_bytes,
-                    file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+    with colc2:
+        if not df_rel.empty:
+            csv_bytes = df_rel.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "⬇️ Baixar CSV (fallback)",
+                data=csv_bytes,
+                file_name=f"cirurgias_por_status_{date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
 
-    
+    st.divider()
 
-    # 2) Quitações
-    st.markdown("**2) Quitações (PDF)**")
-    hosp_opts_q = ["Todos"] + get_hospitais()  # <- sem indent extra
+    # 2) Quitações — PDF / CSV / Excel
+    st.markdown("**2) Quitações (PDF / Excel)**")
+    hosp_opts_q = ["Todos"] + get_hospitais()
     colq1, colq2 = st.columns(2)
     with colq1:
         hosp_sel_q = st.selectbox("Hospital", hosp_opts_q, index=0, key="rel_q_hosp")
@@ -2292,11 +2286,10 @@ with tabs[3]:
         dt_ini_q = st.date_input("Data inicial da quitação", value=ini_default_q, key="rel_q_ini")
         dt_fim_q = st.date_input("Data final da quitação", value=hoje, key="rel_q_fim")
 
-    # Base de quitações (fora do with)
+    # Base de quitações
     df_quit = _rel_quitacoes_base_df()
-
     if not df_quit.empty:
-        # Filtro por período da QUITAÇÃO
+        # Período da QUITAÇÃO
         df_quit["_quit_dt"] = df_quit["quitacao_data"].apply(_pt_date_to_dt)
         mask_q = (df_quit["_quit_dt"].notna()) & (df_quit["_quit_dt"] >= dt_ini_q) & (df_quit["_quit_dt"] <= dt_fim_q)
         df_quit = df_quit[mask_q].copy()
@@ -2318,60 +2311,65 @@ with tabs[3]:
         df_quit["quitacao_data"] = df_quit["_quit_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
         df_quit = df_quit.drop(columns=["_quit_dt"]).fillna("")
 
-        # Colunas completas (para PDF/CSV)
+        # Garante colunas do PDF/Excel (mesmo layout do PDF)
         cols_pdf = [
             "hospital","atendimento","convenio","paciente","profissional","grau_participacao",
-            "data_procedimento","aviso","situacao",
+            "data_procedimento",
             "quitacao_guia_amhptiss","quitacao_guia_complemento",
             "quitacao_valor_amhptiss","quitacao_valor_complemento",
-            "quitacao_data","quitacao_observacao"
+            "quitacao_data"
         ]
         for c in cols_pdf:
-            if c not in df_quit.columns: df_quit[c] = ""
+            if c not in df_quit.columns:
+                df_quit[c] = ""
 
         # Ordenação
         df_quit = df_quit.sort_values(
             by=["quitacao_data","hospital","convenio","paciente","profissional","data_procedimento"]
         ).reset_index(drop=True)
 
-    # Preferência: incluir ou não "Observação" no PDF
-    incluir_obs = st.checkbox("Incluir coluna 'Observação' no PDF", value=False, key="rel_q_obs")
-
     colqb1, colqb2 = st.columns(2)
     with colqb1:
-        if st.button("Gerar PDF (Quitações)", type="primary"):
+        if st.button("Gerar PDF (Quitações)", type="primary", key="btn_pdf_quit"):
             if df_quit.empty:
                 st.warning("Nenhum registro de quitação encontrado para os filtros informados.")
+            elif not REPORTLAB_OK:
+                st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
             else:
-                if not REPORTLAB_OK:
-                    st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
-                else:
-                    filtros_q = {
-                        "ini": dt_ini_q.strftime("%d/%m/%Y"),
-                        "fim": dt_fim_q.strftime("%d/%m/%Y"),
-                        "hospital": hosp_sel_q,
-                    }
-                    # ✅ usa a função COMPACTA
-                    pdf_bytes_q = _pdf_quitacoes_colunas_fixas(df_quit, filtros_q)
-                    ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
-                    st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
-                    st.download_button(
-                        label="⬇️ Baixar PDF (Quitações)",
-                        data=pdf_bytes_q,
-                        file_name=fname_q,
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
+                filtros_q = {
+                    "ini": dt_ini_q.strftime("%d/%m/%Y"),
+                    "fim": dt_fim_q.strftime("%d/%m/%Y"),
+                    "hospital": hosp_sel_q,
+                }
+                pdf_bytes_q = _pdf_quitacoes_colunas_fixas(df_quit, filtros_q)
+                ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
+                fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
+                st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
+                st.download_button(
+                    label="⬇️ Baixar PDF (Quitações)",
+                    data=pdf_bytes_q,
+                    file_name=fname_q,
+                    mime="application/pdf",
+                    use_container_width=True
+                )
     with colqb2:
         if not df_quit.empty:
-            # CSV com todas as colunas e códigos normalizados
+            # CSV (base completa)
             csv_quit = df_quit.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
                 "⬇️ Baixar CSV (Quitações)",
                 data=csv_quit,
                 file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
+            )
+
+            # Excel (mesmo layout do PDF — sem Aviso/Situação)
+            xlsx_bytes = _excel_quitacoes_colunas_fixas(df_quit)
+            st.download_button(
+                "⬇️ Baixar Excel (layout do PDF)",
+                data=xlsx_bytes,
+                file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
             
