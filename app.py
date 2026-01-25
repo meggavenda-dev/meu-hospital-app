@@ -811,6 +811,145 @@ def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_a
     except APIError as e:
         _sb_debug_error(e, "Falha ao quitar procedimento.")
 
+
+def _excel_quitacoes_colunas_fixas(df: pd.DataFrame) -> bytes:
+    """
+    Gera um Excel (XLSX) com o mesmo layout do PDF 'colunas fixas (sem Aviso/Situação)'.
+    Colunas: Quitação | Hospital | Atendimento | Paciente | Convênio | Profissional | Grau |
+             Data Proc. | Guia AMHPTISS | R$ AMHPTISS | Guia Compl. | R$ Compl.
+    - Datas em dd/mm/aaaa
+    - Valores com formato contábil brasileiro (R$)
+    - Guias normalizadas (sem '.0')
+    - Larguras de coluna ajustadas
+    Retorna: bytes do arquivo .xlsx
+    """
+    if df is None or df.empty:
+        return b""
+
+    # ---- Seleção e ordem de colunas (mes mo do PDF) ----
+    cols_pdf = [
+        "quitacao_data","hospital","atendimento","paciente","convenio",
+        "profissional","grau_participacao","data_procedimento",
+        "quitacao_guia_amhptiss","quitacao_valor_amhptiss",
+        "quitacao_guia_complemento","quitacao_valor_complemento",
+    ]
+    # Garante colunas e cria cópia
+    base = df.copy()
+    for c in cols_pdf:
+        if c not in base.columns:
+            base[c] = ""
+
+    # ---- Normalizações (guias sem '.0') ----
+    for col in ["quitacao_guia_amhptiss","quitacao_guia_complemento"]:
+        if col in base.columns:
+            base[col] = base[col].apply(_fmt_id_str)
+
+    # ---- Datas (dd/mm/aaaa no Excel) ----
+    def _to_date_or_none(s):
+        d = _pt_date_to_dt(s)
+        return pd.to_datetime(d) if d else pd.NaT
+
+    base["quitacao_data_x"]     = base["quitacao_data"].apply(_to_date_or_none)
+    base["data_procedimento_x"] = base["data_procedimento"].apply(_to_date_or_none)
+
+    # ---- Valores numéricos (float) ----
+    base["quitacao_valor_amhptiss_x"]    = pd.to_numeric(base["quitacao_valor_amhptiss"], errors="coerce")
+    base["quitacao_valor_complemento_x"] = pd.to_numeric(base["quitacao_valor_complemento"], errors="coerce")
+
+    # ---- DataFrame final no layout humano ----
+    out = pd.DataFrame({
+        "Quitação":               base["quitacao_data_x"],
+        "Hospital":               base["hospital"],
+        "Atendimento":            base["atendimento"],
+        "Paciente":               base["paciente"],
+        "Convênio":               base["convenio"],
+        "Profissional":           base["profissional"],
+        "Grau":                   base["grau_participacao"],
+        "Data Proc.":             base["data_procedimento_x"],
+        "Guia AMHPTISS":          base["quitacao_guia_amhptiss"],
+        "R$ AMHPTISS":            base["quitacao_valor_amhptiss_x"],
+        "Guia Compl.":            base["quitacao_guia_complemento"],
+        "R$ Compl.":              base["quitacao_valor_complemento_x"],
+    })
+
+    # ---- Escreve com openpyxl + formatos e larguras ----
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        sheet_name = "Quitações"
+        out.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        ws = writer.sheets[sheet_name]
+
+        # Formatos
+        from openpyxl.styles import numbers, Alignment, Font
+        # dd/mm/aaaa (número 14 é dd/mm/aa; usaremos código explícito dd/mm/yyyy)
+        date_fmt = "dd/mm/yyyy"
+        money_fmt = u'[$R$-pt_BR] #,##0.00'  # R$ com separadores BR
+
+        # Descobre índices das colunas por título (1-based)
+        headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        idx_quit = headers.index("Quitação") + 1
+        idx_proc = headers.index("Data Proc.") + 1
+        idx_v1   = headers.index("R$ AMHPTISS") + 1
+        idx_v2   = headers.index("R$ Compl.") + 1
+
+        # Aplica formatos de coluna (a partir da 2ª linha)
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=idx_quit, max_col=idx_quit):
+            for cell in row:
+                cell.number_format = date_fmt
+                cell.alignment = Alignment(horizontal="center")
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=idx_proc, max_col=idx_proc):
+            for cell in row:
+                cell.number_format = date_fmt
+                cell.alignment = Alignment(horizontal="center")
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=idx_v1, max_col=idx_v1):
+            for cell in row:
+                cell.number_format = money_fmt
+                cell.alignment = Alignment(horizontal="right")
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=idx_v2, max_col=idx_v2):
+            for cell in row:
+                cell.number_format = money_fmt
+                cell.alignment = Alignment(horizontal="right")
+
+        # Alinhamentos para algumas colunas
+        for col_title in ["Atendimento","Guia AMHPTISS","Guia Compl."]:
+            cidx = headers.index(col_title) + 1
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=cidx, max_col=cidx):
+                for cell in row:
+                    cell.alignment = Alignment(horizontal="center")
+
+        # Ajuste de cabeçalho (bold + centralizado)
+        for c in ws[1]:
+            c.font = Font(bold=True)
+            c.alignment = Alignment(horizontal="center")
+
+        # Largura de colunas — mapeando proporcionalmente às larguras do PDF
+        # (valores em “caracteres” aprox. no Excel)
+        col_width_map = {
+            "Quitação":        11,   # datas
+            "Hospital":        16,
+            "Atendimento":     12,
+            "Paciente":        32,
+            "Convênio":        18,
+            "Profissional":    22,
+            "Grau":            12,
+            "Data Proc.":      11,   # datas
+            "Guia AMHPTISS":   16,
+            "R$ AMHPTISS":     14,
+            "Guia Compl.":     16,
+            "R$ Compl.":       14,
+        }
+        for col_cells in ws.iter_cols(min_row=1, max_row=1):
+            title = col_cells[0].value
+            if title in col_width_map:
+                ws.column_dimensions[col_cells[0].column_letter].width = col_width_map[title]
+
+        # Freezepanes (fixa cabeçalho)
+        ws.freeze_panes = "A2"
+
+    return buf.getvalue()
+
+
 def reverter_quitacao(proc_id: int):
     update_data = {
         "quitacao_data": None,
@@ -2113,14 +2252,27 @@ with tabs[3]:
                 st.success(f"Relatório gerado com {len(df_rel)} registro(s).")
                 st.download_button(label="⬇️ Baixar PDF", data=pdf_bytes, file_name=fname,
                                    mime="application/pdf", use_container_width=True)
-    with colb2:
-        if not df_rel.empty:
-            csv_bytes = df_rel.to_csv(index=False).encode("utf-8-sig")
-            st.download_button("⬇️ Baixar CSV (fallback)", data=csv_bytes,
-                               file_name=f"cirurgias_por_status_{date.today().strftime('%Y%m%d')}.csv",
-                               mime="text/csv")
-
-    st.divider()
+    
+    with colqb2:
+            if not df_quit.empty:
+                # CSV simples (mantém todas as colunas da base)
+                csv_quit = df_quit.to_csv(index=False).encode("utf-8-sig")
+                st.download_button(
+                    "⬇️ Baixar CSV (Quitações)",
+                    data=csv_quit,
+                    file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                )
+    
+                # >>> NOVO: Excel com o MESMO layout do PDF (sem Aviso/Situação)
+                xlsx_bytes = _excel_quitacoes_colunas_fixas(df_quit)
+                st.download_button(
+                    "⬇️ Baixar Excel (layout do PDF)",
+                    data=xlsx_bytes,
+                    file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+    
 
     # 2) Quitações
     st.markdown("**2) Quitações (PDF)**")
