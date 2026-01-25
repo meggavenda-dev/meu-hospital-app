@@ -2232,28 +2232,33 @@ with tabs[3]:
         df_rel["data_procedimento"] = df_rel["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
         df_rel = df_rel.drop(columns=["_data_dt"])
 
-    colb1, colb2 = st.columns(2)
-    with colb1:
-        if st.button("Gerar PDF", type="primary"):
-            if df_rel.empty:
-                st.warning("Nenhum registro encontrado para os filtros informados.")
-            elif not REPORTLAB_OK:
-                st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
-            else:
-                filtros = {
-                    "ini": dt_ini.strftime("%d/%m/%Y"),
-                    "fim": dt_fim.strftime("%d/%m/%Y"),
-                    "hospital": hosp_sel,
-                    "status": status_sel,
-                }
-                pdf_bytes = _pdf_cirurgias_por_status(df_rel, filtros)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                fname = f"relatorio_cirurgias_por_status_{ts}.pdf"
-                st.success(f"Relatório gerado com {len(df_rel)} registro(s).")
-                st.download_button(label="⬇️ Baixar PDF", data=pdf_bytes, file_name=fname,
-                                   mime="application/pdf", use_container_width=True)
     
-    with colqb2:
+    colqb1, colqb2 = st.columns(2)
+        with colqb1:
+            if st.button("Gerar PDF (Quitações)", type="primary"):
+                if df_quit.empty:
+                    st.warning("Nenhum registro de quitação encontrado para os filtros informados.")
+                else:
+                    if not REPORTLAB_OK:
+                        st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
+                    else:
+                        filtros_q = {
+                            "ini": dt_ini_q.strftime("%d/%m/%Y"),
+                            "fim": dt_fim_q.strftime("%d/%m/%Y"),
+                            "hospital": hosp_sel_q,
+                        }
+                        pdf_bytes_q = _pdf_quitacoes_colunas_fixas(df_quit, filtros_q)
+                        ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
+                        st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
+                        st.download_button(
+                            label="⬇️ Baixar PDF (Quitações)",
+                            data=pdf_bytes_q,
+                            file_name=fname_q,
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
+        with colqb2:
             if not df_quit.empty:
                 # CSV simples (mantém todas as colunas da base)
                 csv_quit = df_quit.to_csv(index=False).encode("utf-8-sig")
@@ -2272,6 +2277,7 @@ with tabs[3]:
                     file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
+
     
 
     # 2) Quitações
