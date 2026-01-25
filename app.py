@@ -258,6 +258,223 @@ def _att_to_number(v):
 # ============================================================
 # Helper de merge tolerante (evita KeyError com DF/coluna vazios)
 # ============================================================
+
+# ============================
+# BACKUP / RESTORE — Helpers
+# ============================
+import math, zipfile, io, time
+from typing import List, Dict, Any
+
+# Client com Service Key (opcional, para Storage privado/administrativo)
+URL = st.secrets.get("SUPABASE_URL", "")
+KEY = st.secrets.get("SUPABASE_KEY", "")
+SERVICE_KEY = st.secrets.get("SUPABASE_SERVICE_KEY", KEY)  # fallback no anon key
+BUCKET = st.secrets.get("STORAGE_BACKUP_BUCKET", "backups")
+
+admin_client: Client = create_client(URL, SERVICE_KEY)
+
+# ---- Paginação segura (lê tudo) ----
+def _fetch_all_rows(table: str, cols: str = "*", page_size: int = 1000, filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    """
+    Lê toda a tabela com paginação.
+    Respeita RLS do cliente em uso. Para 'admin', use admin_client.
+    """
+    rows = []
+    start = 0
+    while True:
+        q = supabase.table(table).select(cols).range(start, start + page_size - 1)
+        if filters:
+            for k, v in filters.items():
+                q = q.eq(k, v)
+        res = q.execute()
+        chunk = res.data or []
+        rows.extend(chunk)
+        if len(chunk) < page_size:
+            break
+        start += page_size
+    return rows
+
+def _to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+def _now_ts() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+def export_tables_to_zip(tables: List[str]) -> bytes:
+    """
+    Gera um ZIP com json/csv por tabela. Retorna bytes do ZIP.
+    """
+    mem = io.BytesIO()
+    with zipfile.ZipFile(mem, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        meta = {
+            "generated_at": datetime.now().isoformat(),
+            "tables": tables,
+            "app": "internacoes_supabase",
+            "version": "v1"
+        }
+        zf.writestr("meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
+
+        for t in tables:
+            data = _fetch_all_rows(t, "*")
+            df = pd.DataFrame(data)
+            # JSON
+            zf.writestr(f"{t}.json", json.dumps(data, ensure_ascii=False, indent=2))
+            # CSV
+            zf.writestr(f"{t}.csv", _to_csv_bytes(df) if not df.empty else b"")
+    return mem.getvalue()
+
+def upload_zip_to_storage(zip_bytes: bytes, filename: str) -> bool:
+    """
+    Grava ZIP no bucket configurado (usa admin_client, com Service Key).
+    Retorna True/False.
+    """
+    try:
+        path = f"{filename}"
+        admin_client.storage.from_(BUCKET).upload(path, zip_bytes, {"content-type": "application/zip", "upsert": True})
+        return True
+    except Exception as e:
+        st.error(f"Falha ao enviar ao Storage: {e}")
+        return False
+
+def list_backups_from_storage(prefix: str = "") -> List[Dict[str, Any]]:
+    """
+    Lista arquivos no bucket de backups (Storage).
+    """
+    try:
+        res = admin_client.storage.from_(BUCKET).list(path=prefix or "", search=None)
+        # Normaliza para incluir apenas .zip
+        files = [f for f in res if isinstance(f, dict) and f.get('name', '').lower().endswith(".zip")]
+        # Ordena por modificação desc, se disponível
+        files.sort(key=lambda x: x.get("updated_at") or x.get("last_modified") or x.get("created_at") or "", reverse=True)
+        return files
+    except Exception as e:
+        st.error(f"Falha ao listar backups no Storage: {e}")
+        return []
+
+def download_backup_from_storage(name: str) -> bytes:
+    """
+    Baixa um arquivo ZIP do Storage (bucket BUCKET).
+    """
+    try:
+        return admin_client.storage.from_(BUCKET).download(name)
+    except Exception as e:
+        st.error(f"Falha no download do Storage: {e}")
+        return b""
+
+def _json_from_zip(zf: zipfile.ZipFile, name: str):
+    try:
+        with zf.open(name) as f:
+            return json.loads(f.read().decode("utf-8"))
+    except KeyError:
+        return None
+
+def restore_from_zip(zip_bytes: bytes, mode: str = "upsert") -> Dict[str, Any]:
+    """
+    Restaura a partir de um ZIP (json/csv); usa JSON. 
+    'mode' pode ser:
+      - 'upsert': atualiza/insere mantendo IDs conforme o payload
+      - 'replace': apaga tudo e reinsere (CUIDADO)
+    Ordem de restauração: hospitals -> internacoes -> procedimentos
+    """
+    report = {"status": "ok", "details": []}
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), mode="r") as zf:
+            meta = _json_from_zip(zf, "meta.json") or {}
+            tables = meta.get("tables") or ["hospitals", "internacoes", "procedimentos"]
+
+            # Carrega JSON por tabela
+            data_map = {}
+            for t in tables:
+                arr = _json_from_zip(zf, f"{t}.json")
+                if arr is None:
+                    # fallback: tenta CSV
+                    try:
+                        with zf.open(f"{t}.csv") as f:
+                            df = pd.read_csv(f, dtype=str)
+                            arr = json.loads(df.to_json(orient="records", force_ascii=False))
+                    except Exception:
+                        arr = []
+                data_map[t] = arr or []
+
+            # ---- Ordem: hospitals -> internacoes -> procedimentos
+            ordered = ["hospitals", "internacoes", "procedimentos"]
+            # Somente o que existe no zip
+            ordered = [t for t in ordered if t in data_map]
+
+            # Opcional: replace (apaga tudo antes)
+            if mode == "replace":
+                for t in reversed(ordered):  # apaga filhos antes
+                    try:
+                        supabase.table(t).delete().neq("id", None).execute()
+                        report["details"].append(f"{t}: apagado")
+                    except APIError as e:
+                        report["status"] = "error"
+                        report["details"].append(f"{t}: falha ao apagar - {getattr(e,'message',e)}")
+                        return report
+
+            # Insere por chunks
+            def _chunked_upsert(table: str, rows: List[Dict[str, Any]], chunk: int = 500):
+                if not rows:
+                    return 0
+                total = 0
+                for i in range(0, len(rows), chunk):
+                    batch = rows[i:i+chunk]
+                    # Se a tabela tem PK 'id', upsert com 'on_conflict="id"'
+                    try:
+                        supabase.table(table).upsert(batch, on_conflict="id").execute()
+                        total += len(batch)
+                    except APIError as e:
+                        # Fallback: insert ignorando conflito, se necessário
+                        try:
+                            supabase.table(table).insert(batch).execute()
+                            total += len(batch)
+                        except APIError as e2:
+                            report["status"] = "error"
+                            report["details"].append(f"{table}: falha ao inserir/upsert - {getattr(e2,'message',e2)}")
+                            break
+                return total
+
+            # Hospitais
+            if "hospitals" in ordered:
+                count = _chunked_upsert("hospitals", data_map["hospitals"])
+                report["details"].append(f"hospitals: {count} registro(s) restaurado(s).")
+
+            # Internações
+            if "internacoes" in ordered:
+                # Normaliza datas e colunas conhecidas
+                rows = data_map["internacoes"]
+                for r in rows:
+                    if "data_internacao" in r:
+                        r["data_internacao"] = _to_ddmmyyyy(r["data_internacao"])
+                    if "atendimento" in r:
+                        r["atendimento"] = _att_norm(r["atendimento"])
+                    if "numero_internacao" in r:
+                        r["numero_internacao"] = _att_to_number(r["numero_internacao"])
+                count = _chunked_upsert("internacoes", rows)
+                report["details"].append(f"internacoes: {count} registro(s) restaurado(s).")
+
+            # Procedimentos
+            if "procedimentos" in ordered:
+                rows = data_map["procedimentos"]
+                for r in rows:
+                    if "data_procedimento" in r:
+                        r["data_procedimento"] = _to_ddmmyyyy(r["data_procedimento"])
+                    # saneia status e defaults mínimos
+                    r["procedimento"] = r.get("procedimento") or "Cirurgia / Procedimento"
+                    r["situacao"] = r.get("situacao") or "Pendente"
+                    if "is_manual" in r:
+                        r["is_manual"] = int(r["is_manual"] or 0)
+                count = _chunked_upsert("procedimentos", rows)
+                report["details"].append(f"procedimentos: {count} registro(s) restaurado(s).")
+
+            invalidate_caches()
+            return report
+
+    except zipfile.BadZipFile:
+        return {"status": "error", "details": ["Arquivo ZIP inválido."]}
+    except Exception as e:
+        return {"status": "error", "details": [f"Exceção: {e}"]}
+
 def _fmt_id_str(x):
     """
     Formata códigos numéricos (ex.: aviso, número de guia) como string sem '.0'.
@@ -794,6 +1011,81 @@ st.set_page_config(page_title="Gestão de Internações", page_icon="🏥", layo
 inject_css()
 app_header("Sistema de Internações — Supabase",
            "Importação, edição, quitação e relatórios (banco em nuvem)")
+
+
+# ============================
+# 🛡️ Backups (na aba Sistema)
+# ============================
+st.markdown("**🛡️ Backups**")
+with st.container():
+    st.caption("Gere um arquivo .zip contendo JSON e CSV de cada tabela. Opcionalmente, envie ao Supabase Storage.")
+
+    colb1, colb2, colb3 = st.columns([2,2,2])
+    with colb1:
+        if st.button("🧩 Gerar backup (ZIP)", key="btn_gen_backup", type="primary", use_container_width=True):
+            with st.spinner("Gerando backup..."):
+                zip_bytes = export_tables_to_zip(["hospitals", "internacoes", "procedimentos"])
+            ts = _now_ts()
+            fname = f"backup_internacoes_{ts}.zip"
+            st.success("Backup gerado!")
+            st.download_button("⬇️ Baixar ZIP", data=zip_bytes, file_name=fname, mime="application/zip", use_container_width=True)
+            st.session_state["__last_backup_zip"] = (fname, zip_bytes)
+
+    with colb2:
+        if st.button("☁️ Enviar último backup ao Storage", key="btn_push_storage", use_container_width=True):
+            last = st.session_state.get("__last_backup_zip")
+            if not last:
+                st.info("Gere um backup primeiro (ou use a seção abaixo para listar/baixar do Storage).")
+            else:
+                fname, zip_bytes = last
+                ok = upload_zip_to_storage(zip_bytes, fname)
+                if ok:
+                    st.toast(f"Backup enviado: {fname}", icon="☁️")
+
+    with colb3:
+        st.write("")  # espaçamento
+
+    st.markdown("---")
+    st.markdown("**☁️ Backups no Storage**")
+    files = list_backups_from_storage("")
+    if not files:
+        st.info("Nenhum backup no Storage (ou bucket vazio).")
+    else:
+        for f in files[:50]:  # limita lista
+            name = f.get("name")
+            size = f.get("metadata", {}).get("size") or f.get("size")
+            updated = f.get("updated_at") or f.get("last_modified") or f.get("created_at") or ""
+            c1, c2, c3, c4 = st.columns([4,2,2,2])
+            with c1: st.markdown(f"**{name}**")
+            with c2: st.caption(f"{(int(size) if size else 0)/1024:.1f} KB")
+            with c3: st.caption(updated)
+            with c4:
+                if st.button("Baixar", key=f"dl_{name}"):
+                    content = download_backup_from_storage(name)
+                    if content:
+                        st.download_button("⬇️ Download", data=content, file_name=name, mime="application/zip", use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("**♻️ Restaurar de backup (.zip)**")
+    up = st.file_uploader("Selecione o arquivo .zip do backup", type=["zip"], key="restore_zip")
+    mode = st.radio("Modo de restauração", ["upsert", "replace"], index=0, help="replace apaga tudo e insere do zero (use com cautela).")
+    if st.button("♻️ Restaurar", key="btn_restore", type="primary"):
+        if not up:
+            st.warning("Selecione um .zip primeiro.")
+        else:
+            with st.spinner("Restaurando..."):
+                rep = restore_from_zip(up.read(), mode=mode)
+            if rep.get("status") == "ok":
+                st.success("Restauração concluída!")
+                for d in rep.get("details", []):
+                    st.write("• " + d)
+                st.toast("Caches limpos e dados restaurados.", icon="✅")
+                st.rerun()
+            else:
+                st.error("Falha na restauração.")
+                for d in rep.get("details", []):
+                    st.write("• " + d)
+
 
 
 def _switch_to_tab_by_label(tab_label: str):
