@@ -1897,49 +1897,120 @@ else:
         raise RuntimeError("ReportLab não está instalado no ambiente.")
 
 # --- PDF: Quitações ---
+
 if REPORTLAB_OK:
     def _pdf_quitacoes(df, filtros):
+        """
+        Gera PDF de Quitações com todas as informações relevantes.
+        Aplica normalização de guias/aviso (remove .0) e apresenta totais.
+        """
+        # Segurança: garante colunas esperadas e formatações
+        ensure_cols = [
+            "hospital","atendimento","paciente","convenio","profissional",
+            "data_procedimento","aviso","grau_participacao","situacao",
+            "quitacao_guia_amhptiss","quitacao_guia_complemento",
+            "quitacao_valor_amhptiss","quitacao_valor_complemento",
+            "quitacao_data","quitacao_observacao"
+        ]
+        for c in ensure_cols:
+            if c not in df.columns:
+                df[c] = ""
+
+        # Normalizações específicas (sem ".0")
+        df = df.copy()
+        df["aviso"] = df["aviso"].apply(_fmt_id_str)
+        df["quitacao_guia_amhptiss"] = df["quitacao_guia_amhptiss"].apply(_fmt_id_str)
+        df["quitacao_guia_complemento"] = df["quitacao_guia_complemento"].apply(_fmt_id_str)
+
+        # Números (totais)
         v_amhp = pd.to_numeric(df.get("quitacao_valor_amhptiss", 0), errors="coerce").fillna(0.0)
         v_comp = pd.to_numeric(df.get("quitacao_valor_complemento", 0), errors="coerce").fillna(0.0)
         total_amhp = float(v_amhp.sum()); total_comp = float(v_comp.sum()); total_geral = total_amhp + total_comp
 
+        # Datas formatadas
+        def _fmt_dt_pt(s):
+            d = _pt_date_to_dt(s)
+            return d.strftime("%d/%m/%Y") if isinstance(d, (date, datetime)) and not pd.isna(d) else (str(s) or "")
+
+        df["data_procedimento"] = df["data_procedimento"].apply(_fmt_dt_pt)
+        df["quitacao_data"] = df["quitacao_data"].apply(_fmt_dt_pt)
+
+        # === ReportLab ===
         buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18)
+        doc = SimpleDocTemplate(
+            buf, pagesize=landscape(A4),
+            leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
+        )
         styles = getSampleStyleSheet()
         H1 = styles["Heading1"]; N = styles["BodyText"]
+        from reportlab.lib.styles import ParagraphStyle
+        TH = ParagraphStyle("TH", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=9, leading=11, alignment=1)
+        TD = ParagraphStyle("TD", parent=styles["Normal"], fontName="Helvetica", fontSize=8, leading=10)
+        TD_CENTER = ParagraphStyle("TD_CENTER", parent=TD, alignment=1)
+        TD_RIGHT  = ParagraphStyle("TD_RIGHT", parent=TD, alignment=2)
+
         elems = []
         elems.append(Paragraph("Relatório — Quitações", H1))
-        filtros_txt = (f"Período da quitação: {filtros['ini']} a {filtros['fim']}  |  Hospital: {filtros['hospital']}")
-        elems.append(Paragraph(filtros_txt, N)); elems.append(Spacer(1, 8))
+        filtros_txt = (
+            f"Período da quitação: {filtros['ini']} a {filtros['fim']}  |  Hospital: {filtros['hospital']}"
+        )
+        elems.append(Paragraph(filtros_txt, N))
+        elems.append(Spacer(1, 8))
 
-        header = ["Convênio","Paciente","Profissional","Data","Atendimento","Guia AMHP","Guia Complemento","Valor AMHP","Valor Complemento","Data da quitação"]
-        col_widths = [3.2*cm,6.0*cm,6.0*cm,2.4*cm,2.8*cm,3.2*cm,3.6*cm,3.2*cm,3.6*cm,2.8*cm]
+        # Cabeçalhos + largura de colunas
+        header_labels = [
+            "Hospital","Atendimento","Convênio","Paciente","Profissional","Grau Part.","Data Proc.",
+            "Aviso","Situação","Guia AMHP","Guia Comp.","Valor AMHP","Valor Comp.","Data Quitação","Obs. Quitação"
+        ]
+        header = [Paragraph(h, TH) for h in header_labels]
+
+        # Ajuste fino de colunas - considerando A4 paisagem
+        from reportlab.lib.units import cm
+        col_widths = [
+            3.0*cm, 2.6*cm, 3.0*cm, 5.2*cm, 4.8*cm, 2.8*cm, 2.4*cm,
+            2.6*cm, 2.8*cm, 3.2*cm, 3.6*cm, 2.8*cm, 3.0*cm, 2.8*cm, 6.0*cm
+        ]
+
+        # Linhas
+        def P(v, style=TD): return Paragraph("" if v is None else str(v), style)
         data_rows = []
         for _, r in df.iterrows():
             data_rows.append([
-                r.get("convenio") or "", r.get("paciente") or "", r.get("profissional") or "",
-                r.get("data_procedimento") or "", r.get("atendimento") or "",
-                r.get("quitacao_guia_amhptiss") or "", r.get("quitacao_guia_complemento") or "",
-                _format_currency_br(r.get("quitacao_valor_amhptiss")),
-                _format_currency_br(r.get("quitacao_valor_complemento")),
-                r.get("quitacao_data") or "",
+                P(r.get("hospital"), TD),
+                P(r.get("atendimento"), TD_CENTER),
+                P(r.get("convenio"), TD),
+                P(r.get("paciente"), TD),
+                P(r.get("profissional"), TD),
+                P(r.get("grau_participacao"), TD_CENTER),
+                P(r.get("data_procedimento"), TD_CENTER),
+                P(r.get("aviso"), TD_CENTER),
+                P(r.get("situacao"), TD_CENTER),
+                P(r.get("quitacao_guia_amhptiss"), TD_CENTER),
+                P(r.get("quitacao_guia_complemento"), TD_CENTER),
+                P(_format_currency_br(r.get("quitacao_valor_amhptiss")), TD_RIGHT),
+                P(_format_currency_br(r.get("quitacao_valor_complemento")), TD_RIGHT),
+                P(r.get("quitacao_data"), TD_CENTER),
+                P(r.get("quitacao_observacao"), TD),
             ])
+
+        from reportlab.platypus import Table, TableStyle, Spacer, Paragraph
+        from reportlab.lib import colors
+
         table = Table([header] + data_rows, repeatRows=1, colWidths=col_widths)
-        style_cmds = [
+        table.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
             ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ("FONTSIZE", (0,0), (-1,0), 10),
+            ("FONTSIZE", (0,0), (-1,0), 9),
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
             ("ALIGN", (0,0), (-1,0), "CENTER"),
-            ("ALIGN", (7,1), (8,-1), "RIGHT"),
-            ("ALIGN", (3,1), (3,-1), "CENTER"),
-            ("ALIGN", (4,1), (4,-1), "CENTER"),
-            ("ALIGN", (9,1), (9,-1), "CENTER"),
-        ]
-        table.setStyle(TableStyle(style_cmds)); elems.append(table); elems.append(Spacer(1,8))
+            ("ALIGN", (11,1), (12,-1), "RIGHT"),
+        ]))
+        elems.append(table)
+        elems.append(Spacer(1, 8))
 
+        # Totais
         totals_data = [
             ["Total AMHP:", _format_currency_br(total_amhp)],
             ["Total Complemento:", _format_currency_br(total_comp)],
@@ -1947,11 +2018,16 @@ if REPORTLAB_OK:
         ]
         totals_tbl = Table(totals_data, colWidths=[4.5*cm, 3.5*cm], hAlign="RIGHT")
         totals_tbl.setStyle(TableStyle([
-            ("FONTNAME", (0,0), (-1,-1), "Helvetica"), ("FONTSIZE", (0,0), (-1,-1), 10),
-            ("ALIGN", (0,0), (0,-1), "RIGHT"), ("ALIGN", (1,0), (1,-1), "RIGHT"),
+            ("FONTNAME", (0,0), (-1,-1), "Helvetica"),
+            ("FONTSIZE", (0,0), (-1,-1), 10),
+            ("ALIGN", (0,0), (0,-1), "RIGHT"),
+            ("ALIGN", (1,0), (1,-1), "RIGHT"),
         ]))
+        elems.append(totals_tbl)
+
         doc.build(elems)
-        pdf_bytes = buf.getvalue(); buf.close()
+        pdf_bytes = buf.getvalue()
+        buf.close()
         return pdf_bytes
 else:
     def _pdf_quitacoes(*args, **kwargs):
@@ -2027,31 +2103,46 @@ with tabs[3]:
 
     # Base de quitações
     df_quit = _rel_quitacoes_base_df()
-
+    
     if not df_quit.empty:
+        # Datas e filtros por período da QUITAÇÃO
         df_quit["_quit_dt"] = df_quit["quitacao_data"].apply(_pt_date_to_dt)
         mask_q = (df_quit["_quit_dt"].notna()) & (df_quit["_quit_dt"] >= dt_ini_q) & (df_quit["_quit_dt"] <= dt_fim_q)
         df_quit = df_quit[mask_q].copy()
+    
+        # Filtro por hospital (se selecionado)
         if hosp_sel_q != "Todos":
             df_quit = df_quit[df_quit["hospital"] == hosp_sel_q]
-
-        df_quit = df_quit.sort_values(by=["_quit_dt","convenio","paciente"])
-        df_quit["data_procedimento"] = df_quit["data_procedimento"].apply(
-            lambda s: _pt_date_to_dt(s).strftime("%d/%m/%Y") if pd.notna(_pt_date_to_dt(s)) else (s or "")
-        )
+    
+        # Normalizações (remover ".0" nas guias e no aviso)
+        for col in ["quitacao_guia_amhptiss", "quitacao_guia_complemento", "aviso"]:
+            if col in df_quit.columns:
+                df_quit[col] = df_quit[col].apply(_fmt_id_str)
+    
+        # Datas em dd/mm/aaaa (procedimento e quitação)
+        def _fmt_dt_pt(s):
+            d = _pt_date_to_dt(s)
+            return d.strftime("%d/%m/%Y") if isinstance(d, (date, datetime)) and not pd.isna(d) else (str(s) or "")
+    
+        df_quit["data_procedimento"] = df_quit["data_procedimento"].apply(_fmt_dt_pt)
         df_quit["quitacao_data"] = df_quit["_quit_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
         df_quit = df_quit.drop(columns=["_quit_dt"])
-
+    
+        # Conjunto completo de colunas para o PDF/CSV
         cols_pdf = [
-            "convenio", "paciente", "profissional", "data_procedimento", "atendimento",
-            "quitacao_guia_amhptiss", "quitacao_guia_complemento",
-            "quitacao_valor_amhptiss", "quitacao_valor_complemento",
-            "quitacao_data"
+            "hospital","atendimento","convenio","paciente","profissional","grau_participacao",
+            "data_procedimento","aviso","situacao",
+            "quitacao_guia_amhptiss","quitacao_guia_complemento",
+            "quitacao_valor_amhptiss","quitacao_valor_complemento",
+            "quitacao_data","quitacao_observacao"
         ]
         for c in cols_pdf:
-            if c not in df_quit.columns: df_quit[c] = ""
-        df_quit = df_quit[cols_pdf]
-
+            if c not in df_quit.columns:
+                df_quit[c] = ""
+    
+        # Ordenação mais útil
+        df_quit = df_quit.sort_values(by=["quitacao_data","hospital","convenio","paciente","profissional"]).reset_index(drop=True)
+    
     colqb1, colqb2 = st.columns(2)
     with colqb1:
         if st.button("Gerar PDF (Quitações)", type="primary"):
@@ -2079,6 +2170,7 @@ with tabs[3]:
                     )
     with colqb2:
         if not df_quit.empty:
+            # CSV com TODAS as colunas e guias/aviso já formatadas
             csv_quit = df_quit.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
                 "⬇️ Baixar CSV (Quitações)",
@@ -2086,6 +2178,7 @@ with tabs[3]:
                 file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
             )
+
 
 # ============================================================
 # 💼 4) QUITAÇÃO (edição em lote)
