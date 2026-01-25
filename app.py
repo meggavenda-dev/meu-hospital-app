@@ -1907,14 +1907,11 @@ else:
 if REPORTLAB_OK:
     def _pdf_quitacoes_colunas_fixas(df, filtros):
         """
-        Layout com TODAS as colunas separadas, EXCETO 'Aviso' e 'Situação':
         Quitação | Hospital | Atendimento | Paciente | Convênio | Profissional | Grau |
         Data Proc. | Guia AMHPTISS | R$ AMHPTISS | Guia Compl. | R$ Compl.
-        - Larguras somando ~28.4 cm para caber em A4 paisagem com margens padrão (18pt).
-        - Fonte reduzida nas colunas longas; alinhamentos consistentes.
-        - Guias sempre sem '.0'.
+        - Ajuste fino de fonte e colunas para caber em A4 paisagem sem cortes.
         """
-        # ---- Garantias de colunas e normalizações ----
+        # Garantias de colunas
         need = [
             "quitacao_data","hospital","atendimento","paciente","convenio",
             "profissional","grau_participacao","data_procedimento",
@@ -1925,11 +1922,10 @@ if REPORTLAB_OK:
         for c in need:
             if c not in df.columns: df[c] = ""
 
-        # Sem ".0" nas guias
+        # Normalizações e datas
         for col in ["quitacao_guia_amhptiss","quitacao_guia_complemento"]:
             df[col] = df[col].apply(_fmt_id_str)
 
-        # Datas dd/mm/aaaa
         def _fmt_dt(s):
             d = _pt_date_to_dt(s)
             return d.strftime("%d/%m/%Y") if isinstance(d, (date, datetime)) and not pd.isna(d) else (str(s) or "")
@@ -1941,7 +1937,7 @@ if REPORTLAB_OK:
         v_comp = pd.to_numeric(df.get("quitacao_valor_complemento", 0), errors="coerce").fillna(0.0)
         total_amhp = float(v_amhp.sum()); total_comp = float(v_comp.sum()); total_geral = total_amhp + total_comp
 
-        # ---- ReportLab setup ----
+        # ReportLab
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
             buf, pagesize=landscape(A4),
@@ -1955,11 +1951,12 @@ if REPORTLAB_OK:
         from reportlab.lib import colors
         from reportlab.lib.units import cm
 
-        TH = ParagraphStyle("TH", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.6, leading=10, alignment=1)
-        TD = ParagraphStyle("TD", parent=styles["Normal"], fontName="Helvetica", fontSize=8.0, leading=10, wordWrap="LTR")
+        # ↓↓↓ Ajuste de fontes (menor, só onde precisa)
+        TH = ParagraphStyle("TH", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.2, leading=9.8, alignment=1)
+        TD = ParagraphStyle("TD", parent=styles["Normal"], fontName="Helvetica", fontSize=7.8, leading=9.6, wordWrap="LTR")
         TD_CENTER = ParagraphStyle("TD_CENTER", parent=TD, alignment=1)
         TD_RIGHT  = ParagraphStyle("TD_RIGHT", parent=TD, alignment=2)
-        TD_SMALL  = ParagraphStyle("TD_SMALL", parent=TD, fontSize=7.6, leading=9.2)
+        TD_SMALL  = ParagraphStyle("TD_SMALL", parent=TD, fontSize=7.0, leading=8.6)  # Paciente/Convênio
 
         elems = []
         elems.append(Paragraph("Relatório — Quitações", H1))
@@ -1967,7 +1964,6 @@ if REPORTLAB_OK:
         elems.append(Paragraph(filtros_txt, N))
         elems.append(Spacer(1, 8))
 
-        # Cabeçalho/ordem (12 colunas)
         headers = [
             "Quitação","Hospital","Atendimento","Paciente","Convênio","Profissional","Grau",
             "Data Proc.","Guia AMHPTISS","R$ AMHPTISS","Guia Compl.","R$ Compl."
@@ -1978,24 +1974,22 @@ if REPORTLAB_OK:
             "quitacao_guia_complemento","quitacao_valor_complemento",
         ]
 
-        # Larguras (cm) — soma ~28.4 cm
+        # ↓↓↓ Larguras (cm) — somam ~28,4 cm (A4 paisagem útil)
         col_widths = [
-            1.8*cm,  # Quitação   (+0.2)
-            2.2*cm,  # Hospital    (+0.2)
-            1.8*cm,  # Atendimento (+0.2)
-            4.2*cm,  # Paciente    (+0.8)
-            2.4*cm,  # Convênio    (+0.4)
-            3.2*cm,  # Profissional(+0.6)
-            1.8*cm,  # Grau        (+0.2)
-            2.0*cm,  # Data Proc.  (+0.2)
-            2.8*cm,  # Guia AMHPTISS (+0.4)
-            2.2*cm,  # R$ AMHPTISS (+0.2)
-            2.8*cm,  # Guia Compl. (+0.6)
-            2.2*cm,  # R$ Compl.   (+0.2)
+            1.8*cm,  # Quitação   (↑)
+            2.2*cm,  # Hospital   (↑)
+            2.0*cm,  # Atendimento (↑ de 1.8 -> evita "Atendim ento")
+            4.4*cm,  # Paciente   (↑)
+            2.6*cm,  # Convênio   (↑)
+            3.2*cm,  # Profissional
+            1.8*cm,  # Grau
+            2.0*cm,  # Data Proc.
+            2.6*cm,  # Guia AMHPTISS (↓)
+            2.2*cm,  # R$ AMHPTISS
+            2.4*cm,  # Guia Compl.  (↓)
+            2.2*cm,  # R$ Compl.
         ]
-        # Observação: somatório ≈ 28.4 cm (cabe na área útil do A4 paisagem com margens 18pt)
 
-        # Montagem das linhas
         def P(v, style=TD): return Paragraph("" if v is None else str(v), style)
 
         data_rows = []
@@ -2023,24 +2017,21 @@ if REPORTLAB_OK:
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
             ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ("FONTSIZE", (0,0), (-1,0), 8.6),
+            ("FONTSIZE", (0,0), (-1,0), 8.2),
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
             ("ALIGN", (0,0), (-1,0), "CENTER"),
-            # Monetárias à direita
-            ("ALIGN", (9,1), (9,-1), "RIGHT"),
-            ("ALIGN", (11,1), (11,-1), "RIGHT"),
-            # Códigos/datas centralizados
-            ("ALIGN", (0,1), (0,-1), "CENTER"),   # Quitação
-            ("ALIGN", (2,1), (2,-1), "CENTER"),   # Atendimento
-            ("ALIGN", (7,1), (7,-1), "CENTER"),   # Data Proc.
-            ("ALIGN", (8,1), (8,-1), "CENTER"),   # Guia AMHPTISS
-            ("ALIGN", (10,1), (10,-1), "CENTER"), # Guia Complemento
+            ("ALIGN", (9,1), (9,-1), "RIGHT"),   # R$ AMHPTISS
+            ("ALIGN", (11,1), (11,-1), "RIGHT"), # R$ Compl.
+            ("ALIGN", (0,1), (0,-1), "CENTER"),  # Quitação
+            ("ALIGN", (2,1), (2,-1), "CENTER"),  # Atendimento
+            ("ALIGN", (7,1), (7,-1), "CENTER"),  # Data Proc.
+            ("ALIGN", (8,1), (8,-1), "CENTER"),  # Guia AMHPTISS
+            ("ALIGN", (10,1), (10,-1), "CENTER"),# Guia Compl.
         ]))
         elems.append(table)
         elems.append(Spacer(1, 8))
 
-        # Totais
         totals_data = [
             ["Total AMHPTISS:", _format_currency_br(total_amhp)],
             ["Total Complemento:", _format_currency_br(total_comp)],
@@ -2058,10 +2049,6 @@ if REPORTLAB_OK:
         doc.build(elems)
         pdf_bytes = buf.getvalue(); buf.close()
         return pdf_bytes
-else:
-    def _pdf_quitacoes_colunas_fixas(*args, **kwargs):
-        raise RuntimeError("ReportLab não está instalado no ambiente.")
-
 
 with tabs[3]:
     tab_header_with_home("📑 Relatórios — Central", btn_key_suffix="relatorios")
