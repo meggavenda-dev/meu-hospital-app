@@ -201,7 +201,8 @@ def _pt_date_to_dt(s):
             return None
 
 def _to_ddmmyyyy(value):
-    if value is None or value == "": return ""
+    if value is None or value == "" or str(value).lower() == "none": 
+        return ""
     if isinstance(value, pd.Timestamp): return value.strftime("%d/%m/%Y")
     if isinstance(value, datetime): return value.strftime("%d/%m/%Y")
     if isinstance(value, date): return value.strftime("%d/%m/%Y")
@@ -1565,53 +1566,58 @@ with tabs[1]:
                 except APIError as e:
                     _sb_debug_error(e, "Falha ao buscar procedimentos existentes.")
 
-                # 7) Gera payload dos novos (garante 1 automático/dia)
+                # 7) Gera payload dos novos (Busca Prioritária por Médico Selecionado)
                 to_insert_auto = []
                 for (att, data_proc) in pares:
                     if not att or not data_proc:
                         total_ignorados += 1
                         continue
+                        
                     iid = att_to_id.get(att)
-                    if not iid:
-                        total_ignorados += 1
-                        continue
-
                     data_norm = _to_ddmmyyyy(data_proc)
-                    if (iid, data_norm) in existing_auto:
+
+                    # Se já existe ou não tem internação, pula
+                    if not iid or (iid, data_norm) in existing_auto:
                         total_ignorados += 1
                         continue
 
-                    prof_dia = next((it.get("profissional") for it in registros_filtrados
-                                     if it.get("atendimento") == att and it.get("data") == data_proc and it.get("profissional")), "")
-                    aviso_dia = next((it.get("aviso") for it in registros_filtrados
-                                      if it.get("atendimento") == att and it.get("data") == data_proc and it.get("aviso")), "")
+                    # --- NOVA LÓGICA DE BUSCA PRIORITÁRIA ---
+                    # Pegamos todas as linhas deste atendimento/data no arquivo para este par específico
+                    linhas_deste_atendimento = [
+                        r for r in registros_filtrados 
+                        if r.get("atendimento") == att and r.get("data") == data_proc
+                    ]
 
-                    if not prof_dia:
+                    linha_vencedora = None
+                    
+                    # PASSO A: Procurar o primeiro médico que está na sua SELEÇÃO prioritária
+                    for linha in linhas_deste_atendimento:
+                        prof_nome = (linha.get("profissional") or "").strip()
+                        if prof_nome in final_pros:
+                            linha_vencedora = linha
+                            break # Encontrou seu médico! Para a busca aqui.
+
+                    # PASSO B: Fallback (caso a busca prioritária falhe mas você queira importar o que houver)
+                    if not linha_vencedora and import_all:
+                        linha_vencedora = next((l for l in linhas_deste_atendimento if l.get("profissional")), None)
+
+                    # 8) Se encontrou um médico válido na varredura, prepara a inserção
+                    if linha_vencedora:
+                        to_insert_auto.append({
+                            "internacao_id": int(iid),
+                            "data_procedimento": data_norm,
+                            "profissional": linha_vencedora.get("profissional"),
+                            "procedimento": "Cirurgia / Procedimento",
+                            "situacao": "Pendente",
+                            "observacao": None,
+                            "is_manual": 0,
+                            "aviso": (linha_vencedora.get("aviso") or None),
+                            "grau_participacao": None
+                        })
+                        # Marca como processado para evitar duplicidade no mesmo arquivo
+                        existing_auto.add((iid, data_norm))
+                    else:
                         total_ignorados += 1
-                        continue
-
-                    to_insert_auto.append({
-                        "internacao_id": int(iid),
-                        "data_procedimento": data_norm,
-                        "profissional": prof_dia,
-                        "procedimento": "Cirurgia / Procedimento",
-                        "situacao": "Pendente",
-                        "observacao": None,
-                        "is_manual": 0,
-                        "aviso": (aviso_dia or None),
-                        "grau_participacao": None
-                    })
-                    # evita duplicar dentro do mesmo arquivo
-                    existing_auto.add((iid, data_norm))
-
-                # 8) Insere procedimentos em lote
-                if to_insert_auto:
-                    try:
-                        _chunked_insert("procedimentos", to_insert_auto, chunk=500)
-                        invalidate_caches()
-                        total_criados = len(to_insert_auto)
-                    except APIError as e:
-                        _sb_debug_error(e, "Falha ao inserir procedimentos em lote.")
 
                 st.success(
                     f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}"
@@ -1767,7 +1773,6 @@ with tabs[2]:
             # >>> ADIÇÃO: normalizar Aviso para exibição (remove ".0")
             if "aviso" in df_proc.columns:
                 df_proc["aviso"] = df_proc["aviso"].apply(_fmt_id_str)
-
             st.subheader("Procedimentos — Editáveis")
             edited = st.data_editor(
                 df_proc,
