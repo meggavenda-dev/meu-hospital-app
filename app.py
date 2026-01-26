@@ -1453,13 +1453,33 @@ with tabs[1]:
         except UnicodeDecodeError:
             csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
 
+        # 1️⃣ Leitura e parse do CSV
         registros = parse_tiss_original(csv_text)
 
-        registros = aplicar_regra_medicos(
-            registros,
-            MEDICOS_ESCOLHIDOS
+        # 2️⃣ (opcional) outras normalizações que você já faz
+        # registros = tratar_algo(registros)
+
+        # 3️⃣ AQUI: lista de médicos disponíveis
+        medicos_disponiveis = sorted({
+            r.get("profissional")
+            for r in registros
+            if r.get("profissional")
+        })
+
+        # 4️⃣ AQUI: seletor na interface
+        MEDICOS_ESCOLHIDOS = st.multiselect(
+            "Médicos para criar procedimento adicional",
+            options=medicos_disponiveis
         )
-        
+
+        # 5️⃣ Só depois disso vem o botão
+        if st.button("Gravar no banco", type="primary"):
+            registros = aplicar_regra_medicos(
+                registros,
+                MEDICOS_ESCOLHIDOS
+            )
+
+
         registros_filtrados = filtrar_registros(registros)
         pares = gerar_pares(registros_filtrados)
         st.success(f"{len(registros)} registros interpretados!")
