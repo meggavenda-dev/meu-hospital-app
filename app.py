@@ -1568,36 +1568,30 @@ with tabs[1]:
 
                # 7) Gera payload dos novos (Busca Multi-Linha Prioritária)
                 to_insert_auto = []
-                # 'pares' são os conjuntos únicos de (atendimento, data) encontrados no arquivo
                 for (att, data_proc) in pares:
                     iid = att_to_id.get(att)
                     data_norm = _to_ddmmyyyy(data_proc)
 
-                    # Se já existe no banco para esse dia, ignoramos para não duplicar
                     if not iid or (iid, data_norm) in existing_auto:
                         total_ignorados += 1
                         continue
 
-                    # Recupera TODAS as linhas desse atendimento/dia no arquivo
-                    linhas_do_bloco = [
-                        r for r in registros 
-                        if r.get("atendimento") == att and r.get("data") == data_proc
-                    ]
+                    # Filtra todas as linhas do arquivo desse atendimento e data específica
+                    linhas_bloco = [r for r in registros if r["atendimento"] == att and r["data"] == data_proc]
 
                     linha_vencedora = None
                     
-                    # REGRA DE OURO: Algum médico da lista prioritária está presente em qualquer linha desse bloco?
-                    # final_pros contém os selecionados + os 4 fixos (Adorno, Cassio, Fernando, Simao)
-                    for linha in linhas_do_bloco:
-                        prof_nome = (linha.get("profissional") or "").strip().upper()
-                        # Verifica se o nome do médico da linha contém algum dos nomes da sua equipe
-                        if any(fav in prof_nome for fav in ["JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MATOS"]):
+                    # 1. TENTA ENCONTRAR UM DOS MÉDICOS DA SUA EQUIPE (Prioridade 1)
+                    equipe = ["JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MATOS"]
+                    for linha in linhas_bloco:
+                        nome_prof = (linha.get("profissional") or "").upper()
+                        if any(medico in nome_prof for medico in equipe):
                             linha_vencedora = linha
                             break
                     
-                    # Fallback: Se não achou nenhum da equipe, mas "Importar Todos" está ligado, pega a primeira linha
-                    if not linha_vencedora and import_all and linhas_do_bloco:
-                        linha_vencedora = linhas_do_bloco[0]
+                    # 2. SE NÃO ACHOU NINGUÉM DA EQUIPE MAS 'Importar Todos' ESTÁ ATIVO (Prioridade 2)
+                    if not linha_vencedora and import_all and linhas_bloco:
+                        linha_vencedora = linhas_bloco[0]
 
                     if linha_vencedora:
                         to_insert_auto.append({
@@ -1609,11 +1603,8 @@ with tabs[1]:
                             "is_manual": 0,
                             "aviso": (_fmt_id_str(linha_vencedora.get("aviso")) or None)
                         })
-                        # Registra que esse dia está preenchido para evitar duplicatas internas
                         existing_auto.add((iid, data_norm))
                         total_criados += 1
-                    else:
-                        total_ignorados += 1
 
                 st.success(
                     f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}"
