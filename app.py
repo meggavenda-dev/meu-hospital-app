@@ -1468,35 +1468,43 @@ with tabs[1]:
         st.session_state["import_selected_docs"] = selected_pros
     
         always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
+        
+        # --- médicos considerados (seleção + lista fixa) ---
         final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
-    
+        
         st.caption(f"Médicos fixos (sempre incluídos, quando presentes no par): {', '.join(sorted(ALWAYS_SELECTED_PROS)) or '—'}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
         
+        # ---------- NORMALIZAÇÃO: definir ANTES de decidir os pares ----------
         def _norm_pro(s: str) -> str:
-            s = (s or '').replace('\xa0', ' ').strip()   # troca NBSP, tira espaços da borda
+            s = (s or '').replace('\xa0', ' ').strip()   # NBSP -> espaço, tira bordas
             s = re.sub(r'\s+', ' ', s)                   # colapsa múltiplos espaços
             return s.upper()                             # compara em caixa alta
         
         # Set normalizado para comparação
         final_pros_norm = {_norm_pro(p) for p in final_pros}
-    
-        # ====== NOVO: seleção de pares (atendimento, data) por “qualquer participação” ======
+        # --------------------------------------------------------------------
         
+        # ====== base de pares disponíveis (atendimento, data) ======
+        # >>> IMPORTANTE: defina 'pares_todos' ANTES de usar 'import_all'
+        pares_todos = sorted(grupos_by_par.keys())
+        
+        # ====== seleção de pares (atendimento, data) por “qualquer participação” ======
         if import_all:
             pares = pares_todos[:]  # todos os dias de todos os atendimentos
         else:
             pares = sorted([
                 par for par, lst in grupos_by_par.items()
+                # compara com nome normalizado nas duas pontas
                 if any(_norm_pro(it.get('profissional')) in final_pros_norm for it in lst)
             ])
-
-    
+        
         st.markdown(
             f"<div>🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
             f"{pill('1 auto por internação/dia')} (manuais podem ser vários).</div>",
             unsafe_allow_html=True
         )
+
     
         # ====== NOVO: Pré-visualização focada em PARES ======
         # Exibe um “representante” de cada par (preferindo um item cujo profissional esteja selecionado)        
