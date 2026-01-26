@@ -1566,8 +1566,9 @@ with tabs[1]:
                 except APIError as e:
                     _sb_debug_error(e, "Falha ao buscar procedimentos existentes.")
 
-                # 7) Gera payload dos novos (Busca Prioritária)
+               # 7) Gera payload dos novos (Busca Multi-Linha Prioritária)
                 to_insert_auto = []
+                # 'pares' contém (atendimento, data) únicos
                 for (att, data_proc) in pares:
                     iid = att_to_id.get(att)
                     data_norm = _to_ddmmyyyy(data_proc)
@@ -1576,29 +1577,35 @@ with tabs[1]:
                         total_ignorados += 1
                         continue
 
-                    # Busca todas as linhas deste atendimento e data
-                    linhas_dia = [r for r in registros if r.get("atendimento") == att and r.get("data") == data_proc]
-                    
-                    linha_vencedora = None
-                    # 1º Tentativa: Encontrar um médico da lista selecionada/fixa
-                    for r in linhas_dia:
-                        if (r.get("profissional") or "").strip() in final_pros:
-                            linha_vencedora = r
-                            break
-                    
-                    # 2º Tentativa: Se não achou prioridade mas "Importar todos" está ativo
-                    if not linha_vencedora and import_all and linhas_dia:
-                        linha_vencedora = next((r for r in linhas_dia if r.get("profissional")), None)
+                    # Filtra todas as linhas do arquivo que pertencem a este atendimento/data
+                    linhas_do_atendimento = [
+                        r for r in registros 
+                        if r.get("atendimento") == att and r.get("data") == data_proc
+                    ]
 
-                    if linha_vencedora:
+                    linha_selecionada = None
+                    
+                    # BUSCA PRIORITÁRIA: Algum dos médicos da sua lista fixa está nessas linhas?
+                    for linha in linhas_do_atendimento:
+                        nome_prof = (linha.get("profissional") or "").strip().upper()
+                        # Verifica se o médico da linha é um dos seus 4 favoritos
+                        if any(fav in nome_prof for fav in ["JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MATOS"]):
+                            linha_selecionada = linha
+                            break # Encontrou o médico principal, sai do loop
+
+                    # Se não achou nenhum dos 4, mas o usuário marcou "Importar Todos"
+                    if not linha_selecionada and import_all and linhas_do_atendimento:
+                        linha_selecionada = linhas_do_atendimento[0]
+
+                    if linha_selecionada:
                         to_insert_auto.append({
                             "internacao_id": int(iid),
                             "data_procedimento": data_norm,
-                            "profissional": linha_vencedora.get("profissional"),
+                            "profissional": linha_selecionada.get("profissional"),
                             "procedimento": "Cirurgia / Procedimento",
                             "situacao": "Pendente",
                             "is_manual": 0,
-                            "aviso": (linha_vencedora.get("aviso") or None)
+                            "aviso": (_fmt_id_str(linha_selecionada.get("aviso")) or None)
                         })
                         existing_auto.add((iid, data_norm))
                         total_criados += 1
