@@ -1,90 +1,186 @@
-import re
-import csv
-import io
 
 def parse_tiss_original(csv_text):
+    """
+    Parser robusto para o relatório do Centro Cirúrgico/Hemodinâmica/Obstétrico.
+    - Usa csv.reader para respeitar campos com vírgulas entre aspas.
+    - Linha-mestre: detecta atendimento (7-12 dígitos), acha 'aviso' (número) e
+      logo depois duas horas HH:MM; o campo seguinte é o 'procedimento'.
+    - Convênio/Prestador/Anestesista: preferimos os campos logo após 'procedimento'
+      quando existirem; 'tipo' e 'quarto' são ancorados pelos 2 últimos campos não vazios.
+    - Linha-filha: 10+ vazios à esquerda; herda hora_ini/hora_fim e 'aviso' da mestre.
+    """
+    import re, csv, io
+
     def clean(s: str) -> str:
         return (s or "").replace("\x00", "").strip().strip('"').strip()
 
-    f = io.StringIO(csv_text)
-    # Usamos o reader de CSV para tratar as aspas corretamente
-    reader = csv.reader(f, delimiter=",", quotechar='"')
-    
+    def is_time(s: str) -> bool:
+        return bool(re.fullmatch(r"\d{1,2}:\d{2}", s or ""))
+
+    def is_digits(s: str) -> bool:
+        return bool(re.fullmatch(r"\d{3,}", s or ""))
+
+    def last_n_nonempty(seq, n):
+        out = []
+        for v in reversed(seq):
+            v2 = clean(v)
+            if v2 != "":
+                out.append(v2)
+                if len(out) == n:
+                    break
+        out.reverse()
+        if len(out) < n:
+            out = [""] * (n - len(out)) + out
+        return out
+
+    reader = csv.reader(io.StringIO(csv_text), delimiter=",", quotechar='"')
     registros = []
+
     data_atual = ""
-    # Contexto do bloco de atendimento (Master -> Child)
-    ctx = {"atendimento": "", "paciente": "", "aviso": "", "convenio": "", "time_idx": -1}
+    contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": ""}
 
     for cols in reader:
         cols = [clean(c) for c in cols]
-        if not any(cols): continue
-        
+        if all(c == "" for c in cols):
+            continue
+
         line_txt = " ".join(cols)
 
-        # 1. Detecta Mudança de Data
-        if "Data de Realiza" in line_txt:
-            match = re.search(r'(\d{2}/\d{2}/\d{4})', line_txt)
-            if match:
-                data_atual = match.group(1)
+        # DATA DO BLOCO
+        if any("Data de Realização" in c for c in cols):
+            for c in cols:
+                if re.fullmatch(r"\d{2}/\d{2}/\d{4}", c):
+                    data_atual = c
+                    break
             continue
 
-        # 2. Identifica Linha-Mestre (Início de um atendimento)
-        # O Atendimento está na segunda coluna (índice 1)
-        if len(cols) > 1 and re.fullmatch(r"\d{7,12}", cols[1]):
+        # Ignorar cabeçalhos/totais/seções
+        if (
+            ("Hora" in line_txt and "Início" in line_txt)
+            or any(k in line_txt for k in [
+                "Atendimento", "Convênio", "Centro Cirurgico", "HEMODINAMICA", "OBSTETRICO",
+                "Total de Avisos", "Total de Cirurgias", "Total Geral"
+            ])
+        ):
+            continue
+
+        # ---------------------------
+        # LINHA-MESTRE
+        # ---------------------------
+        is_master = (len(cols) >= 2 and re.fullmatch(r"\d{7,12}", cols[1] or ""))
+        if is_master:
             atendimento = cols[1]
-            paciente = cols[2] if len(cols) > 2 else ""
-            
-            # Localiza colunas de tempo para ancorar os dados (índice T)
-            times = [idx for idx, val in enumerate(cols) if re.fullmatch(r"\d{2}:\d{2}", val)]
-            
-            if times:
-                t_idx = times[-1] # Âncora no horário de fim
-                # Regra de Âncora: T+1=Procedimento, T+2=Convênio, T+3=Profissional
-                procedimento = cols[t_idx+1] if len(cols) > t_idx+1 else ""
-                convenio = cols[t_idx+2] if len(cols) > t_idx+2 else ""
-                profissional = cols[t_idx+3] if len(cols) > t_idx+3 else ""
-                
-                # Aviso: procura o número de 6 dígitos antes do primeiro horário
-                aviso = ""
-                for i in range(times[0]-1, 0, -1):
-                    if re.fullmatch(r"\d{5,8}", cols[i]):
-                        aviso = cols[i]
+            paciente    = cols[2] if len(cols) > 2 else ""
+
+            # achar 'aviso' (número) seguido de duas horas
+            aviso_idx = None
+            for k in range(3, len(cols) - 2):
+                if is_digits(cols[k]) and is_time(cols[k+1]) and is_time(cols[k+2]):
+                    aviso_idx = k
+                    break
+            if aviso_idx is None:
+                # fallback: primeiro horário cujo anterior é um número (aviso)
+                for k in range(3, len(cols)):
+                    if is_time(cols[k]) and k - 1 >= 0 and is_digits(cols[k-1]):
+                        aviso_idx = k - 1
                         break
-                
-                # Salva contexto para as linhas "filhas" que vierem abaixo
-                ctx = {
-                    "atendimento": atendimento, "paciente": paciente,
-                    "aviso": aviso, "convenio": convenio, "time_idx": t_idx
-                }
-                
-                if profissional and profissional.lower() not in ["", "prestador"]:
-                    registros.append({
-                        "atendimento": atendimento, "paciente": paciente,
-                        "data": data_atual, "aviso": aviso,
-                        "procedimento": procedimento, "convenio": convenio,
-                        "profissional": profissional,
-                        "hora_ini": cols[times[0]], "hora_fim": cols[t_idx]
-                    })
+            if aviso_idx is None:
+                # linha inconsistente
+                continue
+
+            aviso    = cols[aviso_idx]
+            hora_ini = cols[aviso_idx + 1] if aviso_idx + 1 < len(cols) else ""
+            hora_fim = cols[aviso_idx + 2] if aviso_idx + 2 < len(cols) else ""
+            proc_idx = aviso_idx + 3
+            procedimento = cols[proc_idx] if proc_idx < len(cols) else ""
+
+            # ÂNCORA PELA DIREITA: 5 últimos não vazios tendem a ser [conv, prest, anest, tipo, quarto]
+            conv = prest = anest = tipo = quarto = ""
+            tail5 = last_n_nonempty(cols, 5)
+
+            # Preferir os campos imediatamente após o procedimento, se existirem
+            if proc_idx + 1 < len(cols) and cols[proc_idx + 1] != "":
+                conv = cols[proc_idx + 1]
+            else:
+                conv = tail5[0]
+
+            if proc_idx + 2 < len(cols) and cols[proc_idx + 2] != "":
+                prest = cols[proc_idx + 2]
+            else:
+                prest = tail5[1]
+
+            if proc_idx + 3 < len(cols) and cols[proc_idx + 3] != "":
+                anest = cols[proc_idx + 3]
+            else:
+                anest = tail5[2]
+
+            # tipo e quarto — normalmente os 2 últimos campos não vazios
+            tipo, quarto = tail5[3], tail5[4]
+
+            # contexto para filhas
+            contexto = {
+                "atendimento": atendimento,
+                "paciente": paciente,
+                "hora_ini": hora_ini,
+                "hora_fim": hora_fim,
+                "aviso": aviso
+            }
+
+            registros.append({
+                "atendimento": atendimento,
+                "paciente": paciente,
+                "data": data_atual,
+                "aviso": aviso,
+                "procedimento": procedimento,
+                "convenio": conv,
+                "profissional": prest,
+                "anestesista": anest,
+                "tipo": tipo,
+                "quarto": quarto,
+                "hora_ini": hora_ini,
+                "hora_fim": hora_fim
+            })
             continue
 
-        # 3. Identifica Linha-Filha (Procedimentos ou Médicos auxiliares)
-        # Não tem atendimento no índice 1, mas o bloco anterior ainda está aberto
-        if ctx["atendimento"] and ctx["time_idx"] != -1 and not cols[1]:
-            if "total de" in line_txt.lower() or "data de" in line_txt.lower():
-                continue
-            
-            t_idx = ctx["time_idx"]
-            procedimento = cols[t_idx+1] if len(cols) > t_idx+1 else ""
-            # Convênio costuma vir vazio na linha filha, herdamos do contexto
-            convenio = cols[t_idx+2] if (len(cols) > t_idx+2 and cols[t_idx+2]) else ctx["convenio"]
-            profissional = cols[t_idx+3] if len(cols) > t_idx+3 else ""
-            
-            if profissional and profissional.lower() not in ["", "prestador"]:
+        # ---------------------------
+        # LINHA-FILHA
+        # ---------------------------
+        # primeira coluna não vazia em posição >= 10 caracteriza filha
+        first_idx = next((i for i, c in enumerate(cols) if c != ""), None)
+        if first_idx is not None and first_idx >= 10:
+            proc_idx = first_idx
+            procedimento = cols[proc_idx]
+
+            conv  = cols[proc_idx + 1] if proc_idx + 1 < len(cols) else ""
+            prest = cols[proc_idx + 2] if proc_idx + 2 < len(cols) else ""
+            anest = cols[proc_idx + 3] if proc_idx + 3 < len(cols) else ""
+
+            # tipo/quarto ancorados pelos 2 últimos não vazios
+            tipo = quarto = ""
+            tail2 = last_n_nonempty(cols, 2)
+            if len(tail2) == 2:
+                tipo, quarto = tail2[0], tail2[1]
+            elif len(tail2) == 1:
+                quarto = tail2[0]
+
+            if contexto["atendimento"]:
                 registros.append({
-                    "atendimento": ctx["atendimento"], "paciente": ctx["paciente"],
-                    "data": data_atual, "aviso": ctx["aviso"],
-                    "procedimento": procedimento, "convenio": convenio,
-                    "profissional": profissional, "hora_ini": "", "hora_fim": ""
+                    "atendimento": contexto["atendimento"],
+                    "paciente": contexto["paciente"],
+                    "data": data_atual,
+                    "aviso": contexto["aviso"],
+                    "procedimento": procedimento,
+                    "convenio": conv,
+                    "profissional": prest,
+                    "anestesista": anest,
+                    "tipo": tipo,
+                    "quarto": quarto,
+                    "hora_ini": contexto["hora_ini"],
+                    "hora_fim": contexto["hora_fim"]
                 })
+            continue
+
+        # Demais linhas: ignorar
+        continue
 
     return registros
