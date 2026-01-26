@@ -1246,7 +1246,7 @@ with tabs[0]:
 
     colf1, colf2 = st.columns([2,3])
     with colf1:
-        filtro_hosp_home = st.selectbox("Hospital", ["Todos"] + get_hospitais(), index=0, key="home_f_hosp")
+        filtro_hosp_home = st.selectbox("Hospital", ["Todos"] + get_hospitais(), index=0, key="home_f_hosp__inicio")
     with colf2:
         st.write(" ")
         st.caption("Períodos (opcionais)")
