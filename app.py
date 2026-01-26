@@ -1407,11 +1407,11 @@ with tabs[1]:
 
     # --------- Seção: Importação de CSV ---------
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
-
+    
     hospitais = get_hospitais()
     hospital = st.selectbox("Hospital para esta importação:", hospitais, key="import_csv_hospital")
     arquivo = st.file_uploader("Selecione o arquivo CSV", key="import_csv_uploader")
-
+    
     if parse_tiss_original is None:
         st.info("Adicione o arquivo parser.py com a função parse_tiss_original() para habilitar a importação.")
     elif arquivo:
@@ -1420,74 +1420,99 @@ with tabs[1]:
             csv_text = raw_bytes.decode("latin1")
         except UnicodeDecodeError:
             csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
-
+    
         registros = parse_tiss_original(csv_text)
         st.success(f"{len(registros)} registros interpretados!")
-
+    
+        # ========== NOVO: agrupar por (atendimento, data) ==========
+        from collections import defaultdict
+        grupos_by_par = defaultdict(list)
+        for r in registros:
+            att = r.get("atendimento")
+            dt  = r.get("data")
+            if att and dt:
+                grupos_by_par[(att, dt)].append(r)
+    
         pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
-        pares = sorted({(r.get("atendimento"), r.get("data")) for r in registros if r.get("atendimento") and r.get("data")})
+        # OBS: pares originais (sem filtro) — só para KPI
+        pares_orig = sorted(grupos_by_par.keys())
+    
+        # KPIs de arquivo
         kpi_row([
             {"label": "Registros no arquivo", "value": f"{len(registros):,}".replace(",", ".")},
             {"label": "Médicos distintos",    "value": f"{len(pros):,}".replace(",", ".")},
-            {"label": "Pares (atendimento, data)", "value": f"{len(pares):,}".replace(",", ".")},
+            {"label": "Pares (atendimento, data) totais", "value": f"{len(pares_orig):,}".replace(",", ".")},
         ])
-
+    
         st.subheader("👨‍⚕️ Seleção de médicos")
         if "import_all_docs" not in st.session_state: st.session_state["import_all_docs"] = True
         if "import_selected_docs" not in st.session_state: st.session_state["import_selected_docs"] = []
-
+    
         colsel1, colsel2 = st.columns([1, 3])
         with colsel1:
             import_all = st.checkbox("Importar todos os médicos", value=st.session_state["import_all_docs"], key="import_all_docs_chk")
         with colsel2:
             if import_all:
-                st.info("Todos os médicos do arquivo serão importados.")
+                st.info("Todos os médicos do arquivo serão considerados (por par atendimento/data).")
                 selected_pros = pros[:]
             else:
                 default_pre = sorted([p for p in pros if p in ALWAYS_SELECTED_PROS])
                 selected_pros = st.multiselect(
-                    "Médicos a importar (os da lista fixa sempre serão incluídos na gravação):",
+                    "Médicos a importar (o dia entra se QUALQUER linha do par tiver um destes médicos; a lista fixa também conta):",
                     options=pros,
                     default=st.session_state["import_selected_docs"] or default_pre,
                     key="import_selected_docs_ms"
                 )
-
+    
         st.session_state["import_all_docs"] = import_all
         st.session_state["import_selected_docs"] = selected_pros
-
+    
         always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
         final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
-
-        st.caption(f"Médicos fixos (sempre incluídos, quando presentes): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
+    
+        st.caption(f"Médicos fixos (sempre incluídos, quando presentes no par): {', '.join(sorted(ALWAYS_SELECTED_PROS)) or '—'}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
-
-        registros_filtrados = registros[:] if import_all else [r for r in registros if (r.get("profissional") or "") in final_pros]
-
-        df_preview = pd.DataFrame(registros_filtrados)
-        st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
-        st.dataframe(df_preview, use_container_width=True, hide_index=True)
-
-        pares = sorted({(r["atendimento"], r["data"]) for r in registros_filtrados if r.get("atendimento") and r.get("data")})
+    
+        # ====== NOVO: seleção de pares (atendimento, data) por “qualquer participação” ======
+        if import_all:
+            pares = sorted(grupos_by_par.keys())
+        else:
+            pares = sorted([
+                par for par, lst in grupos_by_par.items()
+                if any((it.get("profissional") or "") in final_pros for it in lst)
+            ])
+    
         st.markdown(
             f"<div>🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
             f"{pill('1 auto por internação/dia')} (manuais podem ser vários).</div>",
             unsafe_allow_html=True
         )
-
-        # ======== IMPORTAÇÃO TURBO (mesmo código que você já tinha) ========
+    
+        # ====== NOVO: Pré-visualização focada em PARES ======
+        # Exibe um “representante” de cada par (preferindo um item cujo profissional esteja selecionado)
+        preview_rows = []
+        for par in pares:
+            lst = grupos_by_par[par]
+            row = next((it for it in lst if (it.get("profissional") or "") in final_pros and it.get("profissional")), lst[0])
+            preview_rows.append(row)
+        df_preview = pd.DataFrame(preview_rows)
+        st.subheader("Pré-visualização (por par atendimento/data) — DRY RUN")
+        st.dataframe(df_preview, use_container_width=True, hide_index=True)
+    
+        # ======== IMPORTAÇÃO TURBO (AJUSTADA) ========
         colg1, colg2 = st.columns([1, 4])
         with colg1:
             if st.button("Gravar no banco", type="primary", key="import_csv_gravar"):
                 total_criados = total_ignorados = total_internacoes = 0
-
-                # 1) Atendimentos únicos (originais) do arquivo pós-filtro
+    
+                # 1) Atendimentos únicos dos PARES selecionados
                 atts_file = sorted({att for (att, d) in pares if att})
-
-                # Mapeia original -> normalizado e conjuntos para busca
+    
+                # Mapas de normalização (como antes)
                 orig_to_norm = {att: _att_norm(att) for att in atts_file}
                 norm_set = sorted({v for v in orig_to_norm.values() if v})
                 num_set = sorted({_att_to_number(att) for att in atts_file if _att_to_number(att) is not None})
-
+    
                 # 2) Carrega internações existentes (por atendimento e por numero)
                 existing_map_norm_to_id = {}
                 try:
@@ -1503,19 +1528,28 @@ with tabs[1]:
                 except APIError as e:
                     _sb_debug_error(e, "Falha ao buscar internações existentes.")
                     existing_map_norm_to_id = {}
-
+    
                 # 3) Monta payload de internações que faltam (grava normalizado)
+                #    Agora, colhemos os dados da internação a partir das linhas dos PARES selecionados (todas datas daquele att)
                 to_create_int = []
+                # índice auxiliar: para cada atendimento, junte as linhas de todos os pares selecionados desse atendimento
+                itens_por_att = defaultdict(list)
+                for (att, dt) in pares:
+                    itens_por_att[att].extend(grupos_by_par.get((att, dt), []))
+    
                 for att in atts_file:
                     na = orig_to_norm.get(att)
                     if not na:
                         continue
                     if na in existing_map_norm_to_id:
                         continue
-                    itens_att = [r for r in registros_filtrados if r.get("atendimento") == att]
+    
+                    itens_att = itens_por_att.get(att, [])
                     paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
                     conv_total = next((x.get("convenio") for x in itens_att if x.get("convenio")), "") if itens_att else ""
+                    # Se não houver uma “data de internação” óbvia no arquivo, use hoje (igual antes)
                     data_int = next((x.get("data") for x in itens_att if x.get("data")), None) or None
+    
                     to_create_int.append({
                         "hospital": hospital,
                         "atendimento": na,                         # normalizado
@@ -1524,12 +1558,12 @@ with tabs[1]:
                         "convenio": conv_total,
                         "numero_internacao": _att_to_number(att)   # sem zeros à esquerda
                     })
-
-                # 4) Inserção em lote de internações (chunks)
+    
+                # 4) Inserção em lote de internações (chunks) — igual antes
                 def _chunked_insert(table_name: str, rows: list, chunk: int = 500):
                     for i in range(0, len(rows), chunk):
                         supabase.table(table_name).insert(rows[i:i+chunk]).execute()
-
+    
                 if to_create_int:
                     try:
                         _chunked_insert("internacoes", to_create_int, chunk=500)
@@ -1542,11 +1576,11 @@ with tabs[1]:
                         invalidate_caches()
                     except APIError as e:
                         _sb_debug_error(e, "Falha ao criar internações em lote.")
-
-                # 5) Map (original -> ID) usando normalizado
+    
+                # 5) Map (original -> ID) usando normalizado (sem mudança)
                 att_to_id = {att: existing_map_norm_to_id.get(orig_to_norm.get(att)) for att in atts_file}
                 target_iids = sorted({iid for iid in att_to_id.values() if iid})
-
+    
                 # 6) Busca procedimentos automáticos existentes (1 chamada) e cria set (iid, data)
                 existing_auto = set()
                 try:
@@ -1564,8 +1598,8 @@ with tabs[1]:
                                 existing_auto.add((iid, dt))
                 except APIError as e:
                     _sb_debug_error(e, "Falha ao buscar procedimentos existentes.")
-
-                # 7) Gera payload dos novos (garante 1 automático/dia)
+    
+                # 7) Gera payload dos novos (garante 1 automático/dia) — AJUSTADO para usar o grupo do PAR
                 to_insert_auto = []
                 for (att, data_proc) in pares:
                     if not att or not data_proc:
@@ -1575,21 +1609,24 @@ with tabs[1]:
                     if not iid:
                         total_ignorados += 1
                         continue
-
+    
                     data_norm = _to_ddmmyyyy(data_proc)
                     if (iid, data_norm) in existing_auto:
                         total_ignorados += 1
                         continue
-
-                    prof_dia = next((it.get("profissional") for it in registros_filtrados
-                                     if it.get("atendimento") == att and it.get("data") == data_proc and it.get("profissional")), "")
-                    aviso_dia = next((it.get("aviso") for it in registros_filtrados
-                                      if it.get("atendimento") == att and it.get("data") == data_proc and it.get("aviso")), "")
-
+    
+                    lst = grupos_by_par.get((att, data_proc), [])
+                    # Preferir um profissional selecionado; se não houver, pegar qualquer profissional do grupo
+                    prof_dia = next((it.get("profissional") for it in lst
+                                     if (it.get("profissional") or "") in final_pros and it.get("profissional")), None) \
+                               or next((it.get("profissional") for it in lst if it.get("profissional")), None) \
+                               or ""
+                    aviso_dia = next((it.get("aviso") for it in lst if it.get("aviso")), None)
+    
                     if not prof_dia:
                         total_ignorados += 1
                         continue
-
+    
                     to_insert_auto.append({
                         "internacao_id": int(iid),
                         "data_procedimento": data_norm,
@@ -1603,8 +1640,8 @@ with tabs[1]:
                     })
                     # evita duplicar dentro do mesmo arquivo
                     existing_auto.add((iid, data_norm))
-
-                # 8) Insere procedimentos em lote
+    
+                # 8) Insere procedimentos em lote (igual antes)
                 if to_insert_auto:
                     try:
                         _chunked_insert("procedimentos", to_insert_auto, chunk=500)
@@ -1612,14 +1649,14 @@ with tabs[1]:
                         total_criados = len(to_insert_auto)
                     except APIError as e:
                         _sb_debug_error(e, "Falha ao inserir procedimentos em lote.")
-
+    
                 st.success(
                     f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}"
                 )
                 st.toast("✅ Importação concluída.", icon="✅")
-        # ======== FIM IMPORTAÇÃO TURBO ========
-
+    
     st.markdown("</div>", unsafe_allow_html=True)
+
     st.divider()
 
     # --------- Seção: Cadastro manual de internação (AGORA ABAIXO) ---------
