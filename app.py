@@ -1677,16 +1677,18 @@ with tabs[1]:
     
         # ====== NOVO: Pré-visualização focada em PARES ======
         # Exibe um “representante” de cada par (preferindo um item cujo profissional esteja selecionado)        
+        
         preview_rows = []
         for par in pares:
             lst = grupos_by_par.get(par, [])
             row = next(
-                (it for it in lst if _norm_pro(it.get('profissional')) in final_pros_norm and it.get('profissional')),
+                (it for it in lst if _participa_prof(it) and it.get("profissional")),
                 lst[0] if lst else {}
             )
             if row:
                 preview_rows.append(row)
         df_preview = pd.DataFrame(preview_rows)
+
         st.subheader("Pré-visualização (por par atendimento/data) — DRY RUN")
         st.dataframe(df_preview, use_container_width=True, hide_index=True)
     
@@ -1806,14 +1808,15 @@ with tabs[1]:
                         total_ignorados += 1
                         continue    
                     
+                    
                     lst = grupos_by_par.get((att, data_proc), [])
                     prof_dia = (
-                        next((it.get('profissional') for it in lst
-                              if _norm_pro(it.get('profissional')) in final_pros_norm and it.get('profissional')), None)
-                        or next((it.get('profissional') for it in lst if it.get('profissional')), None)
+                        next((it.get("profissional") for it in lst if _participa_prof(it) and it.get("profissional")), None)
+                        or next((it.get("profissional") for it in lst if it.get("profissional")), None)
                         or ""
                     )
-                    aviso_dia = next((it.get('aviso') for it in lst if it.get('aviso')), None)
+                    aviso_dia = next((it.get("aviso") for it in lst if it.get("aviso")), None)
+
     
                     if not prof_dia:
                         total_ignorados += 1
