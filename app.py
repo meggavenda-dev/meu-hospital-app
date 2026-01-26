@@ -260,6 +260,35 @@ def _att_to_number(v):
 # Helper de merge tolerante (evita KeyError com DF/coluna vazios)
 # ============================================================
 
+
+def _pick_prof_e_aviso_para(att: str, data_proc: str) -> tuple[str, str]:
+    """
+    Retorna (profissional_escolhido, aviso_escolhido) para o par (att, data_proc)
+    obedecendo as regras:
+      - import_all=True  -> usa o primeiro registro na ordem do arquivo (mestre)
+      - import_all=False -> usa o primeiro registro cujo profissional esteja em final_pros
+    Se não achar profissional aplicável, devolve ("","").
+    """
+    # linhas na ORDEM DO ARQUIVO para esse atendimento/dia
+    linhas = [it for it in registros if it.get("atendimento") == att and it.get("data") == data_proc]
+    if not linhas:
+        return "", ""
+
+    if import_all:
+        # 1º da linha (mestre)
+        chosen = linhas[0]
+        return (chosen.get("profissional") or "").strip(), (chosen.get("aviso") or "").strip()
+
+    # Caso haja seleção de médicos: pega o 1º que pertença à seleção informada
+    sel_set = set(final_pros or [])
+    for it in linhas:
+        p = (it.get("profissional") or "").strip()
+        if p and p in sel_set:
+            return p, (it.get("aviso") or "").strip()
+
+    return "", ""
+
+
 # ============================
 # BACKUP / RESTORE — Helpers
 # ============================
@@ -1581,14 +1610,16 @@ with tabs[1]:
                         total_ignorados += 1
                         continue
 
-                    prof_dia = next((it.get("profissional") for it in registros_filtrados
-                                     if it.get("atendimento") == att and it.get("data") == data_proc and it.get("profissional")), "")
-                    aviso_dia = next((it.get("aviso") for it in registros_filtrados
-                                      if it.get("atendimento") == att and it.get("data") == data_proc and it.get("aviso")), "")
-
+                    
+                    
+                    # >>> NOVA ESCOLHA de médico/aviso obedecendo as regras
+                    prof_dia, aviso_dia = _pick_prof_e_aviso_para(att, data_proc)
+                    
                     if not prof_dia:
+                        # nenhum médico aplicável conforme seleção -> ignora
                         total_ignorados += 1
                         continue
+
 
                     to_insert_auto.append({
                         "internacao_id": int(iid),
