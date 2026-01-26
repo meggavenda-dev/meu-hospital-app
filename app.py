@@ -1594,33 +1594,93 @@ with tabs[1]:
                 except APIError as e:
                     _sb_debug_error(e, "Falha ao buscar procedimentos existentes.")
 
-                # 7) Gera payload dos novos (garante 1 automático/dia)
+                
+                # ================================================================
+                # 7) Geração dos procedimentos automáticos com a nova lógica
+                # ================================================================
+                
+                def pick_profissional_para(att, data_proc):
+                    """
+                    Decide qual médico usar para (atendimento, data):
+                    
+                    1) Sempre considerar a ordem real do arquivo → via _row_idx
+                    2) Se importar TODOS → sempre o médico mestre (primeiro na linha)
+                    3) Se importar selecionados:
+                          a) Se algum selecionado for o primeiro da linha (mestre) → esse vence
+                          b) Senão → pega o primeiro selecionado que aparece abaixo no mesmo atendimento
+                    Retorna (profissional, aviso) ou ("","") se ninguém se aplica.
+                    """
+                
+                    # filtrar todas as linhas desse atendimento e data do PARSER ORIGINAL
+                    linhas = [
+                        it for it in registros 
+                        if it.get("atendimento") == att and it.get("data") == data_proc
+                    ]
+                
+                    if not linhas:
+                        return "", ""
+                
+                    # ordenar na ordem real do arquivo
+                    linhas = sorted(linhas, key=lambda x: x.get("_row_idx", 99999999))
+                
+                    # --- CASO 1: importar TODOS → sempre o mestre ---
+                    if import_all:
+                        prim = linhas[0]
+                        return (
+                            (prim.get("profissional") or "").strip(),
+                            (prim.get("aviso") or "").strip()
+                        )
+                
+                    # --- CASO 2: seleção de médicos ---
+                    sel = set(final_pros or [])
+                
+                    # (a) verificar se o mestre está na seleção
+                    mestre = linhas[0]
+                    mestre_nome = (mestre.get("profissional") or "").strip()
+                    if mestre_nome in sel:
+                        return mestre_nome, (mestre.get("aviso") or "").strip()
+                
+                    # (b) procurar o primeiro selecionado que apareça abaixo do mestre
+                    for it in linhas:
+                        nome = (it.get("profissional") or "").strip()
+                        if nome in sel:
+                            return nome, (it.get("aviso") or "").strip()
+                
+                    return "", ""
+                
+                
+                # ================================================================
+                # LOOP DE INSERÇÃO DOS AUTO (1 por internação/dia)
+                # ================================================================
+                
                 to_insert_auto = []
-                for (att, data_proc) in pares:
+                
+                for (att, data_proc) in pares:  # pares = (atendimento, data)
                     if not att or not data_proc:
                         total_ignorados += 1
                         continue
+                
                     iid = att_to_id.get(att)
                     if not iid:
                         total_ignorados += 1
                         continue
-
+                
                     data_norm = _to_ddmmyyyy(data_proc)
+                
+                    # evitar duplicidade
                     if (iid, data_norm) in existing_auto:
                         total_ignorados += 1
                         continue
-
-                    
-                    
-                    # >>> NOVA ESCOLHA de médico/aviso obedecendo as regras
-                    prof_dia, aviso_dia = _pick_prof_e_aviso_para(att, data_proc)
-                    
+                
+                    # usar a nova regra para escolher o médico correto
+                    prof_dia, aviso_dia = pick_profissional_para(att, data_proc)
+                
+                    # nenhum médico aplicável → ignorar
                     if not prof_dia:
-                        # nenhum médico aplicável conforme seleção -> ignora
                         total_ignorados += 1
                         continue
-
-
+                
+                    # montar payload
                     to_insert_auto.append({
                         "internacao_id": int(iid),
                         "data_procedimento": data_norm,
@@ -1629,11 +1689,12 @@ with tabs[1]:
                         "situacao": "Pendente",
                         "observacao": None,
                         "is_manual": 0,
-                        "aviso": (aviso_dia or None),
-                        "grau_participacao": None
+                        "aviso": aviso_dia or None,
+                        "grau_participacao": None,
                     })
-                    # evita duplicar dentro do mesmo arquivo
+                
                     existing_auto.add((iid, data_norm))
+
 
                 # 8) Insere procedimentos em lote
                 if to_insert_auto:
