@@ -1530,20 +1530,29 @@ with tabs[1]:
 
     
         # ========== NOVO: agrupar por (atendimento, data) ==========        
+        
         from collections import defaultdict
-                
+        
         grupos_by_par = defaultdict(list)
         for r in registros:
-            att = r.get("atendimento")
-            dt_raw = r.get("data")
+            att_raw = r.get("atendimento")
+            dt_raw  = r.get("data")
+        
+            # normaliza a data para dd/mm/aaaa
             dt = _to_ddmmyyyy(dt_raw)
             if dt:
                 dt = dt.replace('\xa0', ' ').strip()
-            if att and dt:
-                grupos_by_par[(att, dt)].append(r)
         
+            # >>> NOVO: chave por atendimento NORMALIZADO (sem zeros à esquerda)
+            att_key = _att_norm(att_raw)
+        
+            if att_key and dt:
+                grupos_by_par[(att_key, dt)].append(r)
+        
+        # pares totais / base
         pares_orig  = sorted(grupos_by_par.keys())
-        pares_todos = pares_orig[:]
+        pares_todos = pares_orig[:]  # usado quando import_all=True
+
 
         
         # ---- Lista de profissionais distintos (normalizada) ----
@@ -1645,27 +1654,26 @@ with tabs[1]:
         
         # ====== seleção de pares (entra se QUALQUER linha do dia tiver o médico selecionado) ======
         
+        
         target_token_sets = [_norm_tokens(p) for p in final_pros if p]
         
         def _participa_prof(it: dict) -> bool:
-            """
-            O dia entra se os tokens do médico-alvo forem SUBCONJUNTO
-            dos tokens vistos na linha do arquivo.
-            Ex.: alvo {"JOSE","ADORNO"} casa com "JOSE A ADORNO".
-            """
             ts = _norm_tokens(it.get("profissional"))
             if not ts:
                 return False
             return any(tks.issubset(ts) for tks in target_token_sets)
+
         
         # ====== seleção de pares (atendimento, data) por “qualquer participação” ======
+        
         if import_all:
-            pares = pares_todos[:]  # todos os dias de todos os atendimentos
+            pares = pares_todos[:]
         else:
             pares = sorted([
                 par for par, lst in grupos_by_par.items()
                 if any(_participa_prof(it) for it in lst)
             ])
+
 
         
         st.markdown(
@@ -1678,6 +1686,7 @@ with tabs[1]:
         # ====== NOVO: Pré-visualização focada em PARES ======
         # Exibe um “representante” de cada par (preferindo um item cujo profissional esteja selecionado)        
         
+        
         preview_rows = []
         for par in pares:
             lst = grupos_by_par.get(par, [])
@@ -1688,6 +1697,7 @@ with tabs[1]:
             if row:
                 preview_rows.append(row)
         df_preview = pd.DataFrame(preview_rows)
+
 
         st.subheader("Pré-visualização (por par atendimento/data) — DRY RUN")
         st.dataframe(df_preview, use_container_width=True, hide_index=True)
@@ -1807,6 +1817,7 @@ with tabs[1]:
                     if (iid, data_norm) in existing_auto:
                         total_ignorados += 1
                         continue    
+                    
                     
                     
                     lst = grupos_by_par.get((att, data_proc), [])
