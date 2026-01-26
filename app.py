@@ -1659,12 +1659,14 @@ with tabs[2]:
     codigo = st.text_input("Digite o atendimento para consultar:", key="consulta_codigo", placeholder="Ex.: 0007064233 ou 7064233")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    if codigo:
+    if codigo:       
         df_int = get_internacao_by_atendimento(codigo)
-        if filtro_hosp != "Todos":
+        
+        # Evita KeyError quando DF vier vazio sem schema
+        if filtro_hosp != "Todos" and not df_int.empty and "hospital" in df_int.columns:
             df_int = df_int[df_int["hospital"] == filtro_hosp]
-
-        if df_int.empty:
+        
+        if df_int is None or df_int.empty:
             st.warning("Nenhuma internação encontrada.")
         else:
             st.subheader("Dados da internação")
