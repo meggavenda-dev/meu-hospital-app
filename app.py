@@ -229,6 +229,107 @@ def _format_currency_br(v) -> str:
     except Exception:
         return f"R$ {v}"
 
+
+# ==== Helpers p/ normalização de nomes e herança por bloco (inspirado no processing.py) ====
+import unicodedata
+
+def _strip_accents(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    return "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+
+def _norm_tokens(s: str) -> set[str]:
+    s = (s or "").replace("\xa0", " ").strip().upper()
+    s = _strip_accents(s)
+    s = re.sub(r"[^A-Z0-9 ]+", " ", s)   # remove pontuação
+    s = re.sub(r"\s+", " ", s)
+    return set(t for t in s.split(" ") if t)
+
+def _herdar_por_data_bloco(registros: list[dict]) -> list[dict]:
+    """
+    Herda (atendimento, paciente, aviso) dentro do mesmo DIA a partir das linhas “principais”
+    para linhas complementares (as “segundas linhas” de médico), com trava por bloco e por médico.
+
+    Estratégia:
+    - percorre as linhas na ordem do arquivo (usa enumerate como _row_idx)
+    - reinicia o bloco quando aparece um novo atendimento/aviso OU quando muda a 'hora_ini'
+    - para cada bloco (mesma data), propaga last_att/last_pac/last_av para linhas sem esses campos,
+      mas apenas uma vez por médico (evita “escorrer” para linhas seguintes do mesmo médico).
+    """
+    if not registros:
+        return registros
+
+    # Garante chaves e coloca índice de ordem
+    rows = []
+    for i, r in enumerate(registros):
+        rows.append({
+            "data": r.get("data"),
+            "atendimento": r.get("atendimento"),
+            "paciente": r.get("paciente"),
+            "aviso": r.get("aviso"),
+            "profissional": r.get("profissional"),
+            "hora_ini": r.get("hora_ini") or r.get("hora_inicio") or r.get("Hora_Inicio"),
+            "_row_idx": i,
+            "_orig": r
+        })
+
+    # Ordena por (data, _row_idx) para processar no sentido do arquivo
+    rows.sort(key=lambda x: (str(x["data"]), int(x["_row_idx"])))
+
+    out = []
+    from itertools import groupby
+    for data_key, g_iter in groupby(rows, key=lambda x: str(x["data"])):
+        g = list(g_iter)
+
+        last_att = last_pac = last_av = None
+        current_block_key = None  # (hora_ini, last_att, last_av)
+        medicos_no_bloco = set()
+
+        for item in g:
+            att = (item["atendimento"] or "").strip()
+            av  = (str(item["aviso"]) or "").strip()
+            pac = (item["paciente"] or "").strip()
+            hr  = (item["hora_ini"] or "").strip()
+            pro = (item["profissional"] or "").strip().upper()
+
+            # Detecta nova linha “principal” (tem algum dos 3 pilares) -> pode iniciar/alterar bloco
+            tem_pilar = bool(att or av or pac)
+
+            # Se mudou hora ou mudou atendimento/aviso, abre novo bloco
+            new_block_key = (hr, att or last_att, av or last_av)
+            if current_block_key is None or new_block_key != current_block_key or tem_pilar:
+                current_block_key = new_block_key
+                medicos_no_bloco = set()  # zera médicos já herdados no bloco
+
+            # Atualiza last_* quando a linha tem dado nativo (pilar)
+            if tem_pilar:
+                last_att = att or last_att
+                last_av  = av  or last_av
+                last_pac = pac or last_pac
+                if pro:
+                    medicos_no_bloco.add(pro)
+            else:
+                # Linha complementar: herda UMA vez por médico dentro do bloco
+                if pro and pro not in medicos_no_bloco:
+                    item["atendimento"] = last_att
+                    item["aviso"] = last_av
+                    item["paciente"] = last_pac
+                    medicos_no_bloco.add(pro)
+
+            # Escreve de volta no objeto original
+            o = item["_orig"]
+            if not o.get("atendimento"): o["atendimento"] = item["atendimento"]
+            if not o.get("aviso"):       o["aviso"]       = item["aviso"]
+            if not o.get("paciente"):    o["paciente"]    = item["paciente"]
+
+            out.append(o)
+
+    # Mantém ordem original
+    out_sorted = sorted(out, key=lambda r: registros.index(r))
+    return out_sorted
+
+
 # ============================================================
 # UTIL — atendimento (normalização)
 # ============================================================
@@ -1421,8 +1522,12 @@ with tabs[1]:
         except UnicodeDecodeError:
             csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
     
+        
         registros = parse_tiss_original(csv_text)
+        # >>> NOVO: faz a herança por bloco p/ que o “2º médico” receba (atendimento/paciente/aviso)
+        registros = _herdar_por_data_bloco(registros)
         st.success(f"{len(registros)} registros interpretados!")
+
     
         # ========== NOVO: agrupar por (atendimento, data) ==========        
         from collections import defaultdict
@@ -1455,23 +1560,23 @@ with tabs[1]:
 
         
         # ==== DEBUG: profissionais por dia de um atendimento (para verificar 10/11) ====
-        with st.expander("🧪 Debug: profissionais por dia (arquivo)"):
-            att_dbg = st.text_input("Atendimento para inspecionar", value="0007074906", key="dbg_att")
+        
+        with st.expander("🧪 Debug — profissionais por dia (após herança)"):
+            att_dbg = st.text_input("Atendimento", value="0007074906", key="dbg_att")
             if att_dbg:
                 linhas = []
-                for (att, dt), lst in grupos_by_par.items():
-                    if str(att) == str(att_dbg):
-                        profs = sorted({ (it.get("profissional") or "").replace('\xa0', ' ').strip() for it in lst if it.get("profissional") })
-                        linhas.append({
-                            "data": dt,
-                            "profs_no_dia": ", ".join([p for p in profs if p]) or "—",
-                            "qtd_registros_no_dia": len(lst)
-                        })
-                if not linhas:
-                    st.info("Nenhum par encontrado para esse atendimento no arquivo.")
-                else:
-                    df_dbg = pd.DataFrame(linhas).sort_values("data")
-                    st.dataframe(df_dbg, use_container_width=True, hide_index=True)
+                from collections import defaultdict
+                grupos = defaultdict(list)
+                for r in registros:
+                    if str(r.get("atendimento")) == str(att_dbg):
+                        dt = _to_ddmmyyyy(r.get("data"))
+                        grupos[(att_dbg, dt)].append(r)
+                for (att, dt), lst in sorted(grupos.items(), key=lambda x: x[0][1]):
+                    profs = sorted({ (it.get("profissional") or "").strip() for it in lst if it.get("profissional") })
+                    linhas.append({"data": dt, "profs_no_dia": ", ".join([p for p in profs if p]) or "—", "qtd": len(lst)})
+                if linhas:
+                    st.dataframe(pd.DataFrame(linhas), use_container_width=True, hide_index=True)
+
 
         
         # OBS: pares originais (sem filtro) — só para KPI
@@ -1513,6 +1618,21 @@ with tabs[1]:
         st.session_state["import_all_docs"] = import_all
         st.session_state["import_selected_docs"] = selected_pros
     
+               
+        # ---------- NORMALIZAÇÃO: definir ANTES de decidir os pares ----------
+        
+        
+        def _norm_pro_basic(s: str) -> str:
+            s = (s or '').replace('\xa0', ' ').strip()
+            s = re.sub(r'\s+', ' ', s)
+            return s
+        
+        pros = sorted({
+            _norm_pro_basic(r.get("profissional"))
+            for r in registros
+            if r.get("profissional")
+        })        
+
         always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
         
         # --- médicos considerados (seleção + lista fixa) ---
@@ -1520,25 +1640,31 @@ with tabs[1]:
         
         st.caption(f"Médicos fixos (sempre incluídos, quando presentes no par): {', '.join(sorted(ALWAYS_SELECTED_PROS)) or '—'}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
-        
-        # ---------- NORMALIZAÇÃO: definir ANTES de decidir os pares ----------
-        
-        def _norm_pro(s: str) -> str:
-            s = (s or '').replace('\xa0', ' ').strip()  # NBSP -> espaço comum
-            s = re.sub(r'\s+', ' ', s)                  # colapsa múltiplos espaços
-            return s.upper()
-        
-        always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
-        final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
-        final_pros_norm = {_norm_pro(p) for p in final_pros}
+
+
         
         # ====== seleção de pares (entra se QUALQUER linha do dia tiver o médico selecionado) ======
+        
+        target_token_sets = [_norm_tokens(p) for p in final_pros if p]
+        
+        def _participa_prof(it: dict) -> bool:
+            """
+            O dia entra se os tokens do médico-alvo forem SUBCONJUNTO
+            dos tokens vistos na linha do arquivo.
+            Ex.: alvo {"JOSE","ADORNO"} casa com "JOSE A ADORNO".
+            """
+            ts = _norm_tokens(it.get("profissional"))
+            if not ts:
+                return False
+            return any(tks.issubset(ts) for tks in target_token_sets)
+        
+        # ====== seleção de pares (atendimento, data) por “qualquer participação” ======
         if import_all:
             pares = pares_todos[:]  # todos os dias de todos os atendimentos
         else:
             pares = sorted([
                 par for par, lst in grupos_by_par.items()
-                if any(_norm_pro(it.get('profissional')) in final_pros_norm for it in lst)
+                if any(_participa_prof(it) for it in lst)
             ])
 
         
