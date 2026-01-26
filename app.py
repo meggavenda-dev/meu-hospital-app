@@ -1245,28 +1245,51 @@ with tabs[0]:
     ini_mes = hoje.replace(day=1)
 
     colf1, colf2 = st.columns([2,3])
-    with colf1:
-        filtro_hosp_home = st.selectbox("Hospital", ["Todos"] + get_hospitais(), index=0, key="home_f_hosp__inicio")
+    with colf1:        
+        filtro_hosp_home = st.selectbox("Hospital", ["Todos"] + get_hospitais(),
+                                index=0, key="home_f_hosp__inicio")
+
     with colf2:
         st.write(" ")
         st.caption("Períodos (opcionais)")
 
     cbox1, cbox2 = st.columns(2)
     with cbox1:
-        use_int_range = st.checkbox("Filtrar por data da internação", key="home_use_int_range", value=False)
+        
+        use_int_range = st.checkbox("Filtrar por data da internação",
+                                    key="home_use_int_range__inicio", value=False)
+
     with cbox2:
-        use_proc_range = st.checkbox("Filtrar por data do procedimento", key="home_use_proc_range", value=False)
+        
+        use_proc_range = st.checkbox("Filtrar por data do procedimento",
+                                     key="home_use_proc_range__inicio", value=False)
 
     if use_int_range or use_proc_range:
         cold1, cold2, cold3, cold4 = st.columns(4)
         with cold1:
-            int_ini = st.date_input("Internação — início", value=st.session_state.get("home_f_int_ini", ini_mes), key="home_f_int_ini")
+           
+            int_ini = st.date_input("Internação — início",
+                                    value=st.session_state.get("home_f_int_ini__inicio", ini_mes),
+                                    key="home_f_int_ini__inicio")
+
         with cold2:
-            int_fim = st.date_input("Internação — fim", value=st.session_state.get("home_f_int_fim", hoje), key="home_f_int_fim")
+            
+            int_fim = st.date_input("Internação — fim",
+                                    value=st.session_state.get("home_f_int_fim__inicio", hoje),
+                                    key="home_f_int_fim__inicio")
+
         with cold3:
-            proc_ini = st.date_input("Procedimento — início", value=st.session_state.get("home_f_proc_ini", ini_mes), key="home_f_proc_ini")
+           
+            proc_ini = st.date_input("Procedimento — início",
+                                     value=st.session_state.get("home_f_proc_ini__inicio", ini_mes),
+                                     key="home_f_proc_ini__inicio")
+
         with cold4:
-            proc_fim = st.date_input("Procedimento — fim", value=st.session_state.get("home_f_proc_fim", hoje), key="home_f_proc_fim")
+            
+            proc_fim = st.date_input("Procedimento — fim",
+                                     value=st.session_state.get("home_f_proc_fim__inicio", hoje),
+                                     key="home_f_proc_fim__inicio")
+
 
     # ------ Carrega Procedimentos + Internações (cache curto; 2 passos, ou view) ------
     df_all = _home_fetch_base_df()
