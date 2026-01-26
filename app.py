@@ -93,7 +93,7 @@ STATUS_OPCOES = [
 ]
 PROCEDIMENTO_OPCOES = ["Cirurgia / Procedimento", "Parecer"]
 GRAU_PARTICIPACAO_OPCOES = ["Cirurgião", "1 Auxiliar", "2 Auxiliar", "3 Auxiliar", "Clínico"]
-ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MATOS"}
+ALWAYS_SELECTED_PROS = {"FERNANDO AND"}
 
 def inject_css():
     st.markdown("""
