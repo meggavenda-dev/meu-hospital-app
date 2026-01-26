@@ -1490,7 +1490,18 @@ with tabs[1]:
         st.caption(f"Médicos fixos (sempre incluídos, quando presentes): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
 
-        registros_filtrados = registros[:] if import_all else [r for r in registros if (r.get("profissional") or "") in final_pros]
+
+        
+        #registros_filtrados = registros[:] if import_all else [r for r in registros if (r.get("profissional") or "") in final_pros]
+
+        
+        sel = {_norm_pro(p) for p in (final_pros or [])}
+        
+        registros_filtrados = [
+            it for it in registros
+            if _norm_pro(it.get("profissional")) in sel
+        ]
+
 
         df_preview = pd.DataFrame(registros_filtrados)
         st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
