@@ -1,5 +1,5 @@
 
-def parse_tiss_original(csv_text):
+def parse_tiss_original(csv_text, prefer_prestador: str = None, todos_prestadores_marcados: bool = True):
     """
     Parser robusto para o relatório do Centro Cirúrgico/Hemodinâmica/Obstétrico.
     - Usa csv.reader para respeitar campos com vírgulas entre aspas.
@@ -8,8 +8,14 @@ def parse_tiss_original(csv_text):
     - Convênio/Prestador/Anestesista: preferimos os campos logo após 'procedimento'
       quando existirem; 'tipo' e 'quarto' são ancorados pelos 2 últimos campos não vazios.
     - Linha-filha: 10+ vazios à esquerda; herda hora_ini/hora_fim e 'aviso' da mestre.
+
+    NOVO:
+    - parametros prefer_prestador (str) e todos_prestadores_marcados (bool).
+      Quando todos_prestadores_marcados=False e prefer_prestador aparece em
+      QUALQUER linha do bloco (mestre + filhas), sobrescrevemos o 'profissional'
+      de TODO o bloco para o prefer_prestador.
     """
-    import re, csv, io
+    import re, csv, io, unicodedata
 
     def clean(s: str) -> str:
         return (s or "").replace("\x00", "").strip().strip('"').strip()
@@ -33,11 +39,53 @@ def parse_tiss_original(csv_text):
             out = [""] * (n - len(out)) + out
         return out
 
+    # normalização robusta para comparar nomes de prestadores
+    def _strip_accents(txt: str) -> str:
+        txt = txt or ""
+        nfkd = unicodedata.normalize("NFKD", txt)
+        return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+    def norm_name(s: str) -> str:
+        s = _strip_accents(s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s.casefold()
+
+    prefer_norm = norm_name(prefer_prestador) if prefer_prestador else None
+
     reader = csv.reader(io.StringIO(csv_text), delimiter=",", quotechar='"')
     registros = []
 
     data_atual = ""
-    contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": ""}
+    # contexto do bloco corrente (mestre + filhas)
+    contexto = {
+        "atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": "",
+        # NOVO: controle do bloco para eventual sobrescrita
+        "idxs_bloco": [],               # índices no vetor 'registros' que pertencem ao bloco
+        "prestadores_vistos": set(),    # nomes de prestadores já vistos no bloco
+        "sobrescrito": False            # já aplicamos override neste bloco?
+    }
+
+    def inicia_bloco():
+        # reset do contexto de bloco
+        contexto["idxs_bloco"].clear()
+        contexto["prestadores_vistos"].clear()
+        contexto["sobrescrito"] = False
+
+    inicia_bloco()
+
+    def talvez_sobrescrever_prestador(prestador_encontrado: str):
+        """
+        Se a UI não está com 'Todos os prestadores' marcados, e o prestador preferido
+        apareceu em alguma linha do bloco, sobrescreve 'profissional' em TODAS as
+        linhas do bloco para o preferido (com a grafia exata que encontramos agora).
+        """
+        if todos_prestadores_marcados or not prefer_norm or contexto["sobrescrito"]:
+            return
+        if norm_name(prestador_encontrado) == prefer_norm:
+            # aplica override no bloco
+            for i in contexto["idxs_bloco"]:
+                registros[i]["profissional"] = prestador_encontrado
+            contexto["sobrescrito"] = True  # evita reaplicar
 
     for cols in reader:
         cols = [clean(c) for c in cols]
@@ -52,6 +100,7 @@ def parse_tiss_original(csv_text):
                 if re.fullmatch(r"\d{2}/\d{2}/\d{4}", c):
                     data_atual = c
                     break
+            # inicia um novo bloco lógico de data (não interfere no bloco mestre/filha)
             continue
 
         # Ignorar cabeçalhos/totais/seções
@@ -69,6 +118,9 @@ def parse_tiss_original(csv_text):
         # ---------------------------
         is_master = (len(cols) >= 2 and re.fullmatch(r"\d{7,12}", cols[1] or ""))
         if is_master:
+            # iniciar novo bloco de mestre+filhas
+            inicia_bloco()
+
             atendimento = cols[1]
             paciente    = cols[2] if len(cols) > 2 else ""
 
@@ -118,15 +170,16 @@ def parse_tiss_original(csv_text):
             tipo, quarto = tail5[3], tail5[4]
 
             # contexto para filhas
-            contexto = {
+            contexto.update({
                 "atendimento": atendimento,
                 "paciente": paciente,
                 "hora_ini": hora_ini,
                 "hora_fim": hora_fim,
                 "aviso": aviso
-            }
+            })
 
-            registros.append({
+            # cria registro da linha-mestre
+            rec = {
                 "atendimento": atendimento,
                 "paciente": paciente,
                 "data": data_atual,
@@ -139,7 +192,14 @@ def parse_tiss_original(csv_text):
                 "quarto": quarto,
                 "hora_ini": hora_ini,
                 "hora_fim": hora_fim
-            })
+            }
+            registros.append(rec)
+            contexto["idxs_bloco"].append(len(registros) - 1)
+            if prest:
+                contexto["prestadores_vistos"].add(prest)
+                # se o próprio mestre já for o preferido, aplica imediatamente
+                talvez_sobrescrever_prestador(prest)
+
             continue
 
         # ---------------------------
@@ -164,7 +224,7 @@ def parse_tiss_original(csv_text):
                 quarto = tail2[0]
 
             if contexto["atendimento"]:
-                registros.append({
+                rec = {
                     "atendimento": contexto["atendimento"],
                     "paciente": contexto["paciente"],
                     "data": data_atual,
@@ -177,7 +237,14 @@ def parse_tiss_original(csv_text):
                     "quarto": quarto,
                     "hora_ini": contexto["hora_ini"],
                     "hora_fim": contexto["hora_fim"]
-                })
+                }
+                registros.append(rec)
+                contexto["idxs_bloco"].append(len(registros) - 1)
+                if prest:
+                    contexto["prestadores_vistos"].add(prest)
+                    # se encontramos o preferido numa filha, forçamos override no bloco
+                    talvez_sobrescrever_prestador(prest)
+
             continue
 
         # Demais linhas: ignorar
