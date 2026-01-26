@@ -4,31 +4,18 @@ def parse_tiss_original(csv_text):
     def clean(s: str) -> str:
         return (s or "").replace("\x00", "").strip().strip('"').strip()
 
-    def is_time(s: str) -> bool:
-        return bool(re.fullmatch(r"\d{1,2}:\d{2}", s or ""))
-
-    def is_digits(s: str) -> bool:
-        return bool(re.fullmatch(r"\d{3,}", s or ""))
-
-    def last_n_nonempty(seq, n):
-        out = [clean(v) for v in reversed(seq) if clean(v) != ""]
-        out = out[:n]
-        out.reverse()
-        if len(out) < n: out = [""] * (n - len(out)) + out
-        return out
-
     reader = csv.reader(io.StringIO(csv_text), delimiter=",", quotechar='"')
     registros = []
     data_atual = ""
-    contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": ""}
-    row_idx = 0
+    # Armazena o contexto da última linha-mestre lida para aplicar às linhas-filhas
+    ctx = {"atendimento": "", "paciente": "", "aviso": "", "hora_ini": "", "hora_fim": ""}
 
     for cols in reader:
         cols = [clean(c) for c in cols]
-        if all(c == "" for c in cols): continue
+        if not any(cols): continue
         line_txt = " ".join(cols)
 
-        # 1. DATA DO BLOCO (Busca flexível para evitar erro de acentuação)
+        # 1. Identifica a Data do Bloco
         if "Data de Realiza" in line_txt:
             for c in cols:
                 if re.fullmatch(r"\d{2}/\d{2}/\d{4}", c):
@@ -36,56 +23,45 @@ def parse_tiss_original(csv_text):
                     break
             continue
 
-        # Ignorar cabeçalhos
-        if ("Hora" in line_txt and "Início" in line_txt) or any(k in line_txt for k in ["Atendimento", "Convênio", "Total de Avisos"]):
+        # Pula cabeçalhos e linhas de total
+        if any(k in line_txt for k in ["Atendimento", "Convênio", "Total de"]):
             continue
 
-        # 2. LINHA-MESTRE (Identifica pelo atendimento na col 1)
-        is_master = (len(cols) >= 2 and re.fullmatch(r"\d{7,12}", cols[1]))
+        # 2. Verifica se é Linha-Mestre (Atendimento na Coluna 1)
+        is_master = (len(cols) > 1 and re.fullmatch(r"\d{7,12}", cols[1]))
+        
         if is_master:
             atendimento = cols[1]
             paciente = cols[2] if len(cols) > 2 else ""
+            aviso = cols[3] if len(cols) > 3 else ""
+            hora_ini = cols[4] if len(cols) > 4 else ""
+            hora_fim = cols[5] if len(cols) > 5 else ""
             
-            # Localizar aviso e horas
-            aviso_idx = None
-            for k in range(3, len(cols) - 2):
-                if is_digits(cols[k]) and is_time(cols[k+1]) and is_time(cols[k+2]):
-                    aviso_idx = k
-                    break
+            ctx = {"atendimento": atendimento, "paciente": paciente, "aviso": aviso, "hora_ini": hora_ini, "hora_fim": hora_fim}
             
-            if aviso_idx is not None:
-                aviso = cols[aviso_idx]
-                hora_ini, hora_fim = cols[aviso_idx+1], cols[aviso_idx+2]
-                procedimento = cols[aviso_idx+3] if aviso_idx+3 < len(cols) else ""
-                
-                # Dados de Convênio/Profissional (Âncora pela direita)
-                tail5 = last_n_nonempty(cols, 5)
-                contexto = {"atendimento": atendimento, "paciente": paciente, "hora_ini": hora_ini, "hora_fim": hora_fim, "aviso": aviso}
-                
+            # Profissional está sempre no índice 8
+            prof = cols[8] if len(cols) > 8 else ""
+            if prof:
                 registros.append({
-                    "atendimento": atendimento, "paciente": paciente, "data": data_atual, "aviso": aviso,
-                    "procedimento": procedimento, "convenio": tail5[0], "profissional": tail5[1],
-                    "anestesista": tail5[2], "tipo": tail5[3], "quarto": tail5[4],
-                    "hora_ini": hora_ini, "hora_fim": hora_fim, "_row_idx": row_idx
+                    "atendimento": atendimento, "paciente": paciente, "data": data_atual,
+                    "aviso": aviso, "procedimento": cols[6] if len(cols) > 6 else "",
+                    "convenio": cols[7] if len(cols) > 7 else "", "profissional": prof,
+                    "anestesista": cols[9] if len(cols) > 9 else "", 
+                    "tipo": cols[10] if len(cols) > 10 else "", "quarto": cols[11] if len(cols) > 11 else "",
+                    "hora_ini": hora_ini, "hora_fim": hora_fim
                 })
-                row_idx += 1
-                continue
+            continue
 
-        # 3. LINHA-FILHA (Onde geralmente estão os outros médicos)
-        # Ajustado para aceitar linhas que começam vazias (atendimento oculto)
-        first_idx = next((i for i, c in enumerate(cols) if c != ""), None)
-        if first_idx is not None and first_idx >= 5: # Reduzido de 10 para 5
-            procedimento = cols[first_idx]
-            # No seu arquivo, Profissional costuma estar 2 colunas após o Convênio
-            tail5 = last_n_nonempty(cols, 5)
-            
-            if contexto["atendimento"]:
+        # 3. Verifica se é Linha-Filha (Atendimento vazio, mas tem procedimento no índice 6)
+        if len(cols) > 8 and not cols[1] and cols[6] and ctx["atendimento"]:
+            prof = cols[8]
+            if prof:
                 registros.append({
-                    "atendimento": contexto["atendimento"], "paciente": contexto["paciente"], 
-                    "data": data_atual, "aviso": contexto["aviso"],
-                    "procedimento": procedimento, "convenio": tail5[0], "profissional": tail5[1],
-                    "anestesista": tail5[2], "tipo": tail5[3], "quarto": tail5[4],
-                    "hora_ini": contexto["hora_ini"], "hora_fim": contexto["hora_fim"], "_row_idx": row_idx
+                    "atendimento": ctx["atendimento"], "paciente": ctx["paciente"], "data": data_atual,
+                    "aviso": ctx["aviso"], "procedimento": cols[6],
+                    "convenio": cols[7], "profissional": prof,
+                    "anestesista": cols[9], "tipo": cols[10], "quarto": cols[11],
+                    "hora_ini": ctx["hora_ini"], "hora_fim": ctx["hora_fim"]
                 })
-                row_idx += 1
+
     return registros
