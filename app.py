@@ -1689,13 +1689,17 @@ with tabs[1]:
         
         preview_rows = []
         for par in pares:
-            lst = grupos_by_par.get(par, [])
-            row = next(
-                (it for it in lst if _participa_prof(it) and it.get("profissional")),
-                lst[0] if lst else {}
-            )
-            if row:
-                preview_rows.append(row)
+            lst = grupos_by_par.get(par, [])           
+            row = None
+            if not import_all:
+                for it in lst:
+                    if _participa_prof(it) and it.get("profissional"):
+                        row = it
+                        break
+            
+            if row is None:
+                row = next((it for it in lst if it.get("profissional")), lst[0] if lst else {})
+
         df_preview = pd.DataFrame(preview_rows)
 
 
@@ -1820,13 +1824,26 @@ with tabs[1]:
                     
                     
                     
+                    
                     lst = grupos_by_par.get((att, data_proc), [])
-                    prof_dia = (
-                        next((it.get("profissional") for it in lst if _participa_prof(it) and it.get("profissional")), None)
-                        or next((it.get("profissional") for it in lst if it.get("profissional")), None)
-                        or ""
-                    )
+                    
+                    # 1) Tenta o primeiro "selecionado" que APARECE no arquivo (ordem original)
+                    prof_dia = ""
+                    if not import_all:
+                        for it in lst:
+                            if _participa_prof(it) and it.get("profissional"):
+                                prof_dia = it.get("profissional")
+                                break
+                    
+                    # 2) Se nenhum selecionado apareceu, usa o primeiro com nome
+                    if not prof_dia:
+                        for it in lst:
+                            if it.get("profissional"):
+                                prof_dia = it.get("profissional")
+                                break
+                    
                     aviso_dia = next((it.get("aviso") for it in lst if it.get("aviso")), None)
+
 
     
                     if not prof_dia:
