@@ -1496,12 +1496,65 @@ with tabs[1]:
         st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
         st.dataframe(df_preview, use_container_width=True, hide_index=True)
 
-        pares = sorted({(r["atendimento"], r["data"]) for r in registros_filtrados if r.get("atendimento") and r.get("data")})
+        pares = sorted({(r["atendimento"], r["data"]) for r in registros if r.get("atendimento") and r.get("data")})
         st.markdown(
             f"<div>🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
             f"{pill('1 auto por internação/dia')} (manuais podem ser vários).</div>",
             unsafe_allow_html=True
         )
+
+        
+        # === DEBUG — focalizado no atendimento '0007074906' e no dia '10/11/2025' ===
+        DEBUG_ATT = "0007074906"
+        DEBUG_DATE = "10/11/2025"
+        
+        def _show_debug_for(att, data_):
+            print("\n" + "="*80)
+            print(f"[DEBUG] Investigando atendimento {att} em {data_}")
+            print("="*80)
+        
+            # 1) Tudo que o parser leu para esse par (ORDEM REAL _row_idx)
+            lin_raw = [r for r in registros if r.get("atendimento")==att and r.get("data")==data_]
+            lin_raw = sorted(lin_raw, key=lambda x: x.get("_row_idx", 10**9))
+            print(f"Total bruto (registros): {len(lin_raw)}")
+            for r in lin_raw[:20]:
+                print(f"  idx={r.get('_row_idx')}  prof={r.get('profissional')!r}  aviso={r.get('aviso')!r}  conv={r.get('convenio')!r}  proc={r.get('procedimento')!r}")
+        
+            # 2) O que sobrou após filtro de médicos (registros_filtrados)
+            lin_fil = [r for r in (registros_filtrados or []) if r.get("atendimento")==att and r.get("data")==data_]
+            lin_fil = sorted(lin_fil, key=lambda x: x.get("_row_idx", 10**9))
+            print(f"Total pós-filtro médicos: {len(lin_fil)}")
+            for r in lin_fil[:20]:
+                print(f"  idx={r.get('_row_idx')}  prof={r.get('profissional')!r}  aviso={r.get('aviso')!r}")
+        
+            # 3) O par (att, data) entrou mesmo em 'pares'?
+            entrou_nos_pares = (att, data_) in set(pares)
+            print(f"Par (att,data) presente em 'pares'? {entrou_nos_pares}")
+        
+            # 4) Mapeamento para Internação (att_to_id)
+            iid = att_to_id.get(att)
+            print(f"internacao_id para {att}: {iid}")
+        
+            # 5) A regra de escolha do médico (se você já adicionou a função pick_profissional_para)
+            try:
+                pdia, avdia = pick_profissional_para(att, data_)
+                print(f"Médico escolhido: {pdia!r}, aviso: {avdia!r}")
+            except Exception as e:
+                print(f"pick_profissional_para não disponível / erro: {e}")
+        
+            # 6) Já existia auto no dia?
+            data_norm = _to_ddmmyyyy(data_)
+            already = (iid, data_norm) in existing_auto if iid and data_norm else False
+            print(f"Já havia 'auto' para (iid={iid}, data={data_norm})? {already}")
+        
+            print("="*80 + "\n")
+        
+        # Execute o debug:
+        try:
+            _show_debug_for(DEBUG_ATT, DEBUG_DATE)
+        except Exception as e:
+            print("[DEBUG] Falha debug:", e)
+
 
         # ======== IMPORTAÇÃO TURBO (mesmo código que você já tinha) ========
         colg1, colg2 = st.columns([1, 4])
