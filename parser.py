@@ -8,7 +8,9 @@ def parse_tiss_original(csv_text):
     - Convênio/Prestador/Anestesista: preferimos os campos logo após 'procedimento'
       quando existirem; 'tipo' e 'quarto' são ancorados pelos 2 últimos campos não vazios.
     - Linha-filha: 10+ vazios à esquerda; herda hora_ini/hora_fim e 'aviso' da mestre.
+    - ***MODIFICAÇÃO: adicionamos `_row_idx` para preservar a ordem real do arquivo.***
     """
+
     import re, csv, io
 
     def clean(s: str) -> str:
@@ -38,6 +40,9 @@ def parse_tiss_original(csv_text):
 
     data_atual = ""
     contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": ""}
+
+    # NOVO: contador global da ordem real
+    row_idx = 0
 
     for cols in reader:
         cols = [clean(c) for c in cols]
@@ -79,13 +84,11 @@ def parse_tiss_original(csv_text):
                     aviso_idx = k
                     break
             if aviso_idx is None:
-                # fallback: primeiro horário cujo anterior é um número (aviso)
                 for k in range(3, len(cols)):
                     if is_time(cols[k]) and k - 1 >= 0 and is_digits(cols[k-1]):
                         aviso_idx = k - 1
                         break
             if aviso_idx is None:
-                # linha inconsistente
                 continue
 
             aviso    = cols[aviso_idx]
@@ -94,11 +97,9 @@ def parse_tiss_original(csv_text):
             proc_idx = aviso_idx + 3
             procedimento = cols[proc_idx] if proc_idx < len(cols) else ""
 
-            # ÂNCORA PELA DIREITA: 5 últimos não vazios tendem a ser [conv, prest, anest, tipo, quarto]
-            conv = prest = anest = tipo = quarto = ""
+            # ÂNCORA PELA DIREITA
             tail5 = last_n_nonempty(cols, 5)
 
-            # Preferir os campos imediatamente após o procedimento, se existirem
             if proc_idx + 1 < len(cols) and cols[proc_idx + 1] != "":
                 conv = cols[proc_idx + 1]
             else:
@@ -114,10 +115,9 @@ def parse_tiss_original(csv_text):
             else:
                 anest = tail5[2]
 
-            # tipo e quarto — normalmente os 2 últimos campos não vazios
             tipo, quarto = tail5[3], tail5[4]
 
-            # contexto para filhas
+            # atualizar contexto
             contexto = {
                 "atendimento": atendimento,
                 "paciente": paciente,
@@ -126,6 +126,7 @@ def parse_tiss_original(csv_text):
                 "aviso": aviso
             }
 
+            # REGISTRO COM _row_idx
             registros.append({
                 "atendimento": atendimento,
                 "paciente": paciente,
@@ -138,14 +139,15 @@ def parse_tiss_original(csv_text):
                 "tipo": tipo,
                 "quarto": quarto,
                 "hora_ini": hora_ini,
-                "hora_fim": hora_fim
+                "hora_fim": hora_fim,
+                "_row_idx": row_idx
             })
+            row_idx += 1
             continue
 
         # ---------------------------
         # LINHA-FILHA
         # ---------------------------
-        # primeira coluna não vazia em posição >= 10 caracteriza filha
         first_idx = next((i for i, c in enumerate(cols) if c != ""), None)
         if first_idx is not None and first_idx >= 10:
             proc_idx = first_idx
@@ -155,13 +157,13 @@ def parse_tiss_original(csv_text):
             prest = cols[proc_idx + 2] if proc_idx + 2 < len(cols) else ""
             anest = cols[proc_idx + 3] if proc_idx + 3 < len(cols) else ""
 
-            # tipo/quarto ancorados pelos 2 últimos não vazios
-            tipo = quarto = ""
             tail2 = last_n_nonempty(cols, 2)
             if len(tail2) == 2:
                 tipo, quarto = tail2[0], tail2[1]
             elif len(tail2) == 1:
-                quarto = tail2[0]
+                tipo, quarto = "", tail2[0]
+            else:
+                tipo = quarto = ""
 
             if contexto["atendimento"]:
                 registros.append({
@@ -176,11 +178,12 @@ def parse_tiss_original(csv_text):
                     "tipo": tipo,
                     "quarto": quarto,
                     "hora_ini": contexto["hora_ini"],
-                    "hora_fim": contexto["hora_fim"]
+                    "hora_fim": contexto["hora_fim"],
+                    "_row_idx": row_idx
                 })
+                row_idx += 1
             continue
 
-        # Demais linhas: ignorar
         continue
 
     return registros
