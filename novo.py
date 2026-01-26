@@ -13,6 +13,7 @@ import io
 import json
 import re
 import streamlit.components.v1 as components
+from io import BytesIO
 
 # ==== Supabase ====
 from supabase import create_client, Client
@@ -811,6 +812,145 @@ def quitar_procedimento(proc_id, data_quitacao=None, guia_amhptiss=None, valor_a
     except APIError as e:
         _sb_debug_error(e, "Falha ao quitar procedimento.")
 
+
+def _excel_quitacoes_colunas_fixas(df: pd.DataFrame) -> bytes:
+    """
+    Gera um Excel (XLSX) com o mesmo layout do PDF 'colunas fixas (sem Aviso/Situação)'.
+    Colunas: Quitação | Hospital | Atendimento | Paciente | Convênio | Profissional | Grau |
+             Data Proc. | Guia AMHPTISS | R$ AMHPTISS | Guia Compl. | R$ Compl.
+    - Datas em dd/mm/aaaa
+    - Valores com formato contábil brasileiro (R$)
+    - Guias normalizadas (sem '.0')
+    - Larguras de coluna ajustadas
+    Retorna: bytes do arquivo .xlsx
+    """
+    if df is None or df.empty:
+        return b""
+
+    # ---- Seleção e ordem de colunas (mes mo do PDF) ----
+    cols_pdf = [
+        "quitacao_data","hospital","atendimento","paciente","convenio",
+        "profissional","grau_participacao","data_procedimento",
+        "quitacao_guia_amhptiss","quitacao_valor_amhptiss",
+        "quitacao_guia_complemento","quitacao_valor_complemento",
+    ]
+    # Garante colunas e cria cópia
+    base = df.copy()
+    for c in cols_pdf:
+        if c not in base.columns:
+            base[c] = ""
+
+    # ---- Normalizações (guias sem '.0') ----
+    for col in ["quitacao_guia_amhptiss","quitacao_guia_complemento"]:
+        if col in base.columns:
+            base[col] = base[col].apply(_fmt_id_str)
+
+    # ---- Datas (dd/mm/aaaa no Excel) ----
+    def _to_date_or_none(s):
+        d = _pt_date_to_dt(s)
+        return pd.to_datetime(d) if d else pd.NaT
+
+    base["quitacao_data_x"]     = base["quitacao_data"].apply(_to_date_or_none)
+    base["data_procedimento_x"] = base["data_procedimento"].apply(_to_date_or_none)
+
+    # ---- Valores numéricos (float) ----
+    base["quitacao_valor_amhptiss_x"]    = pd.to_numeric(base["quitacao_valor_amhptiss"], errors="coerce")
+    base["quitacao_valor_complemento_x"] = pd.to_numeric(base["quitacao_valor_complemento"], errors="coerce")
+
+    # ---- DataFrame final no layout humano ----
+    out = pd.DataFrame({
+        "Quitação":               base["quitacao_data_x"],
+        "Hospital":               base["hospital"],
+        "Atendimento":            base["atendimento"],
+        "Paciente":               base["paciente"],
+        "Convênio":               base["convenio"],
+        "Profissional":           base["profissional"],
+        "Grau":                   base["grau_participacao"],
+        "Data Proc.":             base["data_procedimento_x"],
+        "Guia AMHPTISS":          base["quitacao_guia_amhptiss"],
+        "R$ AMHPTISS":            base["quitacao_valor_amhptiss_x"],
+        "Guia Compl.":            base["quitacao_guia_complemento"],
+        "R$ Compl.":              base["quitacao_valor_complemento_x"],
+    })
+
+    # ---- Escreve com openpyxl + formatos e larguras ----
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        sheet_name = "Quitações"
+        out.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        ws = writer.sheets[sheet_name]
+
+        # Formatos
+        from openpyxl.styles import numbers, Alignment, Font
+        # dd/mm/aaaa (número 14 é dd/mm/aa; usaremos código explícito dd/mm/yyyy)
+        date_fmt = "dd/mm/yyyy"
+        money_fmt = u'[$R$-pt_BR] #,##0.00'  # R$ com separadores BR
+
+        # Descobre índices das colunas por título (1-based)
+        headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        idx_quit = headers.index("Quitação") + 1
+        idx_proc = headers.index("Data Proc.") + 1
+        idx_v1   = headers.index("R$ AMHPTISS") + 1
+        idx_v2   = headers.index("R$ Compl.") + 1
+
+        # Aplica formatos de coluna (a partir da 2ª linha)
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=idx_quit, max_col=idx_quit):
+            for cell in row:
+                cell.number_format = date_fmt
+                cell.alignment = Alignment(horizontal="center")
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=idx_proc, max_col=idx_proc):
+            for cell in row:
+                cell.number_format = date_fmt
+                cell.alignment = Alignment(horizontal="center")
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=idx_v1, max_col=idx_v1):
+            for cell in row:
+                cell.number_format = money_fmt
+                cell.alignment = Alignment(horizontal="right")
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=idx_v2, max_col=idx_v2):
+            for cell in row:
+                cell.number_format = money_fmt
+                cell.alignment = Alignment(horizontal="right")
+
+        # Alinhamentos para algumas colunas
+        for col_title in ["Atendimento","Guia AMHPTISS","Guia Compl."]:
+            cidx = headers.index(col_title) + 1
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=cidx, max_col=cidx):
+                for cell in row:
+                    cell.alignment = Alignment(horizontal="center")
+
+        # Ajuste de cabeçalho (bold + centralizado)
+        for c in ws[1]:
+            c.font = Font(bold=True)
+            c.alignment = Alignment(horizontal="center")
+
+        # Largura de colunas — mapeando proporcionalmente às larguras do PDF
+        # (valores em “caracteres” aprox. no Excel)
+        col_width_map = {
+            "Quitação":        11,   # datas
+            "Hospital":        16,
+            "Atendimento":     12,
+            "Paciente":        32,
+            "Convênio":        18,
+            "Profissional":    22,
+            "Grau":            12,
+            "Data Proc.":      11,   # datas
+            "Guia AMHPTISS":   16,
+            "R$ AMHPTISS":     14,
+            "Guia Compl.":     16,
+            "R$ Compl.":       14,
+        }
+        for col_cells in ws.iter_cols(min_row=1, max_row=1):
+            title = col_cells[0].value
+            if title in col_width_map:
+                ws.column_dimensions[col_cells[0].column_letter].width = col_width_map[title]
+
+        # Freezepanes (fixa cabeçalho)
+        ws.freeze_panes = "A2"
+
+    return buf.getvalue()
+
+
 def reverter_quitacao(proc_id: int):
     update_data = {
         "quitacao_data": None,
@@ -954,14 +1094,17 @@ def _rel_cirurgias_base_df() -> pd.DataFrame:
         _sb_debug_error(e, "Falha ao carregar dados para Relatório.")
         return pd.DataFrame()
 
+
+
 @st.cache_data(ttl=TTL_MED, show_spinner=False)
 def _rel_quitacoes_base_df() -> pd.DataFrame:
-    """Base para Relatório de Quitações (cache curto)."""
+    """Base para Relatório de Quitações (cache curto) — traz também 'situacao' e 'grau_participacao'."""
     if USE_DB_VIEW:
         try:
             res = supabase.table("vw_procedimentos_internacoes").select(
-                "procedimento_id, internacao_id, data_procedimento, profissional, quitacao_data, "
-                "quitacao_guia_amhptiss, quitacao_guia_complemento, quitacao_valor_amhptiss, quitacao_valor_complemento, "
+                "procedimento_id, internacao_id, data_procedimento, profissional, grau_participacao, situacao, "
+                "quitacao_data, quitacao_guia_amhptiss, quitacao_guia_complemento, "
+                "quitacao_valor_amhptiss, quitacao_valor_complemento, "
                 "hospital, atendimento, paciente, convenio"
             ).not_.is_("quitacao_data", None).eq("procedimento", "Cirurgia / Procedimento").execute()
             df = pd.DataFrame(res.data or [])
@@ -973,14 +1116,18 @@ def _rel_quitacoes_base_df() -> pd.DataFrame:
 
     try:
         resp = supabase.table("procedimentos").select(
-            "internacao_id, data_procedimento, profissional, quitacao_data, quitacao_guia_amhptiss, quitacao_guia_complemento, quitacao_valor_amhptiss, quitacao_valor_complemento"
+            "internacao_id, data_procedimento, profissional, grau_participacao, situacao, "
+            "quitacao_data, quitacao_guia_amhptiss, quitacao_guia_complemento, "
+            "quitacao_valor_amhptiss, quitacao_valor_complemento"
         ).eq("procedimento", "Cirurgia / Procedimento").not_.is_("quitacao_data", None).execute()
         dfp = pd.DataFrame(resp.data or [])
         if dfp.empty:
             return pd.DataFrame()
         ids = sorted(set(int(x) for x in dfp["internacao_id"].dropna().tolist()))
         if ids:
-            resi = supabase.table("internacoes").select("id, hospital, atendimento, paciente, convenio").in_("id", ids).execute()
+            resi = supabase.table("internacoes").select(
+                "id, hospital, atendimento, paciente, convenio"
+            ).in_("id", ids).execute()
             dfi = pd.DataFrame(resi.data or [])
         else:
             dfi = pd.DataFrame()
@@ -1896,66 +2043,169 @@ else:
     def _pdf_cirurgias_por_status(*args, **kwargs):
         raise RuntimeError("ReportLab não está instalado no ambiente.")
 
-# --- PDF: Quitações ---
+# --- PDF: Quitações (colunas fixas, sem Aviso e sem Situação, A4 paisagem) ---
+
 if REPORTLAB_OK:
-    def _pdf_quitacoes(df, filtros):
+    def _pdf_quitacoes_colunas_fixas(df, filtros):
+        """
+        Quitação | Hospital | Atendimento | Paciente | Convênio | Profissional | Grau |
+        Data Proc. | Guia AMHPTISS | R$ AMHPTISS | Guia Compl. | R$ Compl.
+        - Evita quebra em 'Atendimento' (header) e nas datas (nobr).
+        - Ajuste fino de larguras para A4 paisagem, sem cortes.
+        """
+        # ---- Garantias de colunas ----
+        need = [
+            "quitacao_data","hospital","atendimento","paciente","convenio",
+            "profissional","grau_participacao","data_procedimento",
+            "quitacao_guia_amhptiss","quitacao_valor_amhptiss",
+            "quitacao_guia_complemento","quitacao_valor_complemento",
+        ]
+        df = df.copy()
+        for c in need:
+            if c not in df.columns: df[c] = ""
+
+        # ---- Normalizações e datas ----
+        for col in ["quitacao_guia_amhptiss","quitacao_guia_complemento"]:
+            df[col] = df[col].apply(_fmt_id_str)
+
+        def _fmt_dt(s):
+            d = _pt_date_to_dt(s)
+            return d.strftime("%d/%m/%Y") if isinstance(d, (date, datetime)) and not pd.isna(d) else (str(s) or "")
+
+        df["quitacao_data"]     = df["quitacao_data"].apply(_fmt_dt)
+        df["data_procedimento"] = df["data_procedimento"].apply(_fmt_dt)
+
+        # ---- Totais ----
         v_amhp = pd.to_numeric(df.get("quitacao_valor_amhptiss", 0), errors="coerce").fillna(0.0)
         v_comp = pd.to_numeric(df.get("quitacao_valor_complemento", 0), errors="coerce").fillna(0.0)
         total_amhp = float(v_amhp.sum()); total_comp = float(v_comp.sum()); total_geral = total_amhp + total_comp
 
+        # ---- ReportLab ----
         buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18)
+        doc = SimpleDocTemplate(
+            buf, pagesize=landscape(A4),
+            leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18
+        )
         styles = getSampleStyleSheet()
         H1 = styles["Heading1"]; N = styles["BodyText"]
+
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import Table, TableStyle, Spacer, Paragraph
+        from reportlab.lib import colors
+        from reportlab.lib.units import cm
+
+        # Fonte um pouco menor + estilos
+        TH = ParagraphStyle("TH", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.2, leading=9.8, alignment=1)
+        TD = ParagraphStyle("TD", parent=styles["Normal"], fontName="Helvetica", fontSize=7.8, leading=9.6, wordWrap="LTR")
+        TD_CENTER = ParagraphStyle("TD_CENTER", parent=TD, alignment=1)
+        TD_RIGHT  = ParagraphStyle("TD_RIGHT", parent=TD, alignment=2)
+        TD_SMALL  = ParagraphStyle("TD_SMALL", parent=TD, fontSize=7.0, leading=8.6)  # Paciente/Convênio
+
+        # Helper para impedir quebra dentro do texto
+        def nobr(text: str) -> str:
+            s = "" if text is None else str(text)
+            return f"<nobr>{s}</nobr>"
+
+        # Título e filtros
         elems = []
         elems.append(Paragraph("Relatório — Quitações", H1))
-        filtros_txt = (f"Período da quitação: {filtros['ini']} a {filtros['fim']}  |  Hospital: {filtros['hospital']}")
-        elems.append(Paragraph(filtros_txt, N)); elems.append(Spacer(1, 8))
+        filtros_txt = f"Período da quitação: {filtros['ini']} a {filtros['fim']}  |  Hospital: {filtros['hospital']}"
+        elems.append(Paragraph(filtros_txt, N))
+        elems.append(Spacer(1, 8))
 
-        header = ["Convênio","Paciente","Profissional","Data","Atendimento","Guia AMHP","Guia Complemento","Valor AMHP","Valor Complemento","Data da quitação"]
-        col_widths = [3.2*cm,6.0*cm,6.0*cm,2.4*cm,2.8*cm,3.2*cm,3.6*cm,3.2*cm,3.6*cm,2.8*cm]
+        # Cabeçalho (aplicando nobr SOMENTE em 'Atendimento')
+        headers_raw = [
+            "Quitação","Hospital", nobr("Atendimento"), "Paciente","Convênio","Profissional","Grau",
+            "Data Proc.","Guia AMHPTISS","R$ AMHPTISS","Guia Compl.","R$ Compl."
+        ]
+        headers = [Paragraph(h, TH) for h in headers_raw]
+
+        # Ordem de colunas
+        cols = [
+            "quitacao_data","hospital","atendimento","paciente","convenio","profissional","grau_participacao",
+            "data_procedimento","quitacao_guia_amhptiss","quitacao_valor_amhptiss",
+            "quitacao_guia_complemento","quitacao_valor_complemento",
+        ]
+
+        # Larguras (cm) — soma ≈ 28,4 cm (área útil em A4 paisagem com margens 18pt)
+        # ↑ aumento em Quitação (+0.2) e Atendimento (+0.2) para evitar quebra; compensação nas guias (−0.4 no total)
+        col_widths = [
+            2.0*cm,  # Quitação   (↑ +0.2)
+            2.2*cm,  # Hospital
+            2.2*cm,  # Atendimento (↑ +0.2)
+            4.3*cm,  # Paciente
+            2.6*cm,  # Convênio
+            3.2*cm,  # Profissional
+            1.8*cm,  # Grau
+            2.0*cm,  # Data Proc.
+            2.5*cm,  # Guia AMHPTISS (↓ -0.1)
+            2.1*cm,  # R$ AMHPTISS (↓ -0.1)
+            2.5*cm,  # Guia Compl.   (↓ -0.1)
+            2.0*cm,  # R$ Compl.     (↓ -0.2)
+        ]
+
+        # Builder de Paragraph
+        def P(v, style=TD): return Paragraph("" if v is None else str(v), style)
+
+        # Linhas (aplicando nobr nas DATAS)
         data_rows = []
         for _, r in df.iterrows():
             data_rows.append([
-                r.get("convenio") or "", r.get("paciente") or "", r.get("profissional") or "",
-                r.get("data_procedimento") or "", r.get("atendimento") or "",
-                r.get("quitacao_guia_amhptiss") or "", r.get("quitacao_guia_complemento") or "",
-                _format_currency_br(r.get("quitacao_valor_amhptiss")),
-                _format_currency_br(r.get("quitacao_valor_complemento")),
-                r.get("quitacao_data") or "",
+                P(nobr(r["quitacao_data"]), TD_CENTER),           # Quitação (data) sem quebra
+                P(r["hospital"], TD),
+                P(r["atendimento"], TD_CENTER),
+                P(r["paciente"], TD_SMALL),
+                P(r["convenio"], TD_SMALL),
+                P(r["profissional"], TD),
+                P(r["grau_participacao"], TD_CENTER),
+                P(nobr(r["data_procedimento"]), TD_CENTER),       # Data Proc. sem quebra
+                P(r["quitacao_guia_amhptiss"], TD_CENTER),
+                P(_format_currency_br(r["quitacao_valor_amhptiss"]), TD_RIGHT),
+                P(r["quitacao_guia_complemento"], TD_CENTER),
+                P(_format_currency_br(r["quitacao_valor_complemento"]), TD_RIGHT),
             ])
-        table = Table([header] + data_rows, repeatRows=1, colWidths=col_widths)
-        style_cmds = [
+
+        table = Table([headers] + data_rows, repeatRows=1, colWidths=col_widths)
+        table.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E8EEF7")),
             ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ("FONTSIZE", (0,0), (-1,0), 10),
+            ("FONTSIZE", (0,0), (-1,0), 8.2),
             ("VALIGN", (0,0), (-1,-1), "TOP"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#FAFAFA")]),
             ("ALIGN", (0,0), (-1,0), "CENTER"),
-            ("ALIGN", (7,1), (8,-1), "RIGHT"),
-            ("ALIGN", (3,1), (3,-1), "CENTER"),
-            ("ALIGN", (4,1), (4,-1), "CENTER"),
-            ("ALIGN", (9,1), (9,-1), "CENTER"),
-        ]
-        table.setStyle(TableStyle(style_cmds)); elems.append(table); elems.append(Spacer(1,8))
+            # monetárias
+            ("ALIGN", (9,1), (9,-1), "RIGHT"),
+            ("ALIGN", (11,1), (11,-1), "RIGHT"),
+            # datas/códigos
+            ("ALIGN", (0,1), (0,-1), "CENTER"),   # Quitação
+            ("ALIGN", (2,1), (2,-1), "CENTER"),   # Atendimento
+            ("ALIGN", (7,1), (7,-1), "CENTER"),   # Data Proc.
+            ("ALIGN", (8,1), (8,-1), "CENTER"),   # Guia AMHPTISS
+            ("ALIGN", (10,1), (10,-1), "CENTER"), # Guia Compl.
+        ]))
+        elems.append(table)
+        elems.append(Spacer(1, 8))
 
+        # Totais
         totals_data = [
-            ["Total AMHP:", _format_currency_br(total_amhp)],
+            ["Total AMHPTISS:", _format_currency_br(total_amhp)],
             ["Total Complemento:", _format_currency_br(total_comp)],
             ["Total Geral:", _format_currency_br(total_geral)],
         ]
         totals_tbl = Table(totals_data, colWidths=[4.5*cm, 3.5*cm], hAlign="RIGHT")
         totals_tbl.setStyle(TableStyle([
-            ("FONTNAME", (0,0), (-1,-1), "Helvetica"), ("FONTSIZE", (0,0), (-1,-1), 10),
-            ("ALIGN", (0,0), (0,-1), "RIGHT"), ("ALIGN", (1,0), (1,-1), "RIGHT"),
+            ("FONTNAME", (0,0), (-1,-1), "Helvetica"),
+            ("FONTSIZE", (0,0), (-1,-1), 10),
+            ("ALIGN", (0,0), (0,-1), "RIGHT"),
+            ("ALIGN", (1,0), (1,-1), "RIGHT"),
         ]))
+        elems.append(totals_tbl)
+
         doc.build(elems)
         pdf_bytes = buf.getvalue(); buf.close()
         return pdf_bytes
-else:
-    def _pdf_quitacoes(*args, **kwargs):
-        raise RuntimeError("ReportLab não está instalado no ambiente.")
+
 
 with tabs[3]:
     tab_header_with_home("📑 Relatórios — Central", btn_key_suffix="relatorios")
@@ -1964,29 +2214,33 @@ with tabs[3]:
     st.markdown("**1) Cirurgias por Status (PDF)**")
     hosp_opts = ["Todos"] + get_hospitais()
     colf1, colf2, colf3 = st.columns(3)
-    with colf1: hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="rel_hosp")
-    with colf2: status_sel = st.selectbox("Status", ["Todos"] + STATUS_OPCOES, index=0, key="rel_status")
+    with colf1:
+        hosp_sel = st.selectbox("Hospital", hosp_opts, index=0, key="rel_hosp")
+    with colf2:
+        status_sel = st.selectbox("Status", ["Todos"] + STATUS_OPCOES, index=0, key="rel_status")
     with colf3:
-        hoje = date.today(); ini_default = hoje.replace(day=1)
+        hoje = date.today()
+        ini_default = hoje.replace(day=1)
         dt_ini = st.date_input("Data inicial", value=ini_default, key="rel_ini")
         dt_fim = st.date_input("Data final", value=hoje, key="rel_fim")
 
     # Base (procedimentos Cirurgia/Proc + merge com internacoes ou view)
     df_rel = _rel_cirurgias_base_df()
-
     if not df_rel.empty:
         df_rel["_data_dt"] = df_rel["data_procedimento"].apply(_pt_date_to_dt)
         mask = (df_rel["_data_dt"].notna()) & (df_rel["_data_dt"] >= dt_ini) & (df_rel["_data_dt"] <= dt_fim)
         df_rel = df_rel[mask].copy()
-        if hosp_sel != "Todos": df_rel = df_rel[df_rel["hospital"] == hosp_sel]
-        if status_sel != "Todos": df_rel = df_rel[df_rel["situacao"] == status_sel]
+        if hosp_sel != "Todos":
+            df_rel = df_rel[df_rel["hospital"] == hosp_sel]
+        if status_sel != "Todos":
+            df_rel = df_rel[df_rel["situacao"] == status_sel]
         df_rel = df_rel.sort_values(by=["_data_dt","hospital","paciente","atendimento"])
         df_rel["data_procedimento"] = df_rel["_data_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
         df_rel = df_rel.drop(columns=["_data_dt"])
 
-    colb1, colb2 = st.columns(2)
-    with colb1:
-        if st.button("Gerar PDF", type="primary"):
+    colc1, colc2 = st.columns(2)
+    with colc1:
+        if st.button("Gerar PDF (Cirurgias por Status)", key="btn_pdf_cir", type="primary"):
             if df_rel.empty:
                 st.warning("Nenhum registro encontrado para os filtros informados.")
             elif not REPORTLAB_OK:
@@ -2002,19 +2256,27 @@ with tabs[3]:
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 fname = f"relatorio_cirurgias_por_status_{ts}.pdf"
                 st.success(f"Relatório gerado com {len(df_rel)} registro(s).")
-                st.download_button(label="⬇️ Baixar PDF", data=pdf_bytes, file_name=fname,
-                                   mime="application/pdf", use_container_width=True)
-    with colb2:
+                st.download_button(
+                    label="⬇️ Baixar PDF",
+                    data=pdf_bytes,
+                    file_name=fname,
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+    with colc2:
         if not df_rel.empty:
             csv_bytes = df_rel.to_csv(index=False).encode("utf-8-sig")
-            st.download_button("⬇️ Baixar CSV (fallback)", data=csv_bytes,
-                               file_name=f"cirurgias_por_status_{date.today().strftime('%Y%m%d')}.csv",
-                               mime="text/csv")
+            st.download_button(
+                "⬇️ Baixar CSV (fallback)",
+                data=csv_bytes,
+                file_name=f"cirurgias_por_status_{date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
 
     st.divider()
 
-    # 2) Quitações
-    st.markdown("**2) Quitações (PDF)**")
+    # 2) Quitações — PDF / CSV / Excel
+    st.markdown("**2) Quitações (PDF / Excel)**")
     hosp_opts_q = ["Todos"] + get_hospitais()
     colq1, colq2 = st.columns(2)
     with colq1:
@@ -2027,58 +2289,73 @@ with tabs[3]:
 
     # Base de quitações
     df_quit = _rel_quitacoes_base_df()
-
     if not df_quit.empty:
+        # Período da QUITAÇÃO
         df_quit["_quit_dt"] = df_quit["quitacao_data"].apply(_pt_date_to_dt)
         mask_q = (df_quit["_quit_dt"].notna()) & (df_quit["_quit_dt"] >= dt_ini_q) & (df_quit["_quit_dt"] <= dt_fim_q)
         df_quit = df_quit[mask_q].copy()
+
+        # Filtro por hospital
         if hosp_sel_q != "Todos":
             df_quit = df_quit[df_quit["hospital"] == hosp_sel_q]
 
-        df_quit = df_quit.sort_values(by=["_quit_dt","convenio","paciente"])
-        df_quit["data_procedimento"] = df_quit["data_procedimento"].apply(
-            lambda s: _pt_date_to_dt(s).strftime("%d/%m/%Y") if pd.notna(_pt_date_to_dt(s)) else (s or "")
-        )
-        df_quit["quitacao_data"] = df_quit["_quit_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
-        df_quit = df_quit.drop(columns=["_quit_dt"])
+        # Normalizações (sem ".0") e datas
+        for col in ["quitacao_guia_amhptiss", "quitacao_guia_complemento", "aviso"]:
+            if col in df_quit.columns:
+                df_quit[col] = df_quit[col].apply(_fmt_id_str)
 
+        def _fmt_dt_pt(s):
+            d = _pt_date_to_dt(s)
+            return d.strftime("%d/%m/%Y") if isinstance(d, (date, datetime)) and not pd.isna(d) else (str(s) or "")
+
+        df_quit["data_procedimento"] = df_quit["data_procedimento"].apply(_fmt_dt_pt)
+        df_quit["quitacao_data"] = df_quit["_quit_dt"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "")
+        df_quit = df_quit.drop(columns=["_quit_dt"]).fillna("")
+
+        # Garante colunas do PDF/Excel (mesmo layout do PDF)
         cols_pdf = [
-            "convenio", "paciente", "profissional", "data_procedimento", "atendimento",
-            "quitacao_guia_amhptiss", "quitacao_guia_complemento",
-            "quitacao_valor_amhptiss", "quitacao_valor_complemento",
+            "hospital","atendimento","convenio","paciente","profissional","grau_participacao",
+            "data_procedimento",
+            "quitacao_guia_amhptiss","quitacao_guia_complemento",
+            "quitacao_valor_amhptiss","quitacao_valor_complemento",
             "quitacao_data"
         ]
         for c in cols_pdf:
-            if c not in df_quit.columns: df_quit[c] = ""
-        df_quit = df_quit[cols_pdf]
+            if c not in df_quit.columns:
+                df_quit[c] = ""
+
+        # Ordenação
+        df_quit = df_quit.sort_values(
+            by=["quitacao_data","hospital","convenio","paciente","profissional","data_procedimento"]
+        ).reset_index(drop=True)
 
     colqb1, colqb2 = st.columns(2)
     with colqb1:
-        if st.button("Gerar PDF (Quitações)", type="primary"):
+        if st.button("Gerar PDF (Quitações)", type="primary", key="btn_pdf_quit"):
             if df_quit.empty:
                 st.warning("Nenhum registro de quitação encontrado para os filtros informados.")
+            elif not REPORTLAB_OK:
+                st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
             else:
-                if not REPORTLAB_OK:
-                    st.error("A biblioteca 'reportlab' não está instalada no ambiente.")
-                else:
-                    filtros_q = {
-                        "ini": dt_ini_q.strftime("%d/%m/%Y"),
-                        "fim": dt_fim_q.strftime("%d/%m/%Y"),
-                        "hospital": hosp_sel_q,
-                    }
-                    pdf_bytes_q = _pdf_quitacoes(df_quit, filtros_q)
-                    ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
-                    st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
-                    st.download_button(
-                        label="⬇️ Baixar PDF (Quitações)",
-                        data=pdf_bytes_q,
-                        file_name=fname_q,
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
+                filtros_q = {
+                    "ini": dt_ini_q.strftime("%d/%m/%Y"),
+                    "fim": dt_fim_q.strftime("%d/%m/%Y"),
+                    "hospital": hosp_sel_q,
+                }
+                pdf_bytes_q = _pdf_quitacoes_colunas_fixas(df_quit, filtros_q)
+                ts_q = datetime.now().strftime("%Y%m%d_%H%M%S")
+                fname_q = f"relatorio_quitacoes_{ts_q}.pdf"
+                st.success(f"Relatório de Quitações gerado com {len(df_quit)} registro(s).")
+                st.download_button(
+                    label="⬇️ Baixar PDF (Quitações)",
+                    data=pdf_bytes_q,
+                    file_name=fname_q,
+                    mime="application/pdf",
+                    use_container_width=True
+                )
     with colqb2:
         if not df_quit.empty:
+            # CSV (base completa)
             csv_quit = df_quit.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
                 "⬇️ Baixar CSV (Quitações)",
@@ -2087,6 +2364,16 @@ with tabs[3]:
                 mime="text/csv",
             )
 
+            # Excel (mesmo layout do PDF — sem Aviso/Situação)
+            xlsx_bytes = _excel_quitacoes_colunas_fixas(df_quit)
+            st.download_button(
+                "⬇️ Baixar Excel (layout do PDF)",
+                data=xlsx_bytes,
+                file_name=f"quitacoes_{date.today().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+            
 # ============================================================
 # 💼 4) QUITAÇÃO (edição em lote)
 # ============================================================
@@ -2386,7 +2673,10 @@ with tabs[5]:
     except APIError as e:
         _sb_debug_error(e, "Falha no resumo por convênio.")
 
+
+
 # ---- Troca de aba programática ----
 if st.session_state.get("goto_tab_label"):
     _switch_to_tab_by_label(st.session_state["goto_tab_label"])
     st.session_state["goto_tab_label"] = None
+
