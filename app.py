@@ -1424,16 +1424,47 @@ with tabs[1]:
         registros = parse_tiss_original(csv_text)
         st.success(f"{len(registros)} registros interpretados!")
     
-        # ========== NOVO: agrupar por (atendimento, data) ==========
+        # ========== NOVO: agrupar por (atendimento, data) ==========        
         from collections import defaultdict
+        
         grupos_by_par = defaultdict(list)
         for r in registros:
             att = r.get("atendimento")
-            dt  = r.get("data")
+            dt_raw = r.get("data")
+            # Normaliza a data para 'dd/mm/aaaa' SEM espaços ocultos
+            dt = _to_ddmmyyyy(dt_raw)
+            if dt:
+                dt = dt.replace('\xa0', ' ').strip()
             if att and dt:
-                grupos_by_par[(att, dt)].append(r)
-    
-        pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
+                grupos_by_par[(att, dt)]..append(r)
+
+        
+        # ==== DEBUG: profissionais por dia de um atendimento (para verificar 10/11) ====
+        with st.expander("🧪 Debug: profissionais por dia (arquivo)"):
+            att_dbg = st.text_input("Atendimento para inspecionar", value="0007074906", key="dbg_att")
+            if att_dbg:
+                linhas = []
+                for (att, dt), lst in grupos_by_par.items():
+                    if str(att) == str(att_dbg):
+                        profs = sorted({ (it.get("profissional") or "").replace('\xa0', ' ').strip() for it in lst if it.get("profissional") })
+                        linhas.append({
+                            "data": dt,
+                            "profs_no_dia": ", ".join([p for p in profs if p]) or "—",
+                            "qtd_registros_no_dia": len(lst)
+                        })
+                if not linhas:
+                    st.info("Nenhum par encontrado para esse atendimento no arquivo.")
+                else:
+                    df_dbg = pd.DataFrame(linhas).sort_values("data")
+                    st.dataframe(df_dbg, use_container_width=True, hide_index=True)
+
+        
+        # OBS: pares originais (sem filtro) — só para KPI
+        pares_orig = sorted(grupos_by_par.keys())
+        
+        # Base completa de pares (garante que exista ANTES de usar import_all)
+        pares_todos = pares_orig[:]  # ou: sorted(grupos_by_par.keys())
+
         # OBS: pares originais (sem filtro) — só para KPI
         pares_orig = sorted(grupos_by_par.keys())
     
@@ -1476,28 +1507,25 @@ with tabs[1]:
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
         
         # ---------- NORMALIZAÇÃO: definir ANTES de decidir os pares ----------
+        
         def _norm_pro(s: str) -> str:
-            s = (s or '').replace('\xa0', ' ').strip()   # NBSP -> espaço, tira bordas
-            s = re.sub(r'\s+', ' ', s)                   # colapsa múltiplos espaços
-            return s.upper()                             # compara em caixa alta
+            s = (s or '').replace('\xa0', ' ').strip()  # NBSP -> espaço comum
+            s = re.sub(r'\s+', ' ', s)                  # colapsa múltiplos espaços
+            return s.upper()
         
-        # Set normalizado para comparação
+        always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
+        final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
         final_pros_norm = {_norm_pro(p) for p in final_pros}
-        # --------------------------------------------------------------------
         
-        # ====== base de pares disponíveis (atendimento, data) ======
-        # >>> IMPORTANTE: defina 'pares_todos' ANTES de usar 'import_all'
-        pares_todos = sorted(grupos_by_par.keys())
-        
-        # ====== seleção de pares (atendimento, data) por “qualquer participação” ======
+        # ====== seleção de pares (entra se QUALQUER linha do dia tiver o médico selecionado) ======
         if import_all:
             pares = pares_todos[:]  # todos os dias de todos os atendimentos
         else:
             pares = sorted([
                 par for par, lst in grupos_by_par.items()
-                # compara com nome normalizado nas duas pontas
                 if any(_norm_pro(it.get('profissional')) in final_pros_norm for it in lst)
             ])
+
         
         st.markdown(
             f"<div>🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
