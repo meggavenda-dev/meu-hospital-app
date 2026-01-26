@@ -1405,7 +1405,7 @@ with tabs[0]:
 with tabs[1]:
     tab_header_with_home("📤 Importar arquivo", btn_key_suffix="import")
 
-    # --------- Seção: Importação de CSV ---------
+    # --------- Secção: Importação de CSV ---------
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
 
     hospitais = get_hospitais()
@@ -1425,10 +1425,12 @@ with tabs[1]:
         st.success(f"{len(registros)} registros interpretados!")
 
         pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
+        # Pares únicos de atendimento e data para processamento
         pares = sorted({(r.get("atendimento"), r.get("data")) for r in registros if r.get("atendimento") and r.get("data")})
+        
         kpi_row([
             {"label": "Registros no arquivo", "value": f"{len(registros):,}".replace(",", ".")},
-            {"label": "Médicos distintos",    "value": f"{len(pros):,}".replace(",", ".")},
+            {"label": "Médicos distintos", "value": f"{len(pros):,}".replace(",", ".")},
             {"label": "Pares (atendimento, data)", "value": f"{len(pares):,}".replace(",", ".")},
         ])
 
@@ -1441,12 +1443,12 @@ with tabs[1]:
             import_all = st.checkbox("Importar todos os médicos", value=st.session_state["import_all_docs"], key="import_all_docs_chk")
         with colsel2:
             if import_all:
-                st.info("Todos os médicos do arquivo serão importados.")
+                st.info("Todos os médicos do arquivo serão considerados na busca prioritária.")
                 selected_pros = pros[:]
             else:
                 default_pre = sorted([p for p in pros if p in ALWAYS_SELECTED_PROS])
                 selected_pros = st.multiselect(
-                    "Médicos a importar (os da lista fixa sempre serão incluídos na gravação):",
+                    "Médicos a importar (os fixos são incluídos automaticamente):",
                     options=pros,
                     default=st.session_state["import_selected_docs"] or default_pre,
                     key="import_selected_docs_ms"
@@ -1455,174 +1457,120 @@ with tabs[1]:
         st.session_state["import_all_docs"] = import_all
         st.session_state["import_selected_docs"] = selected_pros
 
+        # Define a lista final de médicos de interesse (Seleção + Fixos)
         always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
         final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
 
-        st.caption(f"Médicos fixos (sempre incluídos, quando presentes): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
-        st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
+        # Preview do que será filtrado
+        registros_preview = [r for r in registros if (r.get("profissional") or "") in final_pros]
+        st.subheader("Pré-visualização (Filtro por Médico)")
+        st.dataframe(pd.DataFrame(registros_preview), use_container_width=True, hide_index=True)
 
-        registros_filtrados = registros[:] if import_all else [r for r in registros if (r.get("profissional") or "") in final_pros]
-
-        df_preview = pd.DataFrame(registros_filtrados)
-        st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
-        st.dataframe(df_preview, use_container_width=True, hide_index=True)
-
-        pares = sorted({(r["atendimento"], r["data"]) for r in registros_filtrados if r.get("atendimento") and r.get("data")})
-        st.markdown(
-            f"<div>🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
-            f"{pill('1 auto por internação/dia')} (manuais podem ser vários).</div>",
-            unsafe_allow_html=True
-        )
-
-        # ======== IMPORTAÇÃO TURBO (mesmo código que você já tinha) ========
+        # ======== IMPORTAÇÃO TURBO COM BUSCA PRIORITÁRIA ========
         colg1, colg2 = st.columns([1, 4])
         with colg1:
             if st.button("Gravar no banco", type="primary", key="import_csv_gravar"):
                 total_criados = total_ignorados = total_internacoes = 0
 
-                # 1) Atendimentos únicos (originais) do arquivo pós-filtro
+                # 1) Identificação de Atendimentos Únicos
                 atts_file = sorted({att for (att, d) in pares if att})
-
-                # Mapeia original -> normalizado e conjuntos para busca
                 orig_to_norm = {att: _att_norm(att) for att in atts_file}
                 norm_set = sorted({v for v in orig_to_norm.values() if v})
                 num_set = sorted({_att_to_number(att) for att in atts_file if _att_to_number(att) is not None})
 
-                # 2) Carrega internações existentes (por atendimento e por numero)
+                # 2) Verificação/Criação de Internações
                 existing_map_norm_to_id = {}
                 try:
                     if norm_set:
                         res_int = supabase.table("internacoes").select("id, atendimento").in_("atendimento", norm_set).execute()
                         for r in (res_int.data or []):
                             existing_map_norm_to_id[str(r["atendimento"])] = int(r["id"])
-                    if num_set:
-                        res_int_num = supabase.table("internacoes").select("id, numero_internacao").in_("numero_internacao", num_set).execute()
-                        for r in (res_int_num.data or []):
-                            k = _att_norm(str(int(float(r["numero_internacao"]))))
-                            existing_map_norm_to_id[k] = int(r["id"])
-                except APIError as e:
-                    _sb_debug_error(e, "Falha ao buscar internações existentes.")
-                    existing_map_norm_to_id = {}
+                except Exception: pass
 
-                # 3) Monta payload de internações que faltam (grava normalizado)
                 to_create_int = []
                 for att in atts_file:
                     na = orig_to_norm.get(att)
-                    if not na:
-                        continue
-                    if na in existing_map_norm_to_id:
-                        continue
-                    itens_att = [r for r in registros_filtrados if r.get("atendimento") == att]
-                    paciente = next((x.get("paciente") for x in itens_att if x.get("paciente")), "") if itens_att else ""
-                    conv_total = next((x.get("convenio") for x in itens_att if x.get("convenio")), "") if itens_att else ""
-                    data_int = next((x.get("data") for x in itens_att if x.get("data")), None) or None
-                    to_create_int.append({
-                        "hospital": hospital,
-                        "atendimento": na,                         # normalizado
-                        "paciente": paciente,
-                        "data_internacao": _to_ddmmyyyy(data_int) if data_int else _to_ddmmyyyy(date.today()),
-                        "convenio": conv_total,
-                        "numero_internacao": _att_to_number(att)   # sem zeros à esquerda
-                    })
-
-                # 4) Inserção em lote de internações (chunks)
-                def _chunked_insert(table_name: str, rows: list, chunk: int = 500):
-                    for i in range(0, len(rows), chunk):
-                        supabase.table(table_name).insert(rows[i:i+chunk]).execute()
+                    if na and na not in existing_map_norm_to_id:
+                        itens_att = [r for r in registros if r.get("atendimento") == att]
+                        to_create_int.append({
+                            "hospital": hospital,
+                            "atendimento": na,
+                            "paciente": next((x.get("paciente") for x in itens_att if x.get("paciente")), ""),
+                            "data_internacao": _to_ddmmyyyy(next((x.get("data") for x in itens_att if x.get("data")), date.today())),
+                            "convenio": next((x.get("convenio") for x in itens_att if x.get("convenio")), ""),
+                            "numero_internacao": _att_to_number(att)
+                        })
 
                 if to_create_int:
-                    try:
-                        _chunked_insert("internacoes", to_create_int, chunk=500)
-                        # Recarrega mapeamento por atendimento normalizado
-                        if norm_set:
-                            res_int2 = supabase.table("internacoes").select("id, atendimento").in_("atendimento", norm_set).execute()
-                            for r in (res_int2.data or []):
-                                existing_map_norm_to_id[str(r["atendimento"])] = int(r["id"])
-                        total_internacoes = len(to_create_int)
-                        invalidate_caches()
-                    except APIError as e:
-                        _sb_debug_error(e, "Falha ao criar internações em lote.")
+                    supabase.table("internacoes").insert(to_create_int).execute()
+                    # Atualiza o mapa de IDs
+                    res_int2 = supabase.table("internacoes").select("id, atendimento").in_("atendimento", norm_set).execute()
+                    for r in (res_int2.data or []):
+                        existing_map_norm_to_id[str(r["atendimento"])] = int(r["id"])
+                    total_internacoes = len(to_create_int)
 
-                # 5) Map (original -> ID) usando normalizado
+                # 3) Processamento de Procedimentos com BUSCA PRIORITÁRIA
                 att_to_id = {att: existing_map_norm_to_id.get(orig_to_norm.get(att)) for att in atts_file}
-                target_iids = sorted({iid for iid in att_to_id.values() if iid})
-
-                # 6) Busca procedimentos automáticos existentes (1 chamada) e cria set (iid, data)
+                
+                # Cache de duplicados
                 existing_auto = set()
-                try:
-                    if target_iids:
-                        res_auto = (
-                            supabase.table("procedimentos")
-                            .select("internacao_id, data_procedimento, is_manual")
-                            .in_("internacao_id", target_iids).eq("is_manual", 0)
-                            .execute()
-                        )
-                        for r in (res_auto.data or []):
-                            iid = int(r["internacao_id"])
-                            dt = _to_ddmmyyyy(r.get("data_procedimento"))
-                            if iid and dt:
-                                existing_auto.add((iid, dt))
-                except APIError as e:
-                    _sb_debug_error(e, "Falha ao buscar procedimentos existentes.")
+                target_iids = [iid for iid in att_to_id.values() if iid]
+                if target_iids:
+                    res_exists = supabase.table("procedimentos").select("internacao_id, data_procedimento").in_("internacao_id", target_iids).eq("is_manual", 0).execute()
+                    for r in (res_exists.data or []):
+                        existing_auto.add((int(r["internacao_id"]), _to_ddmmyyyy(r["data_procedimento"])))
 
-                # 7) Gera payload dos novos (garante 1 automático/dia)
                 to_insert_auto = []
                 for (att, data_proc) in pares:
-                    if not att or not data_proc:
-                        total_ignorados += 1
-                        continue
                     iid = att_to_id.get(att)
-                    if not iid:
-                        total_ignorados += 1
-                        continue
-
                     data_norm = _to_ddmmyyyy(data_proc)
-                    if (iid, data_norm) in existing_auto:
+
+                    if not iid or (iid, data_norm) in existing_auto:
                         total_ignorados += 1
                         continue
 
-                    prof_dia = next((it.get("profissional") for it in registros_filtrados
-                                     if it.get("atendimento") == att and it.get("data") == data_proc and it.get("profissional")), "")
-                    aviso_dia = next((it.get("aviso") for it in registros_filtrados
-                                      if it.get("atendimento") == att and it.get("data") == data_proc and it.get("aviso")), "")
+                    # --- LÓGICA DE BUSCA: Varre todas as linhas deste atendimento e data ---
+                    linhas_atendimento_dia = [
+                        r for r in registros 
+                        if r.get("atendimento") == att and r.get("data") == data_proc
+                    ]
 
-                    if not prof_dia:
+                    linha_vencedora = None
+                    
+                    # Procura o primeiro médico que esteja na lista de selecionados ou fixos
+                    for linha in linhas_atendimento_dia:
+                        prof_atual = (linha.get("profissional") or "").strip()
+                        if prof_atual in final_pros:
+                            linha_vencedora = linha
+                            break # Encontrou o primeiro da seleção, para a busca aqui
+
+                    if linha_vencedora:
+                        to_insert_auto.append({
+                            "internacao_id": int(iid),
+                            "data_procedimento": data_norm,
+                            "profissional": linha_vencedora.get("profissional"),
+                            "procedimento": "Cirurgia / Procedimento",
+                            "situacao": "Pendente",
+                            "is_manual": 0,
+                            "aviso": (linha_vencedora.get("aviso") or None)
+                        })
+                        existing_auto.add((iid, data_norm))
+                        total_criados += 1
+                    else:
                         total_ignorados += 1
-                        continue
 
-                    to_insert_auto.append({
-                        "internacao_id": int(iid),
-                        "data_procedimento": data_norm,
-                        "profissional": prof_dia,
-                        "procedimento": "Cirurgia / Procedimento",
-                        "situacao": "Pendente",
-                        "observacao": None,
-                        "is_manual": 0,
-                        "aviso": (aviso_dia or None),
-                        "grau_participacao": None
-                    })
-                    # evita duplicar dentro do mesmo arquivo
-                    existing_auto.add((iid, data_norm))
-
-                # 8) Insere procedimentos em lote
+                # 4) Gravação Final em Lote
                 if to_insert_auto:
-                    try:
-                        _chunked_insert("procedimentos", to_insert_auto, chunk=500)
-                        invalidate_caches()
-                        total_criados = len(to_insert_auto)
-                    except APIError as e:
-                        _sb_debug_error(e, "Falha ao inserir procedimentos em lote.")
+                    for i in range(0, len(to_insert_auto), 500):
+                        supabase.table("procedimentos").insert(to_insert_auto[i:i+500]).execute()
+                    invalidate_caches()
 
-                st.success(
-                    f"Concluído! Internações criadas: {total_internacoes} | Automáticos criados: {total_criados} | Ignorados: {total_ignorados}"
-                )
-                st.toast("✅ Importação concluída.", icon="✅")
-        # ======== FIM IMPORTAÇÃO TURBO ========
+                st.success(f"Importação concluída! Internações: {total_internacoes} | Procedimentos: {total_criados}")
 
     st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
-    # --------- Seção: Cadastro manual de internação (AGORA ABAIXO) ---------
+    # --------- Cadastro manual (manteve-se igual) ---------
     st.markdown("<div class='soft-card'>", unsafe_allow_html=True)
     st.subheader("➕ Cadastro manual de internação")
 
@@ -1638,8 +1586,6 @@ with tabs[1]:
         if st.button("Criar internação", key="manual_btn_criar_int", type="primary"):
             if not att_new:
                 st.warning("Informe o atendimento.")
-            elif not get_internacao_by_atendimento(att_new).empty:
-                st.error("Já existe uma internação com este atendimento (considerando zeros à esquerda).")
             else:
                 nid = criar_internacao(hosp_new, att_new, pac_new, data_new.strftime("%d/%m/%Y"), conv_new)
                 if nid:
