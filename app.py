@@ -14,9 +14,6 @@ import json
 import re
 import streamlit.components.v1 as components
 from io import BytesIO
-from collections import defaultdict
-import unicodedata
-import copy
 
 # ==== Supabase ====
 from supabase import create_client, Client
@@ -262,36 +259,7 @@ def _att_to_number(v):
 # ============================================================
 # Helper de merge tolerante (evita KeyError com DF/coluna vazios)
 # ============================================================
-def norm(txt):
-    return unicodedata.normalize("NFKD", txt or "").encode("ascii", "ignore").decode().upper().strip()
 
-def aplicar_regra_medicos(registros, medicos_escolhidos):
-    grupos = defaultdict(list)
-
-    for r in registros:
-        grupos[(r["atendimento"], r["data"])].append(r)
-
-    novos = []
-
-    for itens in grupos.values():
-        novos.extend(itens)
-
-        if not itens:
-            continue
-
-        base = norm(itens[0].get("profissional"))
-        profs_dia = {norm(i.get("profissional")) for i in itens if i.get("profissional")}
-
-        for medico in medicos_escolhidos:
-            m = norm(medico)
-            if m != base and m in profs_dia:
-                novo = copy.deepcopy(itens[0])
-                novo["profissional"] = medico
-                novo["procedimento"] += " - MÉDICO ADICIONAL"
-                novo["observacao"] = "Criado por regra de médico selecionado"
-                novos.append(novo)
-
-    return novos
 # ============================
 # BACKUP / RESTORE — Helpers
 # ============================
@@ -1453,35 +1421,7 @@ with tabs[1]:
         except UnicodeDecodeError:
             csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
 
-        # 1️⃣ Leitura e parse do CSV
         registros = parse_tiss_original(csv_text)
-
-        # 2️⃣ (opcional) outras normalizações que você já faz
-        # registros = tratar_algo(registros)
-
-        # 3️⃣ AQUI: lista de médicos disponíveis
-        medicos_disponiveis = sorted({
-            r.get("profissional")
-            for r in registros
-            if r.get("profissional")
-        })
-
-        # 4️⃣ AQUI: seletor na interface
-        MEDICOS_ESCOLHIDOS = st.multiselect(
-            "Médicos para criar procedimento adicional",
-            options=medicos_disponiveis
-        )
-
-        # 5️⃣ Só depois disso vem o botão
-        if st.button("Gravar no banco", type="primary"):
-            registros = aplicar_regra_medicos(
-                registros,
-                MEDICOS_ESCOLHIDOS
-            )
-
-
-        registros_filtrados = filtrar_registros(registros)
-        pares = gerar_pares(registros_filtrados)
         st.success(f"{len(registros)} registros interpretados!")
 
         pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
@@ -1678,7 +1618,7 @@ with tabs[1]:
                 )
                 st.toast("✅ Importação concluída.", icon="✅")
         # ======== FIM IMPORTAÇÃO TURBO ========
-    
+
     st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
