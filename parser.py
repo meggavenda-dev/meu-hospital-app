@@ -1,75 +1,90 @@
-def parse_tiss_original(csv_text):
-    import re, csv, io
+import re
+import csv
+import io
 
+def parse_tiss_original(csv_text):
     def clean(s: str) -> str:
-        # Remove caracteres nulos e espaços extras
         return (s or "").replace("\x00", "").strip().strip('"').strip()
 
     f = io.StringIO(csv_text)
+    # Usamos o reader de CSV para tratar as aspas corretamente
     reader = csv.reader(f, delimiter=",", quotechar='"')
     
     registros = []
     data_atual = ""
-    # Armazena os dados da "Linha Mestre" para aplicar às "Linhas Filhas"
-    ctx = {"atendimento": "", "paciente": "", "aviso": "", "convenio": ""}
+    # Contexto do bloco de atendimento (Master -> Child)
+    ctx = {"atendimento": "", "paciente": "", "aviso": "", "convenio": "", "time_idx": -1}
 
     for cols in reader:
         cols = [clean(c) for c in cols]
-        if not any(cols): continue # Pula linhas totalmente vazias
+        if not any(cols): continue
         
         line_txt = " ".join(cols)
 
-        # 1. Identifica a Data (Ex: 12/11/2025)
+        # 1. Detecta Mudança de Data
         if "Data de Realiza" in line_txt:
-            for c in cols:
-                if re.fullmatch(r"\d{2}/\d{2}/\d{4}", c):
-                    data_atual = c
-                    break
-            continue
-
-        # Pula cabeçalhos do relatório
-        if "Atendimento" in line_txt and "Paciente" in line_txt:
+            match = re.search(r'(\d{2}/\d{2}/\d{4})', line_txt)
+            if match:
+                data_atual = match.group(1)
             continue
 
         # 2. Identifica Linha-Mestre (Início de um atendimento)
-        # O número do atendimento está sempre no índice 1 (segunda coluna)
+        # O Atendimento está na segunda coluna (índice 1)
         if len(cols) > 1 and re.fullmatch(r"\d{7,12}", cols[1]):
-            ctx = {
-                "atendimento": cols[1],
-                "paciente": cols[2], # Se estiver vazio, o contexto guarda vazio (mas o atendimento existe!)
-                "aviso": cols[3] if len(cols) > 3 else "",
-                "convenio": cols[7] if len(cols) > 7 else ""
-            }
+            atendimento = cols[1]
+            paciente = cols[2] if len(cols) > 2 else ""
             
-            # Se a linha mestre já tiver um profissional (índice 8)
-            prof = cols[8] if len(cols) > 8 else ""
-            if prof and data_atual:
-                registros.append({
-                    "atendimento": ctx["atendimento"],
-                    "paciente": ctx["paciente"],
-                    "data": data_atual,
-                    "aviso": ctx["aviso"],
-                    "procedimento": cols[6] if len(cols) > 6 else "",
-                    "convenio": ctx["convenio"],
-                    "profissional": prof,
-                    "hora_ini": cols[4] if len(cols) > 4 else "",
-                    "hora_fim": cols[5] if len(cols) > 5 else ""
-                })
+            # Localiza colunas de tempo para ancorar os dados (índice T)
+            times = [idx for idx, val in enumerate(cols) if re.fullmatch(r"\d{2}:\d{2}", val)]
+            
+            if times:
+                t_idx = times[-1] # Âncora no horário de fim
+                # Regra de Âncora: T+1=Procedimento, T+2=Convênio, T+3=Profissional
+                procedimento = cols[t_idx+1] if len(cols) > t_idx+1 else ""
+                convenio = cols[t_idx+2] if len(cols) > t_idx+2 else ""
+                profissional = cols[t_idx+3] if len(cols) > t_idx+3 else ""
+                
+                # Aviso: procura o número de 6 dígitos antes do primeiro horário
+                aviso = ""
+                for i in range(times[0]-1, 0, -1):
+                    if re.fullmatch(r"\d{5,8}", cols[i]):
+                        aviso = cols[i]
+                        break
+                
+                # Salva contexto para as linhas "filhas" que vierem abaixo
+                ctx = {
+                    "atendimento": atendimento, "paciente": paciente,
+                    "aviso": aviso, "convenio": convenio, "time_idx": t_idx
+                }
+                
+                if profissional and profissional.lower() not in ["", "prestador"]:
+                    registros.append({
+                        "atendimento": atendimento, "paciente": paciente,
+                        "data": data_atual, "aviso": aviso,
+                        "procedimento": procedimento, "convenio": convenio,
+                        "profissional": profissional,
+                        "hora_ini": cols[times[0]], "hora_fim": cols[t_idx]
+                    })
             continue
 
-        # 3. Identifica Linha-Filha (Procedimentos adicionais ou outros médicos)
-        # Atendimento (index 1) é vazio, mas Profissional (index 8) existe
-        if len(cols) > 8 and not cols[1] and cols[8] and ctx["atendimento"]:
-            registros.append({
-                "atendimento": ctx["atendimento"],
-                "paciente": ctx["paciente"],
-                "data": data_atual,
-                "aviso": ctx["aviso"],
-                "procedimento": cols[6] if len(cols) > 6 else "",
-                "convenio": cols[7] if len(cols) > 7 else ctx["convenio"],
-                "profissional": cols[8],
-                "hora_ini": "",
-                "hora_fim": ""
-            })
+        # 3. Identifica Linha-Filha (Procedimentos ou Médicos auxiliares)
+        # Não tem atendimento no índice 1, mas o bloco anterior ainda está aberto
+        if ctx["atendimento"] and ctx["time_idx"] != -1 and not cols[1]:
+            if "total de" in line_txt.lower() or "data de" in line_txt.lower():
+                continue
+            
+            t_idx = ctx["time_idx"]
+            procedimento = cols[t_idx+1] if len(cols) > t_idx+1 else ""
+            # Convênio costuma vir vazio na linha filha, herdamos do contexto
+            convenio = cols[t_idx+2] if (len(cols) > t_idx+2 and cols[t_idx+2]) else ctx["convenio"]
+            profissional = cols[t_idx+3] if len(cols) > t_idx+3 else ""
+            
+            if profissional and profissional.lower() not in ["", "prestador"]:
+                registros.append({
+                    "atendimento": ctx["atendimento"], "paciente": ctx["paciente"],
+                    "data": data_atual, "aviso": ctx["aviso"],
+                    "procedimento": procedimento, "convenio": convenio,
+                    "profissional": profissional, "hora_ini": "", "hora_fim": ""
+                })
 
     return registros
