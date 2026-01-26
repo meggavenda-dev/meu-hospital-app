@@ -1426,17 +1426,32 @@ with tabs[1]:
     
         # ========== NOVO: agrupar por (atendimento, data) ==========        
         from collections import defaultdict
-        
+                
         grupos_by_par = defaultdict(list)
         for r in registros:
             att = r.get("atendimento")
             dt_raw = r.get("data")
-            # Normaliza a data para 'dd/mm/aaaa' SEM espaços ocultos
             dt = _to_ddmmyyyy(dt_raw)
             if dt:
                 dt = dt.replace('\xa0', ' ').strip()
             if att and dt:
                 grupos_by_par[(att, dt)].append(r)
+        
+        pares_orig  = sorted(grupos_by_par.keys())
+        pares_todos = pares_orig[:]
+
+        
+        # ---- Lista de profissionais distintos (normalizada) ----
+        def _norm_pro_basic(s: str) -> str:
+            s = (s or '').replace('\xa0', ' ').strip()
+            s = re.sub(r'\s+', ' ', s)
+            return s
+        
+        pros = sorted({
+            _norm_pro_basic(r.get("profissional"))
+            for r in registros
+            if r.get("profissional")
+        })
 
         
         # ==== DEBUG: profissionais por dia de um atendimento (para verificar 10/11) ====
