@@ -1,16 +1,4 @@
-
 def parse_tiss_original(csv_text):
-    """
-    Parser robusto para o relatório do Centro Cirúrgico/Hemodinâmica/Obstétrico.
-    - Usa csv.reader para respeitar campos com vírgulas entre aspas.
-    - Linha-mestre: detecta atendimento (7-12 dígitos), acha 'aviso' (número) e
-      logo depois duas horas HH:MM; o campo seguinte é o 'procedimento'.
-    - Convênio/Prestador/Anestesista: preferimos os campos logo após 'procedimento'
-      quando existirem; 'tipo' e 'quarto' são ancorados pelos 2 últimos campos não vazios.
-    - Linha-filha: 10+ vazios à esquerda; herda hora_ini/hora_fim e 'aviso' da mestre.
-    - ***MODIFICAÇÃO: adicionamos `_row_idx` para preservar a ordem real do arquivo.***
-    """
-
     import re, csv, io
 
     def clean(s: str) -> str:
@@ -23,167 +11,81 @@ def parse_tiss_original(csv_text):
         return bool(re.fullmatch(r"\d{3,}", s or ""))
 
     def last_n_nonempty(seq, n):
-        out = []
-        for v in reversed(seq):
-            v2 = clean(v)
-            if v2 != "":
-                out.append(v2)
-                if len(out) == n:
-                    break
+        out = [clean(v) for v in reversed(seq) if clean(v) != ""]
+        out = out[:n]
         out.reverse()
-        if len(out) < n:
-            out = [""] * (n - len(out)) + out
+        if len(out) < n: out = [""] * (n - len(out)) + out
         return out
 
     reader = csv.reader(io.StringIO(csv_text), delimiter=",", quotechar='"')
     registros = []
-
     data_atual = ""
     contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": ""}
-
-    # NOVO: contador global da ordem real
     row_idx = 0
 
     for cols in reader:
         cols = [clean(c) for c in cols]
-        if all(c == "" for c in cols):
-            continue
-
+        if all(c == "" for c in cols): continue
         line_txt = " ".join(cols)
 
-        # DATA DO BLOCO
-        if any("Data de Realização" in c for c in cols):
+        # 1. DATA DO BLOCO (Busca flexível para evitar erro de acentuação)
+        if "Data de Realiza" in line_txt:
             for c in cols:
                 if re.fullmatch(r"\d{2}/\d{2}/\d{4}", c):
                     data_atual = c
                     break
             continue
 
-        # Ignorar cabeçalhos/totais/seções
-        if (
-            ("Hora" in line_txt and "Início" in line_txt)
-            or any(k in line_txt for k in [
-                "Atendimento", "Convênio", "Centro Cirurgico", "HEMODINAMICA", "OBSTETRICO",
-                "Total de Avisos", "Total de Cirurgias", "Total Geral"
-            ])
-        ):
+        # Ignorar cabeçalhos
+        if ("Hora" in line_txt and "Início" in line_txt) or any(k in line_txt for k in ["Atendimento", "Convênio", "Total de Avisos"]):
             continue
 
-        # ---------------------------
-        # LINHA-MESTRE
-        # ---------------------------
-        is_master = (len(cols) >= 2 and re.fullmatch(r"\d{7,12}", cols[1] or ""))
+        # 2. LINHA-MESTRE (Identifica pelo atendimento na col 1)
+        is_master = (len(cols) >= 2 and re.fullmatch(r"\d{7,12}", cols[1]))
         if is_master:
             atendimento = cols[1]
-            paciente    = cols[2] if len(cols) > 2 else ""
-
-            # achar 'aviso' (número) seguido de duas horas
+            paciente = cols[2] if len(cols) > 2 else ""
+            
+            # Localizar aviso e horas
             aviso_idx = None
             for k in range(3, len(cols) - 2):
                 if is_digits(cols[k]) and is_time(cols[k+1]) and is_time(cols[k+2]):
                     aviso_idx = k
                     break
-            if aviso_idx is None:
-                for k in range(3, len(cols)):
-                    if is_time(cols[k]) and k - 1 >= 0 and is_digits(cols[k-1]):
-                        aviso_idx = k - 1
-                        break
-            if aviso_idx is None:
-                continue
-
-            aviso    = cols[aviso_idx]
-            hora_ini = cols[aviso_idx + 1] if aviso_idx + 1 < len(cols) else ""
-            hora_fim = cols[aviso_idx + 2] if aviso_idx + 2 < len(cols) else ""
-            proc_idx = aviso_idx + 3
-            procedimento = cols[proc_idx] if proc_idx < len(cols) else ""
-
-            # ÂNCORA PELA DIREITA
-            tail5 = last_n_nonempty(cols, 5)
-
-            if proc_idx + 1 < len(cols) and cols[proc_idx + 1] != "":
-                conv = cols[proc_idx + 1]
-            else:
-                conv = tail5[0]
-
-            if proc_idx + 2 < len(cols) and cols[proc_idx + 2] != "":
-                prest = cols[proc_idx + 2]
-            else:
-                prest = tail5[1]
-
-            if proc_idx + 3 < len(cols) and cols[proc_idx + 3] != "":
-                anest = cols[proc_idx + 3]
-            else:
-                anest = tail5[2]
-
-            tipo, quarto = tail5[3], tail5[4]
-
-            # atualizar contexto
-            contexto = {
-                "atendimento": atendimento,
-                "paciente": paciente,
-                "hora_ini": hora_ini,
-                "hora_fim": hora_fim,
-                "aviso": aviso
-            }
-
-            # REGISTRO COM _row_idx
-            registros.append({
-                "atendimento": atendimento,
-                "paciente": paciente,
-                "data": data_atual,
-                "aviso": aviso,
-                "procedimento": procedimento,
-                "convenio": conv,
-                "profissional": prest,
-                "anestesista": anest,
-                "tipo": tipo,
-                "quarto": quarto,
-                "hora_ini": hora_ini,
-                "hora_fim": hora_fim,
-                "_row_idx": row_idx
-            })
-            row_idx += 1
-            continue
-
-        # ---------------------------
-        # LINHA-FILHA
-        # ---------------------------
-        first_idx = next((i for i, c in enumerate(cols) if c != ""), None)
-        if first_idx is not None and first_idx >= 10:
-            proc_idx = first_idx
-            procedimento = cols[proc_idx]
-
-            conv  = cols[proc_idx + 1] if proc_idx + 1 < len(cols) else ""
-            prest = cols[proc_idx + 2] if proc_idx + 2 < len(cols) else ""
-            anest = cols[proc_idx + 3] if proc_idx + 3 < len(cols) else ""
-
-            tail2 = last_n_nonempty(cols, 2)
-            if len(tail2) == 2:
-                tipo, quarto = tail2[0], tail2[1]
-            elif len(tail2) == 1:
-                tipo, quarto = "", tail2[0]
-            else:
-                tipo = quarto = ""
-
-            if contexto["atendimento"]:
+            
+            if aviso_idx is not None:
+                aviso = cols[aviso_idx]
+                hora_ini, hora_fim = cols[aviso_idx+1], cols[aviso_idx+2]
+                procedimento = cols[aviso_idx+3] if aviso_idx+3 < len(cols) else ""
+                
+                # Dados de Convênio/Profissional (Âncora pela direita)
+                tail5 = last_n_nonempty(cols, 5)
+                contexto = {"atendimento": atendimento, "paciente": paciente, "hora_ini": hora_ini, "hora_fim": hora_fim, "aviso": aviso}
+                
                 registros.append({
-                    "atendimento": contexto["atendimento"],
-                    "paciente": contexto["paciente"],
-                    "data": data_atual,
-                    "aviso": contexto["aviso"],
-                    "procedimento": procedimento,
-                    "convenio": conv,
-                    "profissional": prest,
-                    "anestesista": anest,
-                    "tipo": tipo,
-                    "quarto": quarto,
-                    "hora_ini": contexto["hora_ini"],
-                    "hora_fim": contexto["hora_fim"],
-                    "_row_idx": row_idx
+                    "atendimento": atendimento, "paciente": paciente, "data": data_atual, "aviso": aviso,
+                    "procedimento": procedimento, "convenio": tail5[0], "profissional": tail5[1],
+                    "anestesista": tail5[2], "tipo": tail5[3], "quarto": tail5[4],
+                    "hora_ini": hora_ini, "hora_fim": hora_fim, "_row_idx": row_idx
                 })
                 row_idx += 1
-            continue
+                continue
 
-        continue
-
+        # 3. LINHA-FILHA (Onde geralmente estão os outros médicos)
+        # Ajustado para aceitar linhas que começam vazias (atendimento oculto)
+        first_idx = next((i for i, c in enumerate(cols) if c != ""), None)
+        if first_idx is not None and first_idx >= 5: # Reduzido de 10 para 5
+            procedimento = cols[first_idx]
+            # No seu arquivo, Profissional costuma estar 2 colunas após o Convênio
+            tail5 = last_n_nonempty(cols, 5)
+            
+            if contexto["atendimento"]:
+                registros.append({
+                    "atendimento": contexto["atendimento"], "paciente": contexto["paciente"], 
+                    "data": data_atual, "aviso": contexto["aviso"],
+                    "procedimento": procedimento, "convenio": tail5[0], "profissional": tail5[1],
+                    "anestesista": tail5[2], "tipo": tail5[3], "quarto": tail5[4],
+                    "hora_ini": contexto["hora_ini"], "hora_fim": contexto["hora_fim"], "_row_idx": row_idx
+                })
+                row_idx += 1
     return registros
