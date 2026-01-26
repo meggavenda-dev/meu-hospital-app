@@ -1436,7 +1436,7 @@ with tabs[1]:
             if dt:
                 dt = dt.replace('\xa0', ' ').strip()
             if att and dt:
-                grupos_by_par[(att, dt)]..append(r)
+                grupos_by_par[(att, dt)].append(r)
 
         
         # ==== DEBUG: profissionais por dia de um atendimento (para verificar 10/11) ====
