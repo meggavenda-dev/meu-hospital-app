@@ -1645,7 +1645,38 @@ with tabs[1]:
         always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
         
         # --- médicos considerados (seleção + lista fixa) ---
+        
+       
         final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
+        
+        # 1) Normaliza fortemente a lista selecionada
+        final_pros_norm = [" ".join(sorted(_norm_tokens(p))) for p in final_pros if p]
+        target_token_sets = [_norm_tokens(p) for p in final_pros_norm]
+        
+        # 2) Pré-computa também versões "flat" (sem acento/pontuação, espaços simples) para substring
+        def _flat_norm(s: str) -> str:
+            s = _strip_accents(s or "").upper()
+            s = re.sub(r"[^A-Z0-9 ]+", " ", s)           # remove pontuação
+            s = re.sub(r"\s+", " ", s).strip()           # colapsa espaços
+            return s
+        
+        selected_flat_names = [_flat_norm(p) for p in final_pros if p]  # para fallback
+        
+        def _participa_prof(it: dict) -> bool:
+            raw = it.get("profissional")
+            if not raw:
+                return False
+            # tokens (preciso)...
+            ts = _norm_tokens(raw)
+            if ts and any(tks.issubset(ts) for tks in target_token_sets):
+                return True
+            # ...fallback por substring normalizada (tolerante a pontuação/acentos)
+            raw_flat = _flat_norm(raw)
+            if raw_flat and any(name and name in raw_flat for name in selected_flat_names):
+                return True
+            return False
+
+
         
         st.caption(f"Médicos fixos (sempre incluídos, quando presentes no par): {', '.join(sorted(ALWAYS_SELECTED_PROS)) or '—'}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
@@ -1690,15 +1721,42 @@ with tabs[1]:
         preview_rows = []
         for par in pares:
             lst = grupos_by_par.get(par, [])           
-            row = None
-            if not import_all:
-                for it in lst:
-                    if _participa_prof(it) and it.get("profissional"):
-                        row = it
-                        break
-            
-            if row is None:
-                row = next((it for it in lst if it.get("profissional")), lst[0] if lst else {})
+           
+        row = None
+        if not import_all:
+            for it in lst:
+                if _participa_prof(it) and it.get("profissional"):
+                    row = it
+                    break
+        
+        # 2) se nenhum selecionado apareceu, pega o primeiro com profissional não vazio
+        if row is None:
+            for it in lst:
+                if it.get("profissional"):
+                    row = it
+                    break
+        
+        # 3) fallback extremo: se ainda não achou, usa a 1ª linha (pode estar quase vazia)
+        if row is None:
+            row = lst[0] if lst else {}
+        
+        # >>> Garante colunas mínimas na prévia (evita DataFrame "empty" sem headers)
+        if row:
+            row = {
+                "atendimento": row.get("atendimento", ""),
+                "data": row.get("data", ""),
+                "paciente": row.get("paciente", ""),
+                "aviso": row.get("aviso", ""),
+                "procedimento": row.get("procedimento", ""),
+                "convenio": row.get("convenio", ""),
+                "profissional": row.get("profissional", ""),
+                "anestesista": row.get("anestesista", ""),
+                "tipo": row.get("tipo", ""),
+                "quarto": row.get("quarto", ""),
+                "hora_ini": row.get("hora_ini", ""),
+                "hora_fim": row.get("hora_fim", ""),
+            }
+
 
         df_preview = pd.DataFrame(preview_rows)
 
@@ -1825,9 +1883,10 @@ with tabs[1]:
                     
                     
                     
+                    
                     lst = grupos_by_par.get((att, data_proc), [])
                     
-                    # 1) Tenta o primeiro "selecionado" que APARECE no arquivo (ordem original)
+                    # 1) primeiro selecionado que APARECE no arquivo (ordem original)
                     prof_dia = ""
                     if not import_all:
                         for it in lst:
@@ -1835,7 +1894,7 @@ with tabs[1]:
                                 prof_dia = it.get("profissional")
                                 break
                     
-                    # 2) Se nenhum selecionado apareceu, usa o primeiro com nome
+                    # 2) se nenhum selecionado apareceu, usa o primeiro com nome
                     if not prof_dia:
                         for it in lst:
                             if it.get("profissional"):
@@ -1843,6 +1902,7 @@ with tabs[1]:
                                 break
                     
                     aviso_dia = next((it.get("aviso") for it in lst if it.get("aviso")), None)
+
 
 
     
