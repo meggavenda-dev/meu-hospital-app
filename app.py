@@ -1566,42 +1566,30 @@ with tabs[1]:
                 except APIError as e:
                     _sb_debug_error(e, "Falha ao buscar procedimentos existentes.")
 
-                # 7) Gera payload dos novos (Busca Prioritária por Médico Selecionado)
+                # 7) Gera payload dos novos (Busca Prioritária)
                 to_insert_auto = []
                 for (att, data_proc) in pares:
-                    if not att or not data_proc:
-                        total_ignorados += 1
-                        continue
-                        
                     iid = att_to_id.get(att)
                     data_norm = _to_ddmmyyyy(data_proc)
 
-                    # Se já existe ou não tem internação, pula
                     if not iid or (iid, data_norm) in existing_auto:
                         total_ignorados += 1
                         continue
 
-                    # --- NOVA LÓGICA DE BUSCA PRIORITÁRIA ---
-                    # Pegamos todas as linhas deste atendimento/data no arquivo para este par específico
-                    linhas_deste_atendimento = [
-                        r for r in registros_filtrados 
-                        if r.get("atendimento") == att and r.get("data") == data_proc
-                    ]
-
-                    linha_vencedora = None
+                    # Busca todas as linhas deste atendimento e data
+                    linhas_dia = [r for r in registros if r.get("atendimento") == att and r.get("data") == data_proc]
                     
-                    # PASSO A: Procurar o primeiro médico que está na sua SELEÇÃO prioritária
-                    for linha in linhas_deste_atendimento:
-                        prof_nome = (linha.get("profissional") or "").strip()
-                        if prof_nome in final_pros:
-                            linha_vencedora = linha
-                            break # Encontrou seu médico! Para a busca aqui.
+                    linha_vencedora = None
+                    # 1º Tentativa: Encontrar um médico da lista selecionada/fixa
+                    for r in linhas_dia:
+                        if (r.get("profissional") or "").strip() in final_pros:
+                            linha_vencedora = r
+                            break
+                    
+                    # 2º Tentativa: Se não achou prioridade mas "Importar todos" está ativo
+                    if not linha_vencedora and import_all and linhas_dia:
+                        linha_vencedora = next((r for r in linhas_dia if r.get("profissional")), None)
 
-                    # PASSO B: Fallback (caso a busca prioritária falhe mas você queira importar o que houver)
-                    if not linha_vencedora and import_all:
-                        linha_vencedora = next((l for l in linhas_deste_atendimento if l.get("profissional")), None)
-
-                    # 8) Se encontrou um médico válido na varredura, prepara a inserção
                     if linha_vencedora:
                         to_insert_auto.append({
                             "internacao_id": int(iid),
@@ -1609,13 +1597,11 @@ with tabs[1]:
                             "profissional": linha_vencedora.get("profissional"),
                             "procedimento": "Cirurgia / Procedimento",
                             "situacao": "Pendente",
-                            "observacao": None,
                             "is_manual": 0,
-                            "aviso": (linha_vencedora.get("aviso") or None),
-                            "grau_participacao": None
+                            "aviso": (linha_vencedora.get("aviso") or None)
                         })
-                        # Marca como processado para evitar duplicidade no mesmo arquivo
                         existing_auto.add((iid, data_norm))
+                        total_criados += 1
                     else:
                         total_ignorados += 1
 
