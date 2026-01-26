@@ -260,35 +260,6 @@ def _att_to_number(v):
 # Helper de merge tolerante (evita KeyError com DF/coluna vazios)
 # ============================================================
 
-
-def _pick_prof_e_aviso_para(att: str, data_proc: str) -> tuple[str, str]:
-    """
-    Retorna (profissional_escolhido, aviso_escolhido) para o par (att, data_proc)
-    obedecendo as regras:
-      - import_all=True  -> usa o primeiro registro na ordem do arquivo (mestre)
-      - import_all=False -> usa o primeiro registro cujo profissional esteja em final_pros
-    Se não achar profissional aplicável, devolve ("","").
-    """
-    # linhas na ORDEM DO ARQUIVO para esse atendimento/dia
-    linhas = [it for it in registros if it.get("atendimento") == att and it.get("data") == data_proc]
-    if not linhas:
-        return "", ""
-
-    if import_all:
-        # 1º da linha (mestre)
-        chosen = linhas[0]
-        return (chosen.get("profissional") or "").strip(), (chosen.get("aviso") or "").strip()
-
-    # Caso haja seleção de médicos: pega o 1º que pertença à seleção informada
-    sel_set = set(final_pros or [])
-    for it in linhas:
-        p = (it.get("profissional") or "").strip()
-        if p and p in sel_set:
-            return p, (it.get("aviso") or "").strip()
-
-    return "", ""
-
-
 # ============================
 # BACKUP / RESTORE — Helpers
 # ============================
@@ -1490,75 +1461,18 @@ with tabs[1]:
         st.caption(f"Médicos fixos (sempre incluídos, quando presentes): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
 
-
-        
         registros_filtrados = registros[:] if import_all else [r for r in registros if (r.get("profissional") or "") in final_pros]
-
-        
 
         df_preview = pd.DataFrame(registros_filtrados)
         st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
         st.dataframe(df_preview, use_container_width=True, hide_index=True)
 
-        pares = sorted({(r["atendimento"], r["data"]) for r in registros if r.get("atendimento") and r.get("data")})
+        pares = sorted({(r["atendimento"], r["data"]) for r in registros_filtrados if r.get("atendimento") and r.get("data")})
         st.markdown(
             f"<div>🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
             f"{pill('1 auto por internação/dia')} (manuais podem ser vários).</div>",
             unsafe_allow_html=True
         )
-
-        
-        # === DEBUG — focalizado no atendimento '0007074906' e no dia '10/11/2025' ===
-        DEBUG_ATT = "0007074906"
-        DEBUG_DATE = "10/11/2025"
-        
-        def _show_debug_for(att, data_):
-            print("\n" + "="*80)
-            print(f"[DEBUG] Investigando atendimento {att} em {data_}")
-            print("="*80)
-        
-            # 1) Tudo que o parser leu para esse par (ORDEM REAL _row_idx)
-            lin_raw = [r for r in registros if r.get("atendimento")==att and r.get("data")==data_]
-            lin_raw = sorted(lin_raw, key=lambda x: x.get("_row_idx", 10**9))
-            print(f"Total bruto (registros): {len(lin_raw)}")
-            for r in lin_raw[:20]:
-                print(f"  idx={r.get('_row_idx')}  prof={r.get('profissional')!r}  aviso={r.get('aviso')!r}  conv={r.get('convenio')!r}  proc={r.get('procedimento')!r}")
-        
-            # 2) O que sobrou após filtro de médicos (registros_filtrados)
-            lin_fil = [r for r in (registros_filtrados or []) if r.get("atendimento")==att and r.get("data")==data_]
-            lin_fil = sorted(lin_fil, key=lambda x: x.get("_row_idx", 10**9))
-            print(f"Total pós-filtro médicos: {len(lin_fil)}")
-            for r in lin_fil[:20]:
-                print(f"  idx={r.get('_row_idx')}  prof={r.get('profissional')!r}  aviso={r.get('aviso')!r}")
-        
-            # 3) O par (att, data) entrou mesmo em 'pares'?
-            entrou_nos_pares = (att, data_) in set(pares)
-            print(f"Par (att,data) presente em 'pares'? {entrou_nos_pares}")
-        
-            # 4) Mapeamento para Internação (att_to_id)
-            iid = att_to_id.get(att)
-            print(f"internacao_id para {att}: {iid}")
-        
-            # 5) A regra de escolha do médico (se você já adicionou a função pick_profissional_para)
-            try:
-                pdia, avdia = pick_profissional_para(att, data_)
-                print(f"Médico escolhido: {pdia!r}, aviso: {avdia!r}")
-            except Exception as e:
-                print(f"pick_profissional_para não disponível / erro: {e}")
-        
-            # 6) Já existia auto no dia?
-            data_norm = _to_ddmmyyyy(data_)
-            already = (iid, data_norm) in existing_auto if iid and data_norm else False
-            print(f"Já havia 'auto' para (iid={iid}, data={data_norm})? {already}")
-        
-            print("="*80 + "\n")
-        
-        # Execute o debug:
-        try:
-            _show_debug_for(DEBUG_ATT, DEBUG_DATE)
-        except Exception as e:
-            print("[DEBUG] Falha debug:", e)
-
 
         # ======== IMPORTAÇÃO TURBO (mesmo código que você já tinha) ========
         colg1, colg2 = st.columns([1, 4])
@@ -1651,93 +1565,31 @@ with tabs[1]:
                 except APIError as e:
                     _sb_debug_error(e, "Falha ao buscar procedimentos existentes.")
 
-                
-                # ================================================================
-                # 7) Geração dos procedimentos automáticos com a nova lógica
-                # ================================================================
-                
-                def pick_profissional_para(att, data_proc):
-                    """
-                    Decide qual médico usar para (atendimento, data):
-                    
-                    1) Sempre considerar a ordem real do arquivo → via _row_idx
-                    2) Se importar TODOS → sempre o médico mestre (primeiro na linha)
-                    3) Se importar selecionados:
-                          a) Se algum selecionado for o primeiro da linha (mestre) → esse vence
-                          b) Senão → pega o primeiro selecionado que aparece abaixo no mesmo atendimento
-                    Retorna (profissional, aviso) ou ("","") se ninguém se aplica.
-                    """
-                
-                    # filtrar todas as linhas desse atendimento e data do PARSER ORIGINAL
-                    linhas = [
-                        it for it in registros 
-                        if it.get("atendimento") == att and it.get("data") == data_proc
-                    ]
-                
-                    if not linhas:
-                        return "", ""
-                
-                    # ordenar na ordem real do arquivo
-                    linhas = sorted(linhas, key=lambda x: x.get("_row_idx", 99999999))
-                
-                    # --- CASO 1: importar TODOS → sempre o mestre ---
-                    if import_all:
-                        prim = linhas[0]
-                        return (
-                            (prim.get("profissional") or "").strip(),
-                            (prim.get("aviso") or "").strip()
-                        )
-                
-                    # --- CASO 2: seleção de médicos ---
-                    sel = set(final_pros or [])
-                
-                    # (a) verificar se o mestre está na seleção
-                    mestre = linhas[0]
-                    mestre_nome = (mestre.get("profissional") or "").strip()
-                    if mestre_nome in sel:
-                        return mestre_nome, (mestre.get("aviso") or "").strip()
-                
-                    # (b) procurar o primeiro selecionado que apareça abaixo do mestre
-                    for it in linhas:
-                        nome = (it.get("profissional") or "").strip()
-                        if nome in sel:
-                            return nome, (it.get("aviso") or "").strip()
-                
-                    return "", ""
-                
-                
-                # ================================================================
-                # LOOP DE INSERÇÃO DOS AUTO (1 por internação/dia)
-                # ================================================================
-                
+                # 7) Gera payload dos novos (garante 1 automático/dia)
                 to_insert_auto = []
-                
-                for (att, data_proc) in pares:  # pares = (atendimento, data)
+                for (att, data_proc) in pares:
                     if not att or not data_proc:
                         total_ignorados += 1
                         continue
-                
                     iid = att_to_id.get(att)
                     if not iid:
                         total_ignorados += 1
                         continue
-                
+
                     data_norm = _to_ddmmyyyy(data_proc)
-                
-                    # evitar duplicidade
                     if (iid, data_norm) in existing_auto:
                         total_ignorados += 1
                         continue
-                
-                    # usar a nova regra para escolher o médico correto
-                    prof_dia, aviso_dia = pick_profissional_para(att, data_proc)
-                
-                    # nenhum médico aplicável → ignorar
+
+                    prof_dia = next((it.get("profissional") for it in registros_filtrados
+                                     if it.get("atendimento") == att and it.get("data") == data_proc and it.get("profissional")), "")
+                    aviso_dia = next((it.get("aviso") for it in registros_filtrados
+                                      if it.get("atendimento") == att and it.get("data") == data_proc and it.get("aviso")), "")
+
                     if not prof_dia:
                         total_ignorados += 1
                         continue
-                
-                    # montar payload
+
                     to_insert_auto.append({
                         "internacao_id": int(iid),
                         "data_procedimento": data_norm,
@@ -1746,12 +1598,11 @@ with tabs[1]:
                         "situacao": "Pendente",
                         "observacao": None,
                         "is_manual": 0,
-                        "aviso": aviso_dia or None,
-                        "grau_participacao": None,
+                        "aviso": (aviso_dia or None),
+                        "grau_participacao": None
                     })
-                
+                    # evita duplicar dentro do mesmo arquivo
                     existing_auto.add((iid, data_norm))
-
 
                 # 8) Insere procedimentos em lote
                 if to_insert_auto:
