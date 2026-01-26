@@ -2679,4 +2679,3 @@ with tabs[5]:
 if st.session_state.get("goto_tab_label"):
     _switch_to_tab_by_label(st.session_state["goto_tab_label"])
     st.session_state["goto_tab_label"] = None
-
