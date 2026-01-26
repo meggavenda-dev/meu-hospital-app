@@ -1472,15 +1472,25 @@ with tabs[1]:
     
         st.caption(f"Médicos fixos (sempre incluídos, quando presentes no par): {', '.join(sorted(ALWAYS_SELECTED_PROS)) or '—'}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
+        
+        def _norm_pro(s: str) -> str:
+            s = (s or '').replace('\xa0', ' ').strip()   # troca NBSP, tira espaços da borda
+            s = re.sub(r'\s+', ' ', s)                   # colapsa múltiplos espaços
+            return s.upper()                             # compara em caixa alta
+        
+        # Set normalizado para comparação
+        final_pros_norm = {_norm_pro(p) for p in final_pros}
     
         # ====== NOVO: seleção de pares (atendimento, data) por “qualquer participação” ======
+        
         if import_all:
-            pares = sorted(grupos_by_par.keys())
+            pares = pares_todos[:]  # todos os dias de todos os atendimentos
         else:
             pares = sorted([
                 par for par, lst in grupos_by_par.items()
-                if any((it.get("profissional") or "") in final_pros for it in lst)
+                if any(_norm_pro(it.get('profissional')) in final_pros_norm for it in lst)
             ])
+
     
         st.markdown(
             f"<div>🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
@@ -1489,12 +1499,16 @@ with tabs[1]:
         )
     
         # ====== NOVO: Pré-visualização focada em PARES ======
-        # Exibe um “representante” de cada par (preferindo um item cujo profissional esteja selecionado)
+        # Exibe um “representante” de cada par (preferindo um item cujo profissional esteja selecionado)        
         preview_rows = []
         for par in pares:
-            lst = grupos_by_par[par]
-            row = next((it for it in lst if (it.get("profissional") or "") in final_pros and it.get("profissional")), lst[0])
-            preview_rows.append(row)
+            lst = grupos_by_par.get(par, [])
+            row = next(
+                (it for it in lst if _norm_pro(it.get('profissional')) in final_pros_norm and it.get('profissional')),
+                lst[0] if lst else {}
+            )
+            if row:
+                preview_rows.append(row)
         df_preview = pd.DataFrame(preview_rows)
         st.subheader("Pré-visualização (por par atendimento/data) — DRY RUN")
         st.dataframe(df_preview, use_container_width=True, hide_index=True)
@@ -1613,15 +1627,16 @@ with tabs[1]:
                     data_norm = _to_ddmmyyyy(data_proc)
                     if (iid, data_norm) in existing_auto:
                         total_ignorados += 1
-                        continue
-    
+                        continue    
+                    
                     lst = grupos_by_par.get((att, data_proc), [])
-                    # Preferir um profissional selecionado; se não houver, pegar qualquer profissional do grupo
-                    prof_dia = next((it.get("profissional") for it in lst
-                                     if (it.get("profissional") or "") in final_pros and it.get("profissional")), None) \
-                               or next((it.get("profissional") for it in lst if it.get("profissional")), None) \
-                               or ""
-                    aviso_dia = next((it.get("aviso") for it in lst if it.get("aviso")), None)
+                    prof_dia = (
+                        next((it.get('profissional') for it in lst
+                              if _norm_pro(it.get('profissional')) in final_pros_norm and it.get('profissional')), None)
+                        or next((it.get('profissional') for it in lst if it.get('profissional')), None)
+                        or ""
+                    )
+                    aviso_dia = next((it.get('aviso') for it in lst if it.get('aviso')), None)
     
                     if not prof_dia:
                         total_ignorados += 1
