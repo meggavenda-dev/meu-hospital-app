@@ -1273,16 +1273,16 @@ with tabs[1]:
         registros = parse_tiss_original(csv_text)
 
         with st.expander("🧪 Scanner 0007074906 (debug temporário)"):
-    regs_7074906 = [r for r in registros if (r.get("atendimento") or "").strip() == "0007074906"]
-    if not regs_7074906:
-        st.error("NENHUM registro para 0007074906.")
-    else:
-        st.write(f"Total registros 0007074906: {len(regs_7074906)}")
-        by_date = {}
-        for r in regs_7074906:
-            by_date.setdefault(r.get("data","?"), set()).add(str(r.get("aviso","")))
-        st.write("Datas → Avisos:", {k: sorted(v) for k,v in by_date.items()})
-        st.table([{"data": r["data"], "aviso": r["aviso"], "prof": r.get("profissional",""), "proc": r.get("procedimento","")} for r in regs_7074906])
+            regs_7074906 = [r for r in registros if (r.get("atendimento") or "").strip() == "0007074906"]
+            if not regs_7074906:
+                st.error("NENHUM registro para 0007074906.")
+            else:
+                st.write(f"Total registros 0007074906: {len(regs_7074906)}")
+                by_date = {}
+                for r in regs_7074906:
+                    by_date.setdefault(r.get("data","?"), set()).add(str(r.get("aviso","")))
+                st.write("Datas → Avisos:", {k: sorted(v) for k,v in by_date.items()})
+                st.table([{"data": r["data"], "aviso": r["aviso"], "prof": r.get("profissional",""), "proc": r.get("procedimento","")} for r in regs_7074906])
 
         
         st.success(f"{len(registros)} registros interpretados!")
