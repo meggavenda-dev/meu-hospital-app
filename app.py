@@ -16,6 +16,7 @@ import math, zipfile, io as _io, time
 from typing import List, Dict, Any
 from io import BytesIO
 from collections import OrderedDict  # <<< NOVO
+from collections import defaultdict
 
 import streamlit.components.v1 as components
 
