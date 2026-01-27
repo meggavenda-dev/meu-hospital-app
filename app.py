@@ -1381,18 +1381,16 @@ with tabs[1]:
             return "", "SKIP"
 
 
-        grupos_info = []
-        
-        for (att, aviso), rows in grupos.items():
-            prof, regra = _escolher_profissional(rows)
-            grupos_info.append({
-                "atendimento": att,
-                "aviso": aviso,
-                "rows": rows,
-                "master": rows[0],
-                "prof_escolhido": prof,
-                "regra": regra,  # "A" | "B" | "SKIP"
-            })
+
+        # Depois de criar grupos_info
+        with st.expander("🧪 Scanner 0007074906"):
+            rows_7074906 = [
+                {"aviso": g["aviso"], "prof_escolhido": g["prof_escolhido"], "regra": g["regra"]}
+                for g in grupos_info
+                if g["atendimento"] == "0007074906"
+            ]
+            st.write(rows_7074906)
+
 
         # --- Debug 1: Contagens e SKIPs
         total_grupos = len(grupos)
