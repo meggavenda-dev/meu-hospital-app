@@ -1322,32 +1322,7 @@ with tabs[1]:
                 continue
             key = (att, aviso_fmt)
             grupos.setdefault(key, []).append(r)
-        
-        # --- (2) Monta grupos_info usando a REGRA A/B (com o _escolher_profissional PATCH)
-        grupos_info = []
-        for (att, aviso), rows in grupos.items():
-            prof, regra = _escolher_profissional(rows)   # <--- aqui entra o PATCH (varredura por nome nas __cells__)
-            grupos_info.append({
-                "atendimento": att,
-                "aviso": aviso,
-                "rows": rows,
-                "master": rows[0],
-                "prof_escolhido": prof,
-                "regra": regra,   # "A" | "B" | "SKIP"
-            })
-        
-        # --- (3) [OPCIONAL] Debug (temporário) — coloque após o bloco acima
-        with st.expander("🔎 Debug de grupos (temporário)"):
-            st.write(
-                "Total de grupos (A ou B):",
-                len([g for g in grupos_info if g["regra"] in ("A","B")])
-            )
-            st.table(pd.DataFrame([
-                {"atendimento": g["atendimento"], "aviso": g["aviso"], "prof": g["prof_escolhido"], "regra": g["regra"]}
-                for g in grupos_info if g["regra"] in ("A","B")
-            ][:10]))
-             
-        
+
         def _escolher_profissional(rows):
             """
             rows: lista preservando ordem (primeira é a 'mestre').
@@ -1394,6 +1369,7 @@ with tabs[1]:
 
 
         grupos_info = []
+        
         for (att, aviso), rows in grupos.items():
             prof, regra = _escolher_profissional(rows)
             grupos_info.append({
@@ -1404,6 +1380,30 @@ with tabs[1]:
                 "prof_escolhido": prof,
                 "regra": regra,  # "A" | "B" | "SKIP"
             })
+        
+        # --- (2) Monta grupos_info usando a REGRA A/B (com o _escolher_profissional PATCH)
+        grupos_info = []
+        for (att, aviso), rows in grupos.items():
+            prof, regra = _escolher_profissional(rows)   # <--- aqui entra o PATCH (varredura por nome nas __cells__)
+            grupos_info.append({
+                "atendimento": att,
+                "aviso": aviso,
+                "rows": rows,
+                "master": rows[0],
+                "prof_escolhido": prof,
+                "regra": regra,   # "A" | "B" | "SKIP"
+            })
+        
+        # --- (3) [OPCIONAL] Debug (temporário) — coloque após o bloco acima
+        
+        with st.expander("🔎 Debug de grupos (temporário)"):
+            st.write("Total de grupos (A ou B):", len([g for g in grupos_info if g["regra"] in ("A","B")]))
+            st.table(pd.DataFrame([
+                {"atendimento": g["atendimento"], "aviso": g["aviso"], "prof": g["prof_escolhido"], "regra": g["regra"]}
+                for g in grupos_info if g["regra"] in ("A","B")
+            ][:10]))
+                 
+        
 
         # --- Pré-visualização simples (opcional): mantém preview original por linhas ---
         registros_filtrados = registros[:] if import_all else [r for r in registros if (r.get("profissional") or "") in final_pros]
