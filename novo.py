@@ -261,6 +261,63 @@ def _att_to_number(v):
 # ============================================================
 
 # ============================
+# PRÉ-PROCESSAMENTO (Regra A + Regra B)
+# ============================
+from collections import defaultdict
+
+def aplicar_regra_final(registros: list) -> list:
+    """
+    Aplica:
+    - CASO A (normal): se a linha principal (tem procedimento + hora_ini) já tem 'profissional', mantém.
+    - CASO B (nova): se a principal NÃO tem 'profissional', herda o PRIMEIRO profissional das linhas do mesmo (atendimento, aviso).
+    - NUNCA cria mais de 1 registro por (atendimento, aviso) neste estágio.
+    """
+    # Agrupar por (atendimento, aviso) respeitando a ordem do arquivo
+    grupos = defaultdict(list)
+    for r in registros:
+        chave = (r.get("atendimento"), r.get("aviso"))
+        grupos[chave].append(r)
+
+    processados = []
+
+    for (att, aviso), itens in grupos.items():
+        # principal = tem procedimento + hora_ini
+        linha_principal = next(
+            (x for x in itens if (x.get("procedimento") and x.get("hora_ini"))),
+            None
+        )
+        if not linha_principal:
+            # Se não houver uma principal clara, ignora o grupo (ou poderíamos logar)
+            continue
+
+        prof_principal = (linha_principal.get("profissional") or "").strip()
+        if prof_principal:
+            novo = linha_principal.copy()
+            novo["_regra"] = "A_principal_mantida"
+            processados.append(novo)
+            continue
+
+        # CASO B — principal sem profissional: herda o primeiro encontrado nas linhas do grupo (ordem do CSV)
+        profissional_fallback = None
+        for it in itens:
+            prof = (it.get("profissional") or "").strip()
+            if prof:
+                profissional_fallback = prof
+                break
+
+        novo = linha_principal.copy()
+        if profissional_fallback:
+            novo["profissional"] = profissional_fallback
+            novo["_regra"] = "B_profissional_herdado_primeiro_filho"
+        else:
+            # ninguém tinha profissional — mantém vazio (fica para tratamento posterior se quiser)
+            novo["_regra"] = "A_sem_profissional_encontrado"
+
+        processados.append(novo)
+
+    return processados
+
+# ============================
 # BACKUP / RESTORE — Helpers
 # ============================
 import math, zipfile, io, time
@@ -1421,53 +1478,41 @@ with tabs[1]:
         except UnicodeDecodeError:
             csv_text = raw_bytes.decode("utf-8-sig", errors="ignore")
 
-        registros = parse_tiss_original(csv_text)
-        st.success(f"{len(registros)} registros interpretados!")
 
-        pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
-        pares = sorted({(r.get("atendimento"), r.get("data")) for r in registros if r.get("atendimento") and r.get("data")})
+        # 1) Parse do CSV
+        registros_raw = parse_tiss_original(csv_text)
+        st.success(f"{len(registros_raw)} linhas do CSV interpretadas!")
+        
+        # 2) Aplica REGRA FINAL (A + B) por (atendimento, aviso)
+        registros = aplicar_regra_final(registros_raw)
+        
+        # KPIs iniciais
+        qtd_A = sum(1 for r in registros if r.get("_regra") == "A_principal_mantida")
+        qtd_B = sum(1 for r in registros if r.get("_regra") == "B_profissional_herdado_primeiro_filho")
+        qtd_sem = sum(1 for r in registros if r.get("_regra") == "A_sem_profissional_encontrado")
+        
         kpi_row([
-            {"label": "Registros no arquivo", "value": f"{len(registros):,}".replace(",", ".")},
-            {"label": "Médicos distintos",    "value": f"{len(pros):,}".replace(",", ".")},
-            {"label": "Pares (atendimento, data)", "value": f"{len(pares):,}".replace(",", ".")},
+            {"label": "Grupos (att,aviso)", "value": f"{len(registros):,}".replace(",", "."),
+             "hint": "Após Regra A+B, 1 por (atendimento, aviso)"},
+            {"label": "Regra A", "value": f"{qtd_A:,}".replace(",", "."), "hint": "principal já com profissional"},
+            {"label": "Regra B", "value": f"{qtd_B:,}".replace(",", "."), "hint": "herdado do primeiro filho"},
         ])
-
-        st.subheader("👨‍⚕️ Seleção de médicos")
-        if "import_all_docs" not in st.session_state: st.session_state["import_all_docs"] = True
-        if "import_selected_docs" not in st.session_state: st.session_state["import_selected_docs"] = []
-
-        colsel1, colsel2 = st.columns([1, 3])
-        with colsel1:
-            import_all = st.checkbox("Importar todos os médicos", value=st.session_state["import_all_docs"], key="import_all_docs_chk")
-        with colsel2:
-            if import_all:
-                st.info("Todos os médicos do arquivo serão importados.")
-                selected_pros = pros[:]
-            else:
-                default_pre = sorted([p for p in pros if p in ALWAYS_SELECTED_PROS])
-                selected_pros = st.multiselect(
-                    "Médicos a importar (os da lista fixa sempre serão incluídos na gravação):",
-                    options=pros,
-                    default=st.session_state["import_selected_docs"] or default_pre,
-                    key="import_selected_docs_ms"
-                )
-
-        st.session_state["import_all_docs"] = import_all
-        st.session_state["import_selected_docs"] = selected_pros
-
-        always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
-        final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
-
-        st.caption(f"Médicos fixos (sempre incluídos, quando presentes): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
-        st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
-
-        registros_filtrados = registros[:] if import_all else [r for r in registros if (r.get("profissional") or "") in final_pros]
-
+        
+        # 3) Lista de profissionais (depois da regra, pois B pode preencher profissional)
+        pros = sorted({(r.get("profissional") or "").strip() for r in registros if r.get("profissional")})
+        
+        # 4) Filtro de médicos (agora seguro para B)
+        registros_filtrados = registros[:] if import_all else [
+            r for r in registros if (r.get("profissional") or "") in final_pros
+        ]
+        
+        # 5) Pré-visualização enriquecida (mostra a origem da regra)
         df_preview = pd.DataFrame(registros_filtrados)
-        st.subheader("Pré-visualização (DRY RUN) — nada foi gravado ainda")
+        if not df_preview.empty and "_regra" in df_preview.columns:
+            df_preview.rename(columns={"_regra": "⚠ Regra"}, inplace=True)
+        st.subheader("Pré-visualização (DRY RUN) — já com a Regra A/B aplicada")
         st.dataframe(df_preview, use_container_width=True, hide_index=True)
 
-        pares = sorted({(r["atendimento"], r["data"]) for r in registros_filtrados if r.get("atendimento") and r.get("data")})
         st.markdown(
             f"<div>🔎 {len(pares)} par(es) (atendimento, data) após filtros. Regra: "
             f"{pill('1 auto por internação/dia')} (manuais podem ser vários).</div>",
@@ -1547,27 +1592,38 @@ with tabs[1]:
                 att_to_id = {att: existing_map_norm_to_id.get(orig_to_norm.get(att)) for att in atts_file}
                 target_iids = sorted({iid for iid in att_to_id.values() if iid})
 
-                # 6) Busca procedimentos automáticos existentes (1 chamada) e cria set (iid, data)
+                
+                # ---- 6) Busca procedimentos automáticos existentes e cria set (iid, aviso)
                 existing_auto = set()
                 try:
                     if target_iids:
                         res_auto = (
                             supabase.table("procedimentos")
-                            .select("internacao_id, data_procedimento, is_manual")
-                            .in_("internacao_id", target_iids).eq("is_manual", 0)
+                            .select("internacao_id, aviso, is_manual")
+                            .in_("internacao_id", target_iids)
+                            .eq("is_manual", 0)
                             .execute()
                         )
                         for r in (res_auto.data or []):
                             iid = int(r["internacao_id"])
-                            dt = _to_ddmmyyyy(r.get("data_procedimento"))
-                            if iid and dt:
-                                existing_auto.add((iid, dt))
+                            av = str(r.get("aviso") or "").strip()
+                            # Chave de unicidade: (iid, aviso). Aviso vazio => não entra no set (tratamos abaixo)
+                            if iid and av:
+                                existing_auto.add((iid, av))
                 except APIError as e:
-                    _sb_debug_error(e, "Falha ao buscar procedimentos existentes.")
-
-                # 7) Gera payload dos novos (garante 1 automático/dia)
+                    _sb_debug_error(e, "Falha ao buscar procedimentos existentes (por aviso).")
+                
+                # ---- 7) Payload de novos (garante 1 automático/aviso)
                 to_insert_auto = []
-                for (att, data_proc) in pares:
+                
+                # Como 'registros_filtrados' já tem 1 por (att, aviso) após a Regra,
+                # basta iterar e respeitar o set 'existing_auto'.
+                for it in registros_filtrados:
+                    att = it.get("atendimento")
+                    aviso = (it.get("aviso") or "").strip()
+                    data_proc = it.get("data")
+                    prof = (it.get("profissional") or "").strip()
+                
                     if not att or not data_proc:
                         total_ignorados += 1
                         continue
@@ -1575,34 +1631,58 @@ with tabs[1]:
                     if not iid:
                         total_ignorados += 1
                         continue
-
-                    data_norm = _to_ddmmyyyy(data_proc)
-                    if (iid, data_norm) in existing_auto:
+                
+                    # Se temos AVISO, usamos a regra de 1 por (iid, aviso)
+                    if aviso:
+                        if (iid, aviso) in existing_auto:
+                            total_ignorados += 1
+                            continue
+                    else:
+                        # Sem aviso (raro): caímos no fallback antigo (1 por (iid, data)).
+                        # Evita duplicar em ambientes legados onde aviso possa faltar.
+                        data_norm = _to_ddmmyyyy(data_proc)
+                        if not data_norm:
+                            total_ignorados += 1
+                            continue
+                        # Fallback: checar se já existe automático no dia
+                        if existe_procedimento_no_dia := False:
+                            try:
+                                existe_procedimento_no_dia = (
+                                    supabase.table("procedimentos")
+                                    .select("id")
+                                    .eq("internacao_id", int(iid))
+                                    .eq("data_procedimento", _to_ddmmyyyy(data_proc))
+                                    .eq("is_manual", 0)
+                                    .limit(1).execute()
+                                )
+                                existe_procedimento_no_dia = len(existe_procedimento_no_dia.data or []) > 0
+                            except APIError:
+                                existe_procedimento_no_dia = False
+                        if existe_procedimento_no_dia:
+                            total_ignorados += 1
+                            continue
+                
+                    # Profissional obrigatório (depois da Regra B, ele deve existir quando possível)
+                    if not prof:
                         total_ignorados += 1
                         continue
-
-                    prof_dia = next((it.get("profissional") for it in registros_filtrados
-                                     if it.get("atendimento") == att and it.get("data") == data_proc and it.get("profissional")), "")
-                    aviso_dia = next((it.get("aviso") for it in registros_filtrados
-                                      if it.get("atendimento") == att and it.get("data") == data_proc and it.get("aviso")), "")
-
-                    if not prof_dia:
-                        total_ignorados += 1
-                        continue
-
+                
                     to_insert_auto.append({
                         "internacao_id": int(iid),
-                        "data_procedimento": data_norm,
-                        "profissional": prof_dia,
-                        "procedimento": "Cirurgia / Procedimento",
+                        "data_procedimento": _to_ddmmyyyy(data_proc),
+                        "profissional": prof,
+                        "procedimento": "Cirurgia / Procedimento",  # mantém seu domínio atual
                         "situacao": "Pendente",
                         "observacao": None,
                         "is_manual": 0,
-                        "aviso": (aviso_dia or None),
+                        "aviso": (aviso or None),
                         "grau_participacao": None
                     })
-                    # evita duplicar dentro do mesmo arquivo
-                    existing_auto.add((iid, data_norm))
+                
+                    # Marca a chave ocupada
+                    if aviso:
+                        existing_auto.add((iid, aviso))
+
 
                 # 8) Insere procedimentos em lote
                 if to_insert_auto:
