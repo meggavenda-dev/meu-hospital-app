@@ -1456,8 +1456,15 @@ with tabs[1]:
             ]))
 
         
-        # completar o auto-detector com os considerados
-        pairs_considerados = { (g["atendimento"], g["aviso"]) for g in grupos_considerados }
+             
+        # ⚠️ calcular pares_considerados SOMENTE DEPOIS de tudo pronto
+        pairs_considerados = set()
+        for g in grupos_considerados:
+            att = g["atendimento"]
+            av  = g["aviso"]
+            if att and av:
+                pairs_considerados.add((att, av))
+
         
         # 1) Se faltou antes (na Regra A/B)
         if faltando_em_AB:
