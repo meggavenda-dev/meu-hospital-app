@@ -100,6 +100,31 @@ PROCEDIMENTO_OPCOES = ["Cirurgia / Procedimento", "Parecer"]
 GRAU_PARTICIPACAO_OPCOES = ["Cirurgião", "1 Auxiliar", "2 Auxiliar", "3 Auxiliar", "Clínico"]
 ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MATOS"}
 
+
+def find_allowed_in_row(cells: list[str]) -> str | None:
+    # cells: lista com as células *cruas* da linha CSV
+    for name in ALWAYS_SELECTED_PROS:
+        if name in cells:
+            return name
+    return None
+
+def choose_professional_for_group(group_rows: list[list[str]]):
+    # group_rows: lista de linhas (mestre primeiro) -> cada linha é a lista de células do CSV
+    # 1) Regra A (mestre)
+    name = find_allowed_in_row(group_rows[0])
+    if name:
+        return name, "A"
+
+    # 2) Regra B (primeira filha que contenha um dos nomes)
+    for row in group_rows[1:]:
+        name = find_allowed_in_row(row)
+        if name:
+            return name, "B"
+
+    # 3) (opcional) fallback para o campo 'prestador' já parseado, se houver
+    return "", "SKIP"
+
+
 def inject_css():
     st.markdown("""
 <style>
