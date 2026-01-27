@@ -1338,18 +1338,26 @@ with tabs[1]:
             key = (att, aviso_fmt)
             grupos.setdefault(key, []).append(r)
 
-        def _escolher_profissional(rows):
+        def _escolher_profissional(rows: list[dict]) -> tuple[str, str]:
             """
-            rows: lista preservando ordem (primeira é a 'mestre').
-            Regra robusta:
-              A) tentar por varredura de NOME-ALVO nas células cruas (mestre);
-              B) se não achou, varrer as filhas;
-              C) fallback para o campo 'profissional' parseado (mestre -> filhas).
+            Decide o 'prof_escolhido' para um grupo (atendimento, aviso).
+        
+            Regra A (prioridade 1):
+              - Se a linha MESTRE tem 'profissional' (campo parseado) NÃO vazio -> usa este (regra = "A").
+        
+            Regra B (prioridade 2) — NOVA:
+              - Aplica somente se a MESTRE NÃO tem profissional (campo vazio).
+              - Procura o PRIMEIRO 'profissional' NÃO vazio nas LINHAS-FILHAS (ordem do CSV) -> usa este (regra = "B").
+        
+            Fallback (prioridade 3):
+              - Se nada acima, tenta varrer as células (__cells__) da MESTRE e depois das FILHAS
+                por algum nome de 'ALWAYS_SELECTED_PROS' -> se achar, retorna ("A" p/ mestre, "B" p/ filha).
+              - Se ainda assim não achar, retorna ("", "SKIP").
             """
-            def _cells_of(r):
+            def _cells_of(r: dict) -> list[str]:
                 if "__cells__" in r and isinstance(r["__cells__"], list):
                     return r["__cells__"]
-                # fallback se o parser ainda não tiver "__cells__"
+                # fallback para parser sem __cells__
                 return [
                     r.get("procedimento", ""),
                     r.get("convenio", ""),
@@ -1359,26 +1367,30 @@ with tabs[1]:
                     r.get("quarto", ""),
                 ]
         
-            # --- Regra A: mestre por varredura de nome
+            # ---------- Regra A: mestre com profissional ----------
+            prof_mestre = (rows[0].get("profissional") or "").strip()
+            if prof_mestre:
+                return prof_mestre, "A"
+        
+            # ---------- Regra B: mestre sem profissional -> 1º das FILHAS ----------
+            for rr in rows[1:]:
+                prof = (rr.get("profissional") or "").strip()
+                if prof:
+                    return prof, "B"
+        
+            # ---------- Fallback: varredura por nomes fixos nas células ----------
+            # (a) mestre por células
             name = find_allowed_in_row(_cells_of(rows[0]))
             if name:
                 return name, "A"
         
-            # --- Regra B: filhas por varredura de nome
+            # (b) filhas por células (ordem CSV)
             for rr in rows[1:]:
                 name = find_allowed_in_row(_cells_of(rr))
                 if name:
                     return name, "B"
         
-            # --- Fallback: comportamento antigo (campo 'profissional' parseado)
-            prof_mestre = (rows[0].get("profissional") or "").strip()
-            if prof_mestre:
-                return prof_mestre, "A"
-            for rr in rows[1:]:
-                p = (rr.get("profissional") or "").strip()
-                if p:
-                    return p, "B"
-        
+            # Nada encontrado
             return "", "SKIP"
 
 
