@@ -35,6 +35,13 @@ try:
 except ModuleNotFoundError:
     REPORTLAB_OK = False
 
+
+# logo antes de "registros = parse_tiss_original(csv_text)"
+import importlib
+import parser as _parser_mod
+importlib.reload(_parser_mod)
+parse_tiss_original = _parser_mod.parse_tiss_original
+
 # Parser (seu módulo)
 # -> mantenha o arquivo parser.py no projeto com parse_tiss_original(csv_text) definido.
 try:
@@ -1305,8 +1312,9 @@ with tabs[1]:
         st.caption(f"Médicos fixos (sempre incluídos, quando presentes): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
 
-        # --- Agrupar por (atendimento, aviso) preservando ordem do CSV ---
-        grupos = OrderedDict()  # chave: (att, aviso_fmt) -> list[linhas]
+        
+        # --- (1) Agrupa por (atendimento, aviso) preservando a ordem do CSV
+        grupos = OrderedDict()
         for r in registros:
             att = (r.get("atendimento") or "").strip()
             aviso_fmt = _fmt_id_str(r.get("aviso"))
@@ -1314,7 +1322,31 @@ with tabs[1]:
                 continue
             key = (att, aviso_fmt)
             grupos.setdefault(key, []).append(r)
-
+        
+        # --- (2) Monta grupos_info usando a REGRA A/B (com o _escolher_profissional PATCH)
+        grupos_info = []
+        for (att, aviso), rows in grupos.items():
+            prof, regra = _escolher_profissional(rows)   # <--- aqui entra o PATCH (varredura por nome nas __cells__)
+            grupos_info.append({
+                "atendimento": att,
+                "aviso": aviso,
+                "rows": rows,
+                "master": rows[0],
+                "prof_escolhido": prof,
+                "regra": regra,   # "A" | "B" | "SKIP"
+            })
+        
+        # --- (3) [OPCIONAL] Debug (temporário) — coloque após o bloco acima
+        with st.expander("🔎 Debug de grupos (temporário)"):
+            st.write(
+                "Total de grupos (A ou B):",
+                len([g for g in grupos_info if g["regra"] in ("A","B")])
+            )
+            st.table(pd.DataFrame([
+                {"atendimento": g["atendimento"], "aviso": g["aviso"], "prof": g["prof_escolhido"], "regra": g["regra"]}
+                for g in grupos_info if g["regra"] in ("A","B")
+            ][:10]))
+             
         
         def _escolher_profissional(rows):
             """
@@ -1324,11 +1356,10 @@ with tabs[1]:
               B) se não achou, varrer as filhas;
               C) fallback para o campo 'profissional' parseado (mestre -> filhas).
             """
-            # Helper local para obter as células cruas, ou montar um conjunto mínimo
             def _cells_of(r):
                 if "__cells__" in r and isinstance(r["__cells__"], list):
                     return r["__cells__"]
-                # fallback se o parser antigo não devolver "__cells__"
+                # fallback se o parser ainda não tiver "__cells__"
                 return [
                     r.get("procedimento", ""),
                     r.get("convenio", ""),
@@ -1338,18 +1369,18 @@ with tabs[1]:
                     r.get("quarto", ""),
                 ]
         
-            # --- Regra A: olhar a linha mestre por NOME-ALVO
+            # --- Regra A: mestre por varredura de nome
             name = find_allowed_in_row(_cells_of(rows[0]))
             if name:
                 return name, "A"
         
-            # --- Regra B: primeira FILHA que contenha NOME-ALVO
+            # --- Regra B: filhas por varredura de nome
             for rr in rows[1:]:
                 name = find_allowed_in_row(_cells_of(rr))
                 if name:
                     return name, "B"
         
-            # --- Fallback: comportamento antigo (prestador/profissional do parser)
+            # --- Fallback: comportamento antigo (campo 'profissional' parseado)
             prof_mestre = (rows[0].get("profissional") or "").strip()
             if prof_mestre:
                 return prof_mestre, "A"
@@ -1359,6 +1390,7 @@ with tabs[1]:
                     return p, "B"
         
             return "", "SKIP"
+
 
 
         grupos_info = []
@@ -1392,15 +1424,18 @@ with tabs[1]:
             if st.button("Gravar no banco", type="primary", key="import_csv_gravar"):
                 total_criados = total_ignorados = total_internacoes = 0
 
-                # Quais grupos entram segundo seleção de médicos
+                # Quais grupos entram segundo seleção de médicos                
                 import_all = st.session_state["import_all_docs"]
-                final_pros_set = set(final_pros)
+                final_pros_set = set(final_pros)  # já definido acima
+                
                 grupos_considerados = [
                     g for g in grupos_info
-                    if g["regra"] in ("A", "B")
+                    if g["regra"] in ("A","B")
                     and g["prof_escolhido"]
                     and (import_all or g["prof_escolhido"] in final_pros_set)
                 ]
+                
+                st.caption(f"Pares (atendimento, aviso) considerados para gravação: {len(grupos_considerados)}")
 
                 # 1) Atendimentos únicos
                 atts_file = sorted({g["atendimento"] for g in grupos_considerados if g["atendimento"]})
