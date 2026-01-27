@@ -1380,18 +1380,6 @@ with tabs[1]:
             # Nada encontrado
             return "", "SKIP"
 
-
-
-        # Depois de criar grupos_info
-        with st.expander("🧪 Scanner 0007074906"):
-            rows_7074906 = [
-                {"aviso": g["aviso"], "prof_escolhido": g["prof_escolhido"], "regra": g["regra"]}
-                for g in grupos_info
-                if g["atendimento"] == "0007074906"
-            ]
-            st.write(rows_7074906)
-
-
         # --- Debug 1: Contagens e SKIPs
         total_grupos = len(grupos)
         total_AB = sum(1 for g in grupos_info if g["regra"] in ("A","B"))
