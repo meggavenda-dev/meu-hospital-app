@@ -1272,6 +1272,7 @@ with tabs[1]:
         # --- Lê registros do parser ---
         registros = parse_tiss_original(csv_text)
 
+        
         with st.expander("🧪 Scanner 0007074906 (debug temporário)"):
             regs_7074906 = [r for r in registros if (r.get("atendimento") or "").strip() == "0007074906"]
             st.write("Datas → Avisos:", {
@@ -1283,6 +1284,7 @@ with tabs[1]:
                 {"aviso": g["aviso"], "prof_escolhido": g["prof_escolhido"], "regra": g["regra"]}
                 for g in grupos_info if g["atendimento"] == "0007074906"
             ])
+
         
         st.success(f"{len(registros)} registros interpretados!")
 
