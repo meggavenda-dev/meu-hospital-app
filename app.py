@@ -1380,6 +1380,21 @@ with tabs[1]:
             # Nada encontrado
             return "", "SKIP"
 
+        
+        # Mapeia cada grupo para (mestre, profissional_escolhido, regra)
+        grupos_info = []
+        for (att, aviso), rows in grupos.items():
+            prof, regra = _escolher_profissional(rows)
+            grupos_info.append({
+                "atendimento": att,
+                "aviso": aviso,
+                "rows": rows,
+                "master": rows[0],
+                "prof_escolhido": prof,
+                "regra": regra,  # "A" | "B" | "SKIP"
+            })
+
+
         # --- Debug 1: Contagens e SKIPs
         total_grupos = len(grupos)
         total_AB = sum(1 for g in grupos_info if g["regra"] in ("A","B"))
