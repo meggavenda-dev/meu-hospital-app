@@ -1,15 +1,34 @@
+# parser.py
+# --------------------------------------------
+# Parser robusto para o relatório de Centro Cirúrgico/Hemodinâmica/Obstétrico
+# Origem: versão enviada por você (parse_tiss_original), com melhoria:
+#   (+) adiciona "__cells__": cols em cada registro (mestre e filha),
+#       permitindo ao app varrer nomes de profissionais diretamente nas células.
+# --------------------------------------------
+
+import re
+import csv
+import io
+
 
 def parse_tiss_original(csv_text):
     """
     Parser robusto para o relatório do Centro Cirúrgico/Hemodinâmica/Obstétrico.
+
     - Usa csv.reader para respeitar campos com vírgulas entre aspas.
     - Linha-mestre: detecta atendimento (7-12 dígitos), acha 'aviso' (número) e
       logo depois duas horas HH:MM; o campo seguinte é o 'procedimento'.
     - Convênio/Prestador/Anestesista: preferimos os campos logo após 'procedimento'
       quando existirem; 'tipo' e 'quarto' são ancorados pelos 2 últimos campos não vazios.
     - Linha-filha: 10+ vazios à esquerda; herda hora_ini/hora_fim e 'aviso' da mestre.
+
+    Retorna:
+        List[dict]: lista de registros com chaves:
+            atendimento, paciente, data, aviso, procedimento,
+            convenio, profissional, anestesista, tipo, quarto,
+            hora_ini, hora_fim,
+            __cells__ (lista das células cruas/limpas da linha)  # (+)
     """
-    import re, csv, io
 
     def clean(s: str) -> str:
         return (s or "").replace("\x00", "").strip().strip('"').strip()
@@ -21,13 +40,18 @@ def parse_tiss_original(csv_text):
         return bool(re.fullmatch(r"\d{3,}", s or ""))
 
     def last_n_nonempty(seq, n):
+        """
+        Retorna os últimos 'n' elementos não vazios de 'seq' (já limpos),
+        mantendo a ordem natural esquerda->direita. Se houver menos que 'n',
+        completa à esquerda com "".
+        """
         out = []
         for v in reversed(seq):
             v2 = clean(v)
             if v2 != "":
                 out.append(v2)
-                if len(out) == n:
-                    break
+            if len(out) == n:
+                break
         out.reverse()
         if len(out) < n:
             out = [""] * (n - len(out)) + out
@@ -35,7 +59,6 @@ def parse_tiss_original(csv_text):
 
     reader = csv.reader(io.StringIO(csv_text), delimiter=",", quotechar='"')
     registros = []
-
     data_atual = ""
     contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": ""}
 
@@ -57,38 +80,48 @@ def parse_tiss_original(csv_text):
         # Ignorar cabeçalhos/totais/seções
         if (
             ("Hora" in line_txt and "Início" in line_txt)
-            or any(k in line_txt for k in [
-                "Atendimento", "Convênio", "Centro Cirurgico", "HEMODINAMICA", "OBSTETRICO",
-                "Total de Avisos", "Total de Cirurgias", "Total Geral"
-            ])
+            or any(
+                k in line_txt
+                for k in [
+                    "Atendimento",
+                    "Convênio",
+                    "Centro Cirurgico",
+                    "HEMODINAMICA",
+                    "OBSTETRICO",
+                    "Total de Avisos",
+                    "Total de Cirurgias",
+                    "Total Geral",
+                ]
+            )
         ):
             continue
 
         # ---------------------------
         # LINHA-MESTRE
         # ---------------------------
-        is_master = (len(cols) >= 2 and re.fullmatch(r"\d{7,12}", cols[1] or ""))
+        is_master = (len(cols) >= 2 and re.fullmatch(r"\d{7,12}", cols[1] or ""))  # atendimento
         if is_master:
             atendimento = cols[1]
-            paciente    = cols[2] if len(cols) > 2 else ""
+            paciente = cols[2] if len(cols) > 2 else ""
 
             # achar 'aviso' (número) seguido de duas horas
             aviso_idx = None
             for k in range(3, len(cols) - 2):
-                if is_digits(cols[k]) and is_time(cols[k+1]) and is_time(cols[k+2]):
+                if is_digits(cols[k]) and is_time(cols[k + 1]) and is_time(cols[k + 2]):
                     aviso_idx = k
                     break
             if aviso_idx is None:
                 # fallback: primeiro horário cujo anterior é um número (aviso)
                 for k in range(3, len(cols)):
-                    if is_time(cols[k]) and k - 1 >= 0 and is_digits(cols[k-1]):
+                    if is_time(cols[k]) and k - 1 >= 0 and is_digits(cols[k - 1]):
                         aviso_idx = k - 1
                         break
+
             if aviso_idx is None:
                 # linha inconsistente
                 continue
 
-            aviso    = cols[aviso_idx]
+            aviso = cols[aviso_idx]
             hora_ini = cols[aviso_idx + 1] if aviso_idx + 1 < len(cols) else ""
             hora_fim = cols[aviso_idx + 2] if aviso_idx + 2 < len(cols) else ""
             proc_idx = aviso_idx + 3
@@ -123,23 +156,26 @@ def parse_tiss_original(csv_text):
                 "paciente": paciente,
                 "hora_ini": hora_ini,
                 "hora_fim": hora_fim,
-                "aviso": aviso
+                "aviso": aviso,
             }
 
-            registros.append({
-                "atendimento": atendimento,
-                "paciente": paciente,
-                "data": data_atual,
-                "aviso": aviso,
-                "procedimento": procedimento,
-                "convenio": conv,
-                "profissional": prest,
-                "anestesista": anest,
-                "tipo": tipo,
-                "quarto": quarto,
-                "hora_ini": hora_ini,
-                "hora_fim": hora_fim
-            })
+            registros.append(
+                {
+                    "atendimento": atendimento,
+                    "paciente": paciente,
+                    "data": data_atual,
+                    "aviso": aviso,
+                    "procedimento": procedimento,
+                    "convenio": conv,
+                    "profissional": prest,
+                    "anestesista": anest,
+                    "tipo": tipo,
+                    "quarto": quarto,
+                    "hora_ini": hora_ini,
+                    "hora_fim": hora_fim,
+                    "__cells__": cols,  # (+) passa as células cruas da linha
+                }
+            )
             continue
 
         # ---------------------------
@@ -150,8 +186,7 @@ def parse_tiss_original(csv_text):
         if first_idx is not None and first_idx >= 10:
             proc_idx = first_idx
             procedimento = cols[proc_idx]
-
-            conv  = cols[proc_idx + 1] if proc_idx + 1 < len(cols) else ""
+            conv = cols[proc_idx + 1] if proc_idx + 1 < len(cols) else ""
             prest = cols[proc_idx + 2] if proc_idx + 2 < len(cols) else ""
             anest = cols[proc_idx + 3] if proc_idx + 3 < len(cols) else ""
 
@@ -164,20 +199,23 @@ def parse_tiss_original(csv_text):
                 quarto = tail2[0]
 
             if contexto["atendimento"]:
-                registros.append({
-                    "atendimento": contexto["atendimento"],
-                    "paciente": contexto["paciente"],
-                    "data": data_atual,
-                    "aviso": contexto["aviso"],
-                    "procedimento": procedimento,
-                    "convenio": conv,
-                    "profissional": prest,
-                    "anestesista": anest,
-                    "tipo": tipo,
-                    "quarto": quarto,
-                    "hora_ini": contexto["hora_ini"],
-                    "hora_fim": contexto["hora_fim"]
-                })
+                registros.append(
+                    {
+                        "atendimento": contexto["atendimento"],
+                        "paciente": contexto["paciente"],
+                        "data": data_atual,
+                        "aviso": contexto["aviso"],
+                        "procedimento": procedimento,
+                        "convenio": conv,
+                        "profissional": prest,
+                        "anestesista": anest,
+                        "tipo": tipo,
+                        "quarto": quarto,
+                        "hora_ini": contexto["hora_ini"],
+                        "hora_fim": contexto["hora_fim"],
+                        "__cells__": cols,  # (+) passa as células cruas da linha
+                    }
+                )
             continue
 
         # Demais linhas: ignorar
