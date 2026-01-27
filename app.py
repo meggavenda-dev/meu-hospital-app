@@ -1315,16 +1315,51 @@ with tabs[1]:
             key = (att, aviso_fmt)
             grupos.setdefault(key, []).append(r)
 
+        
         def _escolher_profissional(rows):
-            """rows: lista preservando ordem (primeira é a 'mestre')."""
+            """
+            rows: lista preservando ordem (primeira é a 'mestre').
+            Regra robusta:
+              A) tentar por varredura de NOME-ALVO nas células cruas (mestre);
+              B) se não achou, varrer as filhas;
+              C) fallback para o campo 'profissional' parseado (mestre -> filhas).
+            """
+            # Helper local para obter as células cruas, ou montar um conjunto mínimo
+            def _cells_of(r):
+                if "__cells__" in r and isinstance(r["__cells__"], list):
+                    return r["__cells__"]
+                # fallback se o parser antigo não devolver "__cells__"
+                return [
+                    r.get("procedimento", ""),
+                    r.get("convenio", ""),
+                    r.get("profissional", ""),
+                    r.get("anestesista", ""),
+                    r.get("tipo", ""),
+                    r.get("quarto", ""),
+                ]
+        
+            # --- Regra A: olhar a linha mestre por NOME-ALVO
+            name = find_allowed_in_row(_cells_of(rows[0]))
+            if name:
+                return name, "A"
+        
+            # --- Regra B: primeira FILHA que contenha NOME-ALVO
+            for rr in rows[1:]:
+                name = find_allowed_in_row(_cells_of(rr))
+                if name:
+                    return name, "B"
+        
+            # --- Fallback: comportamento antigo (prestador/profissional do parser)
             prof_mestre = (rows[0].get("profissional") or "").strip()
             if prof_mestre:
-                return prof_mestre, "A"  # Caso A: mestre tem profissional
-            for rr in rows[1:]:        # Caso B: pega o primeiro das filhas
+                return prof_mestre, "A"
+            for rr in rows[1:]:
                 p = (rr.get("profissional") or "").strip()
                 if p:
                     return p, "B"
+        
             return "", "SKIP"
+
 
         grupos_info = []
         for (att, aviso), rows in grupos.items():
