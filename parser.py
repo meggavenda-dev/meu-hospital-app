@@ -1,5 +1,7 @@
-# parser.py — versão corrigida
-# Mantém 100% da sua lógica original + garante separação por Data de Realização
+# parser.py — versão corrigida COMPLETA
+# Mantém 100% da lógica original + garante separação por Data de Realização
+# + CORRIGE DETECÇÃO DO ATENDIMENTO (coluna 0/1/2)
+# + CORRIGE AVISO/HORAS EM COLUNAS DESLOCADAS
 
 import re
 import csv
@@ -33,96 +35,114 @@ def parse_tiss_original(csv_text):
 
     registros = []
     data_atual = None
-    contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": ""}
+    contexto = {
+        "atendimento": "",
+        "paciente": "",
+        "hora_ini": "",
+        "hora_fim": "",
+        "aviso": "",
+    }
 
     for cols in reader:
         cols = [clean(c) for c in cols]
+
+        # linha vazia → ignora
         if all(c == "" for c in cols):
             continue
 
         line_txt = " ".join(cols)
 
-        # ---------------------------------------------
-        # DATA DO BLOCO  (NOVO: garante dia isolado)
-        # ---------------------------------------------
+        # -------------------------------------------------------
+        # BLOCO DE DATA
+        # -------------------------------------------------------
         if any("Data de Realização" in c for c in cols):
             for c in cols:
                 if re.fullmatch(r"\d{2}/\d{2}/\d{4}", c):
                     data_atual = c
                     break
 
-            # sempre resetar contexto ao mudar de dia
+            # reset ao trocar de dia
             contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": ""}
             continue
 
-        # Se ainda não temos data_atual, ignorar linhas
         if not data_atual:
             continue
 
-        # ---------------------------------------------
-        # IGNORAR CABEÇALHOS / TOTAIS / SEÇÕES
-        # ---------------------------------------------
+        # -------------------------------------------------------
+        # IGNORAR CABEÇALHOS
+        # -------------------------------------------------------
         if (
             ("Hora" in line_txt and "Início" in line_txt)
-            or any(k in line_txt for k in [
-                "Atendimento", "Convênio", "Centro Cirurgico",
-                "HEMODINAMICA", "OBSTETRICO",
-                "Total de Avisos", "Total de Cirurgias", "Total Geral"
-            ])
+            or any(
+                k in line_txt
+                for k in [
+                    "Atendimento",
+                    "Convênio",
+                    "Centro Cirurgico",
+                    "HEMODINAMICA",
+                    "OBSTETRICO",
+                    "Total de Avisos",
+                    "Total de Cirurgias",
+                    "Total Geral",
+                ]
+            )
         ):
             continue
 
-        # ---------------------------------------------
-        # LINHA-MESTRE
-        # ---------------------------------------------
-        is_master = (len(cols) >= 2 and re.fullmatch(r"\d{7,12}", cols[1] or ""))
-        if is_master:
-            atendimento = cols[1]
-            paciente = cols[2] if len(cols) > 2 else ""
+        # -------------------------------------------------------
+        # DETECÇÃO ROBUSTA DO ATENDIMENTO (coluna 0,1,2)
+        # -------------------------------------------------------
+        att_col = None
+        for idx in (0, 1, 2):
+            if idx < len(cols) and re.fullmatch(r"\d{7,12}", cols[idx]):
+                att_col = idx
+                break
 
-            # achar aviso + horas
+        is_master = att_col is not None
+
+        # -------------------------------------------------------
+        # LINHA-MESTRE
+        # -------------------------------------------------------
+        if is_master:
+            atendimento = cols[att_col]
+            paciente = cols[att_col + 1] if len(cols) > att_col + 1 else ""
+
+            # ----- localizar aviso + horas -----
             aviso_idx = None
-            for k in range(3, len(cols) - 2):
+
+            # padrão ideal: aviso, hora_ini, hora_fim
+            for k in range(att_col + 2, len(cols) - 2):
                 if is_digits(cols[k]) and is_time(cols[k + 1]) and is_time(cols[k + 2]):
                     aviso_idx = k
                     break
 
+            # fallback
             if aviso_idx is None:
-                for k in range(3, len(cols)):
+                for k in range(att_col + 2, len(cols)):
                     if is_time(cols[k]) and k - 1 >= 0 and is_digits(cols[k - 1]):
                         aviso_idx = k - 1
                         break
 
             if aviso_idx is None:
+                # linha com problema → ignora
                 continue
 
             aviso = cols[aviso_idx]
             hora_ini = cols[aviso_idx + 1]
             hora_fim = cols[aviso_idx + 2]
             proc_idx = aviso_idx + 3
+
             procedimento = cols[proc_idx] if proc_idx < len(cols) else ""
 
-            conv = prest = anest = tipo = quarto = ""
+            # Convênio, prestador, anestesista, tipo, quarto
             tail5 = last_n_nonempty(cols, 5)
 
-            if proc_idx + 1 < len(cols) and cols[proc_idx + 1] != "":
-                conv = cols[proc_idx + 1]
-            else:
-                conv = tail5[0]
-
-            if proc_idx + 2 < len(cols) and cols[proc_idx + 2] != "":
-                prest = cols[proc_idx + 2]
-            else:
-                prest = tail5[1]
-
-            if proc_idx + 3 < len(cols) and cols[proc_idx + 3] != "":
-                anest = cols[proc_idx + 3]
-            else:
-                anest = tail5[2]
-
+            conv = cols[proc_idx + 1] if proc_idx + 1 < len(cols) and cols[proc_idx + 1] != "" else tail5[0]
+            prest = cols[proc_idx + 2] if proc_idx + 2 < len(cols) and cols[proc_idx + 2] != "" else tail5[1]
+            anest = cols[proc_idx + 3] if proc_idx + 3 < len(cols) and cols[proc_idx + 3] != "" else tail5[2]
             tipo, quarto = tail5[3], tail5[4]
 
-            # contexto
+            # salvar contexto
             contexto = {
                 "atendimento": atendimento,
                 "paciente": paciente,
@@ -131,30 +151,34 @@ def parse_tiss_original(csv_text):
                 "aviso": aviso,
             }
 
-            registros.append({
-                "atendimento": atendimento,
-                "paciente": paciente,
-                "data": data_atual,
-                "aviso": aviso,
-                "procedimento": procedimento,
-                "convenio": conv,
-                "profissional": prest,
-                "anestesista": anest,
-                "tipo": tipo,
-                "quarto": quarto,
-                "hora_ini": hora_ini,
-                "hora_fim": hora_fim,
-                "__cells__": cols,
-            })
+            registros.append(
+                {
+                    "atendimento": atendimento,
+                    "paciente": paciente,
+                    "data": data_atual,
+                    "aviso": aviso,
+                    "procedimento": procedimento,
+                    "convenio": conv,
+                    "profissional": prest,
+                    "anestesista": anest,
+                    "tipo": tipo,
+                    "quarto": quarto,
+                    "hora_ini": hora_ini,
+                    "hora_fim": hora_fim,
+                    "__cells__": cols,
+                }
+            )
+
             continue
 
-        # ---------------------------------------------
-        # LINHA-FILHA (herda do contexto)
-        # ---------------------------------------------
+        # -------------------------------------------------------
+        # LINHA-FILHA
+        # -------------------------------------------------------
         first_idx = next((i for i, c in enumerate(cols) if c != ""), None)
 
         if first_idx is not None and first_idx >= 10:
             proc_idx = first_idx
+
             procedimento = cols[proc_idx]
             conv = cols[proc_idx + 1] if proc_idx + 1 < len(cols) else ""
             prest = cols[proc_idx + 2] if proc_idx + 2 < len(cols) else ""
@@ -165,25 +189,27 @@ def parse_tiss_original(csv_text):
             quarto = tail2[1] if len(tail2) >= 2 else ""
 
             if contexto["atendimento"]:
-                registros.append({
-                    "atendimento": contexto["atendimento"],
-                    "paciente": contexto["paciente"],
-                    "data": data_atual,
-                    "aviso": contexto["aviso"],
-                    "procedimento": procedimento,
-                    "convenio": conv,
-                    "profissional": prest,
-                    "anestesista": anest,
-                    "tipo": tipo,
-                    "quarto": quarto,
-                    "hora_ini": contexto["hora_ini"],
-                    "hora_fim": contexto["hora_fim"],
-                    "__cells__": cols,
-                })
+                registros.append(
+                    {
+                        "atendimento": contexto["atendimento"],
+                        "paciente": contexto["paciente"],
+                        "data": data_atual,
+                        "aviso": contexto["aviso"],
+                        "procedimento": procedimento,
+                        "convenio": conv,
+                        "profissional": prest,
+                        "anestesista": anest,
+                        "tipo": tipo,
+                        "quarto": quarto,
+                        "hora_ini": contexto["hora_ini"],
+                        "hora_fim": contexto["hora_fim"],
+                        "__cells__": cols,
+                    }
+                )
 
             continue
 
-        # demais casos: ignorar
+        # caso contrário → ignora
         continue
 
     return registros
