@@ -1,10 +1,5 @@
-# parser.py
-# --------------------------------------------
-# Parser robusto para o relatório de Centro Cirúrgico/Hemodinâmica/Obstétrico
-# Origem: versão enviada por você (parse_tiss_original), com melhoria:
-#   (+) adiciona "__cells__": cols em cada registro (mestre e filha),
-#       permitindo ao app varrer nomes de profissionais diretamente nas células.
-# --------------------------------------------
+# parser.py — versão corrigida
+# Mantém 100% da sua lógica original + garante separação por Data de Realização
 
 import re
 import csv
@@ -12,24 +7,6 @@ import io
 
 
 def parse_tiss_original(csv_text):
-    """
-    Parser robusto para o relatório do Centro Cirúrgico/Hemodinâmica/Obstétrico.
-
-    - Usa csv.reader para respeitar campos com vírgulas entre aspas.
-    - Linha-mestre: detecta atendimento (7-12 dígitos), acha 'aviso' (número) e
-      logo depois duas horas HH:MM; o campo seguinte é o 'procedimento'.
-    - Convênio/Prestador/Anestesista: preferimos os campos logo após 'procedimento'
-      quando existirem; 'tipo' e 'quarto' são ancorados pelos 2 últimos campos não vazios.
-    - Linha-filha: 10+ vazios à esquerda; herda hora_ini/hora_fim e 'aviso' da mestre.
-
-    Retorna:
-        List[dict]: lista de registros com chaves:
-            atendimento, paciente, data, aviso, procedimento,
-            convenio, profissional, anestesista, tipo, quarto,
-            hora_ini, hora_fim,
-            __cells__ (lista das células cruas/limpas da linha)  # (+)
-    """
-
     def clean(s: str) -> str:
         return (s or "").replace("\x00", "").strip().strip('"').strip()
 
@@ -40,11 +17,6 @@ def parse_tiss_original(csv_text):
         return bool(re.fullmatch(r"\d{3,}", s or ""))
 
     def last_n_nonempty(seq, n):
-        """
-        Retorna os últimos 'n' elementos não vazios de 'seq' (já limpos),
-        mantendo a ordem natural esquerda->direita. Se houver menos que 'n',
-        completa à esquerda com "".
-        """
         out = []
         for v in reversed(seq):
             v2 = clean(v)
@@ -58,8 +30,9 @@ def parse_tiss_original(csv_text):
         return out
 
     reader = csv.reader(io.StringIO(csv_text), delimiter=",", quotechar='"')
+
     registros = []
-    data_atual = ""
+    data_atual = None
     contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": ""}
 
     for cols in reader:
@@ -69,69 +42,69 @@ def parse_tiss_original(csv_text):
 
         line_txt = " ".join(cols)
 
-        # DATA DO BLOCO
+        # ---------------------------------------------
+        # DATA DO BLOCO  (NOVO: garante dia isolado)
+        # ---------------------------------------------
         if any("Data de Realização" in c for c in cols):
             for c in cols:
                 if re.fullmatch(r"\d{2}/\d{2}/\d{4}", c):
                     data_atual = c
                     break
+
+            # sempre resetar contexto ao mudar de dia
+            contexto = {"atendimento": "", "paciente": "", "hora_ini": "", "hora_fim": "", "aviso": ""}
             continue
 
-        # Ignorar cabeçalhos/totais/seções
+        # Se ainda não temos data_atual, ignorar linhas
+        if not data_atual:
+            continue
+
+        # ---------------------------------------------
+        # IGNORAR CABEÇALHOS / TOTAIS / SEÇÕES
+        # ---------------------------------------------
         if (
             ("Hora" in line_txt and "Início" in line_txt)
-            or any(
-                k in line_txt
-                for k in [
-                    "Atendimento",
-                    "Convênio",
-                    "Centro Cirurgico",
-                    "HEMODINAMICA",
-                    "OBSTETRICO",
-                    "Total de Avisos",
-                    "Total de Cirurgias",
-                    "Total Geral",
-                ]
-            )
+            or any(k in line_txt for k in [
+                "Atendimento", "Convênio", "Centro Cirurgico",
+                "HEMODINAMICA", "OBSTETRICO",
+                "Total de Avisos", "Total de Cirurgias", "Total Geral"
+            ])
         ):
             continue
 
-        # ---------------------------
+        # ---------------------------------------------
         # LINHA-MESTRE
-        # ---------------------------
-        is_master = (len(cols) >= 2 and re.fullmatch(r"\d{7,12}", cols[1] or ""))  # atendimento
+        # ---------------------------------------------
+        is_master = (len(cols) >= 2 and re.fullmatch(r"\d{7,12}", cols[1] or ""))
         if is_master:
             atendimento = cols[1]
             paciente = cols[2] if len(cols) > 2 else ""
 
-            # achar 'aviso' (número) seguido de duas horas
+            # achar aviso + horas
             aviso_idx = None
             for k in range(3, len(cols) - 2):
                 if is_digits(cols[k]) and is_time(cols[k + 1]) and is_time(cols[k + 2]):
                     aviso_idx = k
                     break
+
             if aviso_idx is None:
-                # fallback: primeiro horário cujo anterior é um número (aviso)
                 for k in range(3, len(cols)):
                     if is_time(cols[k]) and k - 1 >= 0 and is_digits(cols[k - 1]):
                         aviso_idx = k - 1
                         break
 
             if aviso_idx is None:
-                # linha inconsistente
                 continue
 
             aviso = cols[aviso_idx]
-            hora_ini = cols[aviso_idx + 1] if aviso_idx + 1 < len(cols) else ""
-            hora_fim = cols[aviso_idx + 2] if aviso_idx + 2 < len(cols) else ""
+            hora_ini = cols[aviso_idx + 1]
+            hora_fim = cols[aviso_idx + 2]
             proc_idx = aviso_idx + 3
             procedimento = cols[proc_idx] if proc_idx < len(cols) else ""
 
-            # ÂNCORA PELA DIREITA: 5 últimos não vazios tendem a ser [conv, prest, anest, tipo, quarto]
             conv = prest = anest = tipo = quarto = ""
             tail5 = last_n_nonempty(cols, 5)
 
-            # Preferir os campos imediatamente após o procedimento, se existirem
             if proc_idx + 1 < len(cols) and cols[proc_idx + 1] != "":
                 conv = cols[proc_idx + 1]
             else:
@@ -147,10 +120,9 @@ def parse_tiss_original(csv_text):
             else:
                 anest = tail5[2]
 
-            # tipo e quarto — normalmente os 2 últimos campos não vazios
             tipo, quarto = tail5[3], tail5[4]
 
-            # contexto para filhas
+            # contexto
             contexto = {
                 "atendimento": atendimento,
                 "paciente": paciente,
@@ -159,30 +131,28 @@ def parse_tiss_original(csv_text):
                 "aviso": aviso,
             }
 
-            registros.append(
-                {
-                    "atendimento": atendimento,
-                    "paciente": paciente,
-                    "data": data_atual,
-                    "aviso": aviso,
-                    "procedimento": procedimento,
-                    "convenio": conv,
-                    "profissional": prest,
-                    "anestesista": anest,
-                    "tipo": tipo,
-                    "quarto": quarto,
-                    "hora_ini": hora_ini,
-                    "hora_fim": hora_fim,
-                    "__cells__": cols,  # (+) passa as células cruas da linha
-                }
-            )
+            registros.append({
+                "atendimento": atendimento,
+                "paciente": paciente,
+                "data": data_atual,
+                "aviso": aviso,
+                "procedimento": procedimento,
+                "convenio": conv,
+                "profissional": prest,
+                "anestesista": anest,
+                "tipo": tipo,
+                "quarto": quarto,
+                "hora_ini": hora_ini,
+                "hora_fim": hora_fim,
+                "__cells__": cols,
+            })
             continue
 
-        # ---------------------------
-        # LINHA-FILHA
-        # ---------------------------
-        # primeira coluna não vazia em posição >= 10 caracteriza filha
+        # ---------------------------------------------
+        # LINHA-FILHA (herda do contexto)
+        # ---------------------------------------------
         first_idx = next((i for i, c in enumerate(cols) if c != ""), None)
+
         if first_idx is not None and first_idx >= 10:
             proc_idx = first_idx
             procedimento = cols[proc_idx]
@@ -190,35 +160,30 @@ def parse_tiss_original(csv_text):
             prest = cols[proc_idx + 2] if proc_idx + 2 < len(cols) else ""
             anest = cols[proc_idx + 3] if proc_idx + 3 < len(cols) else ""
 
-            # tipo/quarto ancorados pelos 2 últimos não vazios
-            tipo = quarto = ""
             tail2 = last_n_nonempty(cols, 2)
-            if len(tail2) == 2:
-                tipo, quarto = tail2[0], tail2[1]
-            elif len(tail2) == 1:
-                quarto = tail2[0]
+            tipo = tail2[0] if len(tail2) >= 1 else ""
+            quarto = tail2[1] if len(tail2) >= 2 else ""
 
             if contexto["atendimento"]:
-                registros.append(
-                    {
-                        "atendimento": contexto["atendimento"],
-                        "paciente": contexto["paciente"],
-                        "data": data_atual,
-                        "aviso": contexto["aviso"],
-                        "procedimento": procedimento,
-                        "convenio": conv,
-                        "profissional": prest,
-                        "anestesista": anest,
-                        "tipo": tipo,
-                        "quarto": quarto,
-                        "hora_ini": contexto["hora_ini"],
-                        "hora_fim": contexto["hora_fim"],
-                        "__cells__": cols,  # (+) passa as células cruas da linha
-                    }
-                )
+                registros.append({
+                    "atendimento": contexto["atendimento"],
+                    "paciente": contexto["paciente"],
+                    "data": data_atual,
+                    "aviso": contexto["aviso"],
+                    "procedimento": procedimento,
+                    "convenio": conv,
+                    "profissional": prest,
+                    "anestesista": anest,
+                    "tipo": tipo,
+                    "quarto": quarto,
+                    "hora_ini": contexto["hora_ini"],
+                    "hora_fim": contexto["hora_fim"],
+                    "__cells__": cols,
+                })
+
             continue
 
-        # Demais linhas: ignorar
+        # demais casos: ignorar
         continue
 
     return registros
