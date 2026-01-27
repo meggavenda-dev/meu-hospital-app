@@ -108,10 +108,11 @@ GRAU_PARTICIPACAO_OPCOES = ["Cirurgião", "1 Auxiliar", "2 Auxiliar", "3 Auxilia
 ALWAYS_SELECTED_PROS = {"JOSE.ADORNO", "CASSIO CESAR", "FERNANDO AND", "SIMAO.MATOS"}
 
 
+
 def find_allowed_in_row(cells: list[str]) -> str | None:
-    # cells: lista com as células *cruas* da linha CSV
+    norm_cells = [str(c or "").strip().upper() for c in cells]
     for name in ALWAYS_SELECTED_PROS:
-        if name in cells:
+        if name.upper().strip() in norm_cells:
             return name
     return None
 
@@ -1309,6 +1310,7 @@ with tabs[1]:
         st.session_state["import_selected_docs"] = selected_pros
         always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
         final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
+        final_pros = sorted(set(selected_pros if not import_all else pros).union(ALWAYS_SELECTED_PROS))
         st.caption(f"Médicos fixos (sempre incluídos, quando presentes): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
 
@@ -1367,7 +1369,6 @@ with tabs[1]:
             return "", "SKIP"
 
 
-
         grupos_info = []
         
         for (att, aviso), rows in grupos.items():
@@ -1380,28 +1381,93 @@ with tabs[1]:
                 "prof_escolhido": prof,
                 "regra": regra,  # "A" | "B" | "SKIP"
             })
+
+        # --- Debug 1: Contagens e SKIPs
+        total_grupos = len(grupos)
+        total_AB = sum(1 for g in grupos_info if g["regra"] in ("A","B"))
+        total_SKIP = sum(1 for g in grupos_info if g["regra"] == "SKIP")
         
-        # --- (2) Monta grupos_info usando a REGRA A/B (com o _escolher_profissional PATCH)
-        grupos_info = []
-        for (att, aviso), rows in grupos.items():
-            prof, regra = _escolher_profissional(rows)   # <--- aqui entra o PATCH (varredura por nome nas __cells__)
-            grupos_info.append({
-                "atendimento": att,
-                "aviso": aviso,
-                "rows": rows,
-                "master": rows[0],
-                "prof_escolhido": prof,
-                "regra": regra,   # "A" | "B" | "SKIP"
-            })
+        with st.expander("🔎 A/B vs SKIP (debug temporário)"):
+            st.write("Grupos totais:", total_grupos)
+            st.write("Grupos com Regra A/B:", total_AB)
+            st.write("Grupos SKIP:", total_SKIP)
+            if total_SKIP:
+                st.table(pd.DataFrame([
+                    {
+                        "atendimento": g["atendimento"],
+                        "aviso": g["aviso"],
+                        "profissionais_parser": [ (r.get("profissional") or "") for r in g["rows"] ][:3],  # amostra
+                    }
+                    for g in grupos_info if g["regra"] == "SKIP"
+                ]))        
+
         
-        # --- (3) [OPCIONAL] Debug (temporário) — coloque após o bloco acima
+        # --- Debug 2: Diferença entre pares vindos do arquivo e os consolidados (A/B)
+        pairs_from_file = {
+            ((r.get("atendimento") or "").strip(), (_fmt_id_str(r.get("aviso")) or ""))
+            for r in registros if r.get("atendimento")
+        }
+        pairs_AB = { (g["atendimento"], g["aviso"]) for g in grupos_info if g["regra"] in ("A","B") }
         
-        with st.expander("🔎 Debug de grupos (temporário)"):
-            st.write("Total de grupos (A ou B):", len([g for g in grupos_info if g["regra"] in ("A","B")]))
+        faltando_em_AB = sorted(pairs_from_file - pairs_AB)
+        a_mais_em_AB = sorted(pairs_AB - pairs_from_file)
+        
+        with st.expander("🧮 Diff de pares (arquivo × A/B)"):
+            st.write(f"Pares no arquivo: {len(pairs_from_file)} | Pares A/B: {len(pairs_AB)}")
+            st.write("Faltando em A/B:", faltando_em_AB)
+            st.write("A mais em A/B:", a_mais_em_AB)
+            # Se quiser detalhar o grupo faltante:
+            for att, av in faltando_em_AB[:3]:
+                rows = grupos.get((att, av), [])
+                st.write(f"Grupo faltante -> atendimento={att}, aviso={av}")
+                if rows:
+                    st.write("Profissionais (parser):", [r.get("profissional") for r in rows])
+                    st.write("Células (mestre):", rows[0].get("__cells__"))
+
+        # --- Debug 3: Pares considerados para gravação após filtro de médicos
+        import_all = st.session_state.get("import_all_docs", True)
+        final_pros_set = set(final_pros)  # já definido acima
+        
+        grupos_considerados = [
+            g for g in grupos_info
+            if g["regra"] in ("A","B")
+            and g["prof_escolhido"]
+            and (import_all or g["prof_escolhido"] in final_pros_set)
+        ]
+        
+        with st.expander("✅ Pares considerados (após filtro de médicos)"):
+            st.write("import_all:", import_all)
+            st.write("Médicos considerados:", sorted(final_pros_set))
+            st.write("Pares (atendimento,aviso) considerados:", len(grupos_considerados))
             st.table(pd.DataFrame([
                 {"atendimento": g["atendimento"], "aviso": g["aviso"], "prof": g["prof_escolhido"], "regra": g["regra"]}
-                for g in grupos_info if g["regra"] in ("A","B")
-            ][:10]))
+                for g in grupos_considerados
+            ]))
+
+                
+
+        
+        # --- (3) [OPCIONAL] Debug (temporário) — coloque após o bloco acima
+
+             
+        # --- Debug 1: Contagens e SKIPs
+        total_grupos = len(grupos)
+        total_AB = sum(1 for g in grupos_info if g["regra"] in ("A","B"))
+        total_SKIP = sum(1 for g in grupos_info if g["regra"] == "SKIP")
+        
+        with st.expander("🔎 A/B vs SKIP (debug temporário)"):
+            st.write("Grupos totais:", total_grupos)
+            st.write("Grupos com Regra A/B:", total_AB)
+            st.write("Grupos SKIP:", total_SKIP)
+            if total_SKIP:
+                st.table(pd.DataFrame([
+                    {
+                        "atendimento": g["atendimento"],
+                        "aviso": g["aviso"],
+                        "profissionais_parser": [ (r.get("profissional") or "") for r in g["rows"] ][:3],  # amostra
+                    }
+                    for g in grupos_info if g["regra"] == "SKIP"
+                ]))
                  
         
 
@@ -1426,15 +1492,8 @@ with tabs[1]:
 
                 # Quais grupos entram segundo seleção de médicos                
                 import_all = st.session_state["import_all_docs"]
-                final_pros_set = set(final_pros)  # já definido acima
-                
-                grupos_considerados = [
-                    g for g in grupos_info
-                    if g["regra"] in ("A","B")
-                    and g["prof_escolhido"]
-                    and (import_all or g["prof_escolhido"] in final_pros_set)
-                ]
-                
+                final_pros_set = set(final_pros)  # já definido acima                
+                              
                 st.caption(f"Pares (atendimento, aviso) considerados para gravação: {len(grupos_considerados)}")
 
                 # 1) Atendimentos únicos
