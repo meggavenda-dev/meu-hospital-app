@@ -1309,7 +1309,6 @@ with tabs[1]:
         st.session_state["import_all_docs"] = import_all
         st.session_state["import_selected_docs"] = selected_pros
         always_in_file = [p for p in pros if p in ALWAYS_SELECTED_PROS]
-        final_pros = sorted(set(selected_pros if not import_all else pros).union(always_in_file))
         final_pros = sorted(set(selected_pros if not import_all else pros).union(ALWAYS_SELECTED_PROS))
         st.caption(f"Médicos fixos (sempre incluídos, quando presentes): {', '.join(sorted(ALWAYS_SELECTED_PROS))}")
         st.info(f"Médicos considerados: {', '.join(final_pros) if final_pros else '(nenhum)'}")
@@ -1424,6 +1423,18 @@ with tabs[1]:
                     st.write("Profissionais (parser):", [r.get("profissional") for r in rows])
                     st.write("Células (mestre):", rows[0].get("__cells__"))
 
+        
+        # --- debug 3 Auto-detector do 24º par perdido 
+        pairs_from_file = {
+            ((r.get("atendimento") or "").strip(), (_fmt_id_str(r.get("aviso")) or ""))
+            for r in registros if r.get("atendimento")
+        }
+        pairs_AB = { (g["atendimento"], g["aviso"]) for g in grupos_info if g["regra"] in ("A","B") }
+        
+        faltando_em_AB = sorted(pairs_from_file - pairs_AB)
+        pairs_considerados = set()  # será preenchido abaixo, depois que você montar grupos_considerados
+
+
         # --- Debug 3: Pares considerados para gravação após filtro de médicos
         import_all = st.session_state.get("import_all_docs", True)
         final_pros_set = set(final_pros)  # já definido acima
@@ -1443,6 +1454,41 @@ with tabs[1]:
                 {"atendimento": g["atendimento"], "aviso": g["aviso"], "prof": g["prof_escolhido"], "regra": g["regra"]}
                 for g in grupos_considerados
             ]))
+
+        
+        # completar o auto-detector com os considerados
+        pairs_considerados = { (g["atendimento"], g["aviso"]) for g in grupos_considerados }
+        
+        # 1) Se faltou antes (na Regra A/B)
+        if faltando_em_AB:
+            att, av = faltando_em_AB[0]
+            st.warning(f"⚠️ Par FALTANDO na Regra A/B: atendimento={att}, aviso={av}")
+            rows = grupos.get((att, av), [])
+            if not rows:
+                st.write("Grupo não encontrado no dicionário 'grupos' (verifique chaves).")
+            else:
+                st.write("• Profissionais parseados por linha do grupo:", [ (r.get('profissional') or "") for r in rows ])
+                st.write("• CÉLULAS da linha-mestre (para Regra A):", rows[0].get("__cells__"))
+                # Se quiser ver todas as linhas do grupo (mestre + filhas):
+                for i, rr in enumerate(rows):
+                    st.caption(f"— Linha {i} (mestre=0):")
+                    st.write(rr.get("__cells__"))
+        else:
+            # 2) Se A/B tem 24, veja se o filtro de médicos derrubou algum
+            faltando_no_filtro = sorted(pairs_AB - pairs_considerados)
+            if faltando_no_filtro:
+                att, av = faltando_no_filtro[0]
+                st.warning(f"⚠️ Par FALTANDO APÓS FILTRO DE MÉDICOS: atendimento={att}, aviso={av}")
+                rows = grupos.get((att, av), [])
+                st.write("• Profissional escolhido pela Regra A/B:", [
+                    g["prof_escolhido"] for g in grupos_info
+                    if g["atendimento"] == att and g["aviso"] == av
+                ])
+                st.write("• Médicos considerados (final_pros):", sorted(set(final_pros)))
+                st.write("• CÉLULAS da linha-mestre (para conferência):", rows[0].get("__cells__") if rows else None)
+            else:
+                st.success("✅ Nenhum par faltando: arquivo × A/B × filtro de médicos está consistente.")
+
 
                 
 
